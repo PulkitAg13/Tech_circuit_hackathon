@@ -17,8 +17,8 @@ import abc
 from typing import ClassVar
 
 from canongate.domain.ast import Node, NodeKind
-from canongate.domain.canon import Canon
-from canongate.domain.finding import Evidence, Finding, Suggestion
+from canongate.domain.canon import Canon, Rule
+from canongate.domain.finding import Evidence, Finding, Locator, Suggestion, Tier, Trace
 from canongate.domain.types import stable_finding_id
 from canongate.engine.registry import _RegistryMixin
 
@@ -39,6 +39,7 @@ class Check(_RegistryMixin, abc.ABC):
     check_id: ClassVar[str]
     check_version: ClassVar[str]
     node_kinds: ClassVar[frozenset[NodeKind]]
+    timeout_s: ClassVar[float] = 10.0
 
     @abc.abstractmethod
     def run(self, node: Node, canon: Canon) -> list[Finding]:
@@ -59,32 +60,38 @@ class Check(_RegistryMixin, abc.ABC):
         self,
         *,
         node: Node,
-        locator_key: str,
+        locator: Locator,
         message: str,
         severity: int,
-        evidence: Evidence | None = None,
+        rule_ref: Rule,
+        evidence: Evidence,
         suggestion: Suggestion | None = None,
+        trace: Trace | None = None,
+        locator_key: str | None = None,
     ) -> Finding:
         """Build a Finding with auto-filled check metadata and stable ID.
 
-        Eliminates boilerplate in `run()`. The `locator_key` should be a
-        value unique within this (check, node) pair — e.g. the matched
-        span text or rule id — so re-scans produce the same finding ID.
+        Eliminates boilerplate in `run()`. Defaults `locator_key` to
+        `locator.key` (e.g. `s:10-15` or `b:0,0,100,40`) so re-scans
+        produce the exact same deterministic FindingId.
         """
+        key = locator_key if locator_key is not None else locator.key
         return Finding(
             id=stable_finding_id(
                 self.check_id,
                 self.check_version,
                 node.id,
-                locator_key,
+                key,
             ),
             check_id=self.check_id,
-            check_version=self.check_version,
             node_id=node.id,
-            message=message,
+            locator=locator,
             severity=severity,
+            message=message,
+            rule_ref=rule_ref,
             evidence=evidence,
             suggestion=suggestion,
+            trace=trace if trace is not None else Trace(tier=Tier.DETERMINISTIC),
         )
 
     def __repr__(self) -> str:

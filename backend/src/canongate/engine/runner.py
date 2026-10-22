@@ -95,8 +95,12 @@ async def run_checks(ast: ContentAST, canon: Canon) -> AsyncIterator[Finding]:
 
         t0 = time.monotonic()
         try:
-            # Sync checks go to a thread to avoid blocking the event loop
-            findings = await asyncio.to_thread(check.run, node, canon)
+            if type(check).run_async is not Check.run_async:
+                coro = check.run_async(node, canon)
+            else:
+                # Sync checks go to a thread to avoid blocking the event loop
+                coro = asyncio.to_thread(check.run, node, canon)
+            findings = await asyncio.wait_for(coro, timeout=check.timeout_s)
         except Exception:
             logger.exception("Check %s failed on node %s", check.check_id, node.id)
             findings = []
@@ -128,8 +132,17 @@ async def run_checks(ast: ContentAST, canon: Canon) -> AsyncIterator[Finding]:
 
 
 async def run_checks_collect(ast: ContentAST, canon: Canon) -> list[Finding]:
-    """Run all checks and collect findings into a list (non-streaming)."""
+    """Run all checks and collect findings into a deterministically sorted list."""
+    node_order = {node.id: idx for idx, node in enumerate(ast.nodes)}
     results: list[Finding] = []
     async for finding in run_checks(ast, canon):
         results.append(finding)
+    results.sort(
+        key=lambda f: (
+            node_order.get(f.node_id, 999999),
+            f.locator.key,
+            f.check_id,
+            str(f.id),
+        )
+    )
     return results

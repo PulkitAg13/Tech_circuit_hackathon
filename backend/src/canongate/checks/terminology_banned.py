@@ -20,7 +20,6 @@ from canongate.domain.finding import (
     Tier,
     Trace,
 )
-from canongate.domain.types import stable_finding_id
 from canongate.engine.check import Check
 
 
@@ -36,13 +35,10 @@ class TerminologyBannedCheck(Check):
         for rule in canon.term_rules():
             for m in rule.pattern.finditer(node.text):
                 span = Span(start=m.start(), end=m.end())
-                fid = stable_finding_id(self.check_id, self.check_version, node.id, span.key)
 
                 findings.append(
-                    Finding(
-                        id=fid,
-                        check_id=self.check_id,
-                        node_id=node.id,
+                    self.finding(
+                        node=node,
                         locator=span,
                         severity=rule.severity,
                         message=f'Use "{rule.preferred}" instead of "{m.group()}"',

@@ -74,10 +74,110 @@ class ColorDistance(BaseModel, frozen=True):
     max_allowed: float
 
 
-# Add new evidence types here as the system grows.
-# Each new type = one new model here + one new React component in features/findings/evidence/
+class ContrastEvidence(BaseModel, frozen=True):
+    """Evidence: WCAG 2.1 AA/AAA relative luminance contrast failure."""
 
-Evidence = Annotated[TermMatch | ColorDistance, Field(discriminator="kind")]
+    kind: Literal["contrast"] = "contrast"
+    fg_hex: str
+    bg_hex: str
+    contrast_ratio: float
+    required_ratio: float
+    wcag_level: Literal["AA", "AAA"] = "AA"
+    suggested_fg_hex: str | None = None
+
+
+class LegibilityEvidence(BaseModel, frozen=True):
+    """Evidence: ASCI 26px / x-height or CCPA disclaimer legibility violation."""
+
+    kind: Literal["legibility"] = "legibility"
+    measured_box_px: float
+    estimated_x_height_px: float
+    required_px: float
+    image_height_px: int
+    ocr_confidence: float
+    script_mismatch: bool = False
+
+
+class SaliencyEvidence(BaseModel, frozen=True):
+    """Evidence: visual subordination of a disclaimer relative to headline claim."""
+
+    kind: Literal["saliency"] = "saliency"
+    disclaimer_saliency: float
+    headline_saliency: float
+    ratio: float
+    min_ratio: float = 0.25
+
+
+class ConfusableEvidence(BaseModel, frozen=True):
+    """Evidence: Unicode UTS #39 homoglyph or mixed-script spoofing detected."""
+
+    kind: Literal["confusable"] = "confusable"
+    spoofed_token: str
+    normalized_token: str
+    confusable_chars: tuple[str, ...] = ()
+    scripts_detected: tuple[str, ...] = ()
+
+
+class AlgebraicProofEvidence(BaseModel, frozen=True):
+    """Evidence: Z3 SMT solver counterexample or contradiction proof."""
+
+    kind: Literal["algebraic_proof"] = "algebraic_proof"
+    draft_expr: str
+    canon_constraint: str
+    solver_status: Literal["sat_counterexample", "unsat_valid"]
+    counterexample: dict[str, str] = Field(default_factory=dict)
+
+
+class SlotEntry(BaseModel, frozen=True):
+    """Single predicate-argument slot comparison entry."""
+
+    slot: str
+    canon_value: str
+    draft_value: str
+    status: Literal["match", "dropped", "contradicted", "unverified"]
+
+
+class SlotDiffEvidence(BaseModel, frozen=True):
+    """Evidence: MiniCheck NLI entailment probability and slot-level alignment."""
+
+    kind: Literal["slot_diff"] = "slot_diff"
+    entailment_prob: float
+    canon_claim_id: str
+    canon_text: str
+    slots: tuple[SlotEntry, ...] = ()
+
+
+class C2paEvidence(BaseModel, frozen=True):
+    """Evidence: C2PA JUMBF Content Credentials provenance state."""
+
+    kind: Literal["c2pa"] = "c2pa"
+    has_manifest: bool
+    validation_state: str
+    issuer: str | None = None
+    digital_source_type: str | None = None
+
+
+class HiddenTextEvidence(BaseModel, frozen=True):
+    """Evidence: OWASP LLM01 indirect prompt injection or hidden text."""
+
+    kind: Literal["hidden_text"] = "hidden_text"
+    mechanism: str
+    extracted_snippet: str
+
+
+Evidence = Annotated[
+    TermMatch
+    | ColorDistance
+    | ContrastEvidence
+    | LegibilityEvidence
+    | SaliencyEvidence
+    | ConfusableEvidence
+    | AlgebraicProofEvidence
+    | SlotDiffEvidence
+    | C2paEvidence
+    | HiddenTextEvidence,
+    Field(discriminator="kind"),
+]
 
 
 # ── Suggestion ───────────────────────────────────────────────────────

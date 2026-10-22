@@ -3,6 +3,10 @@ name = "canongate"
 version = "0.1.0"
 description = "Pre-publication brand & claim governance platform"
 requires-python = ">=3.12"
+# Permissive license policy (MIT / Apache-2.0 / BSD-3):
+# DO NOT add `pymerkle` or `krippendorff` (`fast-krippendorff`) here — both are
+# GPL-3.0 copyleft. RFC 9162 Merkle trees and vectorized Krippendorff's alpha
+# are implemented natively in `canongate.ledger.merkle` and `canongate.ledger.friction`.
 dependencies = [
     "fastapi>=0.115.0",
     "uvicorn[standard]>=0.30.0",
@@ -13,6 +17,10 @@ dependencies = [
     "pyjwt>=2.9",
     "python-multipart>=0.0.12",
     "scikit-image>=0.24",
+    "numpy>=2.0",
+    "opencv-python-headless>=4.10",
+    "pillow>=10.4",
+    "cryptography>=43.0",
     "pyyaml>=6.0",
     "sse-starlette>=2.1",
 ]
