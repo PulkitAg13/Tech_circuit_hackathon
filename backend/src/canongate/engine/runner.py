@@ -58,7 +58,7 @@ def _instantiate_checks() -> list[Check]:
 # ── Simple in-memory LRU cache ───────────────────────────────────────
 
 _CacheKey = tuple[str, str, str, str]  # (check_id, check_version, node_id, canon_hash)
-_cache: dict[_CacheKey, list[Finding]] = {}
+_cache: dict[_CacheKey, tuple[Finding, ...]] = {}
 _CACHE_MAX = 2048
 
 
@@ -67,7 +67,8 @@ def _cache_key(check: Check, node: Node, canon: Canon) -> _CacheKey:
 
 
 def _cache_get(key: _CacheKey) -> list[Finding] | None:
-    return _cache.get(key)
+    entry = _cache.get(key)
+    return list(entry) if entry is not None else None
 
 
 def _cache_put(key: _CacheKey, findings: list[Finding]) -> None:
@@ -76,7 +77,7 @@ def _cache_put(key: _CacheKey, findings: list[Finding]) -> None:
         keys_to_drop = list(_cache.keys())[: _CACHE_MAX // 4]
         for k in keys_to_drop:
             del _cache[k]
-    _cache[key] = findings
+    _cache[key] = tuple(findings)
 
 
 # ── Runner ───────────────────────────────────────────────────────────
@@ -94,6 +95,7 @@ async def run_checks(ast: ContentAST, canon: Canon) -> AsyncIterator[Finding]:
             return cached
 
         t0 = time.monotonic()
+        succeeded = False
         try:
             if type(check).run_async is not Check.run_async:
                 coro = check.run_async(node, canon)
@@ -101,6 +103,7 @@ async def run_checks(ast: ContentAST, canon: Canon) -> AsyncIterator[Finding]:
                 # Sync checks go to a thread to avoid blocking the event loop
                 coro = asyncio.to_thread(check.run, node, canon)
             findings = await asyncio.wait_for(coro, timeout=check.timeout_s)
+            succeeded = True
         except Exception:
             logger.exception("Check %s failed on node %s", check.check_id, node.id)
             findings = []
@@ -113,7 +116,10 @@ async def run_checks(ast: ContentAST, canon: Canon) -> AsyncIterator[Finding]:
             elapsed,
         )
 
-        _cache_put(key, findings)
+        # Never cache failed or timed-out runs — caching `[]` on error poisons
+        # subsequent scans into silently reporting 0 findings (PASS).
+        if succeeded:
+            _cache_put(key, findings)
         return findings
 
     # Build task list: each (check, node) pair

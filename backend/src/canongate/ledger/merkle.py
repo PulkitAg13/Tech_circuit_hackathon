@@ -12,13 +12,15 @@ Security properties:
   `0x01` for interior nodes (RFC 9162 §2.1.1).
 - Immunity to CVE-2012-2459 lonely-leaf duplication attacks by splitting at the
   largest power of two strictly less than `n` (binary Sakura tree topology).
+- Full RFC 9162 §2.1.4.2 consistency proof verification (`verify_consistency`)
+  to detect split-view / history-rewrite attacks across tree states.
 """
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 import hashlib
 import json
-from dataclasses import dataclass
 
 from cryptography.exceptions import InvalidSignature
 from cryptography.hazmat.primitives import serialization
@@ -53,6 +55,10 @@ def _largest_power_of_two_less_than(n: int) -> int:
     return k
 
 
+def _is_exact_power_of_two(n: int) -> bool:
+    return n > 0 and (n & (n - 1)) == 0
+
+
 def compute_merkle_root(leaves: list[bytes]) -> bytes:
     """Compute the RFC 9162 Merkle Tree Hash (MTH) for `leaves`."""
     n = len(leaves)
@@ -68,7 +74,7 @@ def compute_merkle_root(leaves: list[bytes]) -> bytes:
 
 
 def prove_inclusion(m: int, leaves: list[bytes]) -> list[str]:
-    """RFC 9162 §2.1.3: Generate O(log n) hex audit path for leaf index `m`."""
+    """RFC 9162 §2.1.3.1: Generate O(log n) hex audit path for leaf index `m`."""
     n = len(leaves)
     if not (0 <= m < n):
         raise IndexError(f"Leaf index {m} out of range for tree of size {n}")
@@ -94,6 +100,9 @@ def verify_inclusion(
     """RFC 9162 §2.1.3.2: Verify a Merkle inclusion proof in O(log n) time."""
     if not (0 <= leaf_index < tree_size):
         return False
+    if tree_size == 1:
+        return len(audit_path_hex) == 0 and hash_leaf(leaf_entry).hex() == root_hash_hex
+
     fn = leaf_index
     sn = tree_size - 1
     r = hash_leaf(leaf_entry)
@@ -131,13 +140,71 @@ def _subproof(m: int, leaves: list[bytes], complete: bool) -> list[bytes]:
 
 
 def prove_consistency(first_size: int, leaves: list[bytes]) -> list[str]:
-    """RFC 9162 §2.1.4: Prove that tree state `first_size` is a prefix of `leaves`."""
+    """RFC 9162 §2.1.4.1: Prove that tree state `first_size` is a prefix of `leaves`."""
     n = len(leaves)
     if not (0 <= first_size <= n):
         raise ValueError(f"Invalid first_size {first_size} for tree size {n}")
     if first_size == 0 or first_size == n:
         return []
     return [h.hex() for h in _subproof(first_size, leaves, True)]
+
+
+def verify_consistency(
+    first_size: int,
+    second_size: int,
+    first_hash_hex: str,
+    second_hash_hex: str,
+    consistency_path_hex: list[str],
+) -> bool:
+    """RFC 9162 §2.1.4.2: Verify consistency between two Merkle Tree Heads.
+
+    Proves that the tree of size `second_size` with root `second_hash_hex` is an
+    append-only extension of the earlier tree of size `first_size` with root
+    `first_hash_hex` (detecting history rewrites or split-view tampering).
+    """
+    if first_size < 0 or second_size < first_size:
+        return False
+    if first_size == second_size:
+        return len(consistency_path_hex) == 0 and first_hash_hex == second_hash_hex
+    if first_size == 0:
+        return len(consistency_path_hex) == 0
+    if len(consistency_path_hex) == 0:
+        return False
+
+    try:
+        first_hash = bytes.fromhex(first_hash_hex)
+        second_hash = bytes.fromhex(second_hash_hex)
+        path = [bytes.fromhex(h) for h in consistency_path_hex]
+    except ValueError:
+        return False
+
+    if _is_exact_power_of_two(first_size):
+        path = [first_hash, *path]
+
+    fn = first_size - 1
+    sn = second_size - 1
+    while (fn & 1) == 1:
+        fn >>= 1
+        sn >>= 1
+
+    fr = path[0]
+    sr = path[0]
+
+    for c in path[1:]:
+        if sn == 0:
+            return False
+        if (fn & 1) == 1 or fn == sn:
+            fr = hash_children(c, fr)
+            sr = hash_children(c, sr)
+            while (fn & 1) == 0 and fn != 0:
+                fn >>= 1
+                sn >>= 1
+        else:
+            sr = hash_children(sr, c)
+        fn >>= 1
+        sn >>= 1
+
+    return sn == 0 and fr == first_hash and sr == second_hash
 
 
 @dataclass(frozen=True)

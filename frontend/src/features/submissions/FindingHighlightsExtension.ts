@@ -1,15 +1,19 @@
 /**
- * ProseMirror 1-Indexed Token Position Translation & Inline DecorationSet Plugin.
+ * ProseMirror 1-Indexed Token Position & UTF-16 Surrogate Offset Translation.
  *
- * Coordinate translation invariant:
- * - Backend `Span(start, end)` is 0-indexed relative to a `TextNode.text` string.
- * - ProseMirror's flat document tree uses 1-indexed token positions where every
- *   block node (`<p>`, `<h1>`, `<li>`) adds `+1` opening token and `+1` closing token.
- * - Therefore, for a ProseMirror textblock starting at document offset `blockPos`
- *   with total `blockNodeSize` (where `blockNodeSize === textLength + 2`), a
- *   backend `Span(start, end)` maps to:
- *     `from = blockPos + 1 + span.start`
- *     `to   = Math.min(blockPos + 1 + span.end, blockPos + blockNodeSize - 1)`
+ * Two distinct coordinate mismatches exist between Python backend `Span(start, end)`
+ * and ProseMirror's flat document positions:
+ *
+ * 1. Block Node Boundary Tokens (`+1` per opening/closing block tag):
+ *    ProseMirror's flat document tree uses 1-indexed token positions where every
+ *    block node (`<p>`, `<h1>`, `<li>`) adds `+1` opening token and `+1` closing token.
+ *
+ * 2. Python Unicode Codepoint Indices vs. JavaScript/ProseMirror UTF-16 Code Units:
+ *    Python `re.Match.start()` / `end()` count Unicode codepoints (`len("🚀") == 1`),
+ *    whereas JavaScript strings and ProseMirror text nodes index by UTF-16 code units
+ *    (`"🚀".length === 2` for astral-plane codepoints U+10000..U+10FFFF).
+ *    When `blockText` is provided, `codepointIndexToUtf16Offset` converts Python
+ *    codepoint indices into exact UTF-16 offsets before adding `blockPos + 1`.
  */
 
 import type { FindingResponse } from "../../api/client";
@@ -25,17 +29,50 @@ export interface ProseMirrorRange {
 }
 
 /**
- * Pure coordinate translator from 0-indexed backend `Span(start, end)` to
- * 1-indexed ProseMirror textblock document coordinates.
+ * Convert a 0-indexed Unicode codepoint offset (from Python) into a 0-indexed
+ * UTF-16 code-unit offset (for JavaScript / ProseMirror) within `text`.
+ */
+export function codepointIndexToUtf16Offset(
+  text: string,
+  codepointIndex: number
+): number {
+  if (codepointIndex <= 0) {
+    return 0;
+  }
+  let cpCount = 0;
+  let utf16Offset = 0;
+  for (const ch of text) {
+    if (cpCount >= codepointIndex) {
+      break;
+    }
+    utf16Offset += ch.length; // 2 for astral-plane surrogate pairs, 1 for BMP
+    cpCount += 1;
+  }
+  return utf16Offset;
+}
+
+/**
+ * Pure coordinate translator from 0-indexed backend `Span(start, end)` (in
+ * Python Unicode codepoints) to 1-indexed ProseMirror textblock document coordinates.
  */
 export function spanToProseMirrorRange(
   blockPos: number,
   blockNodeSize: number,
-  span: SpanLike
+  span: SpanLike,
+  blockText?: string
 ): ProseMirrorRange | null {
   const maxContentPos = blockPos + Math.max(1, blockNodeSize - 1);
-  const from = blockPos + 1 + Math.max(0, span.start);
-  const to = Math.min(blockPos + 1 + Math.max(0, span.end), maxContentPos);
+  const startOffset =
+    blockText !== undefined
+      ? codepointIndexToUtf16Offset(blockText, Math.max(0, span.start))
+      : Math.max(0, span.start);
+  const endOffset =
+    blockText !== undefined
+      ? codepointIndexToUtf16Offset(blockText, Math.max(0, span.end))
+      : Math.max(0, span.end);
+
+  const from = blockPos + 1 + startOffset;
+  const to = Math.min(blockPos + 1 + endOffset, maxContentPos);
   if (from >= to) {
     return null;
   }
@@ -45,6 +82,7 @@ export function spanToProseMirrorRange(
 export interface ProseMirrorNodeLike {
   isBlock?: boolean;
   isTextblock?: boolean;
+  textContent?: string;
   nodeSize: number;
   descendants(
     callback: (node: ProseMirrorNodeLike, pos: number) => boolean | void
@@ -93,10 +131,12 @@ export function computeFindingDecorationSpecs(
           typeof loc.start === "number" &&
           typeof loc.end === "number"
         ) {
-          const range = spanToProseMirrorRange(pos, node.nodeSize, {
-            start: loc.start,
-            end: loc.end,
-          });
+          const range = spanToProseMirrorRange(
+            pos,
+            node.nodeSize,
+            { start: loc.start, end: loc.end },
+            node.textContent
+          );
           if (range) {
             const isBlocker = f.severity >= 50;
             const isSelected = f.row_id === meta.selectedRowId;
