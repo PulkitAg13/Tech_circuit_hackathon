@@ -57,6 +57,9 @@ export interface Submission {
   creator_id: number;
   created_at: string;
   updated_at: string;
+  raw_content?: string;
+  paragraph_node_ids?: string[];
+  image_paths?: string[];
 }
 
 export async function createSubmission(
@@ -184,4 +187,27 @@ export interface CanonSummary {
 
 export async function listCanons(): Promise<CanonSummary[]> {
   return request<CanonSummary[]>("/canons");
+}
+
+export interface RuleFrictionDto {
+  rule_id: string;
+  total_flags: number;
+  overrides_and_disputes: number;
+  raw_friction: number;
+  posterior_friction: number;
+  needs_canon_revision: boolean;
+  proposed_action?: string;
+}
+
+export interface CanonFrictionResponse {
+  canon_id: string;
+  canon_version: string;
+  krippendorff_alpha: number;
+  total_findings: number;
+  rules: RuleFrictionDto[];
+  revision_recommendations: string[];
+}
+
+export async function getCanonFriction(canonId: string): Promise<CanonFrictionResponse> {
+  return request<CanonFrictionResponse>(`/canons/${canonId}/friction`);
 }

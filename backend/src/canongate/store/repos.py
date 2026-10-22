@@ -188,3 +188,15 @@ async def get_events_for_submission(
         .order_by(WorkflowEventRow.id)
     )
     return list(result.scalars().all())
+
+
+async def get_findings_for_canon(
+    session: AsyncSession, canon_id: str
+) -> list[FindingRow]:
+    """Retrieve all finding rows across all submissions governed by canon_id."""
+    result = await session.execute(
+        select(FindingRow)
+        .join(SubmissionRow, FindingRow.submission_id == SubmissionRow.id)
+        .where(SubmissionRow.canon_id == canon_id)
+    )
+    return list(result.scalars().all())

@@ -1,5 +1,10 @@
 import { useState, useEffect } from "react";
 import { useParams, useNavigate } from "react-router-dom";
+import { useEditor, EditorContent } from "@tiptap/react";
+import StarterKit from "@tiptap/starter-kit";
+import { Plugin, PluginKey } from "@tiptap/pm/state";
+import { Decoration, DecorationSet } from "@tiptap/pm/view";
+import { Extension } from "@tiptap/core";
 import {
   getSubmission,
   getFindings,
@@ -11,6 +16,23 @@ import {
   type FindingResponse,
 } from "../../api/client";
 import { useAuth } from "../auth/AuthContext";
+import { createProseMirrorFindingsPlugin } from "./FindingHighlightsExtension";
+
+const findingsPluginKey = new PluginKey("findingsHighlights");
+
+const FindingsHighlightExtension = Extension.create({
+  name: "findingsHighlights",
+  addProseMirrorPlugins() {
+    return [
+      createProseMirrorFindingsPlugin({
+        pluginKey: findingsPluginKey,
+        Decoration,
+        DecorationSet,
+        Plugin,
+      }) as Plugin,
+    ];
+  },
+});
 
 const VERDICT_LABELS: Record<string, string> = {
   "0": "PASS",
@@ -36,12 +58,44 @@ export function SubmissionDetailPage() {
   const [showAudit, setShowAudit] = useState(false);
   const [error, setError] = useState("");
   const [actionComment, setActionComment] = useState("");
+  const [selectedRowId, setSelectedRowId] = useState<number | null>(null);
 
   const subId = Number(id);
+
+  const editor = useEditor({
+    extensions: [StarterKit, FindingsHighlightExtension],
+    content: "<p>Loading document content...</p>",
+    editable: false,
+  });
 
   useEffect(() => {
     loadSubmission();
   }, [id]);
+
+  useEffect(() => {
+    if (editor && submission?.raw_content) {
+      const paragraphs = submission.raw_content
+        .split(/\n{2,}/)
+        .filter((b) => b.trim().length > 0);
+      const html =
+        paragraphs.length > 0
+          ? paragraphs.map((p) => `<p>${p}</p>`).join("")
+          : "<p><em>(Empty document)</em></p>";
+      editor.commands.setContent(html);
+    }
+  }, [editor, submission?.raw_content]);
+
+  useEffect(() => {
+    if (!editor || !submission) return;
+    const { view } = editor;
+    const tr = view.state.tr;
+    tr.setMeta(findingsPluginKey, {
+      findings,
+      paragraphNodeIds: submission.paragraph_node_ids || [],
+      selectedRowId,
+    });
+    view.dispatch(tr);
+  }, [editor, findings, submission?.paragraph_node_ids, selectedRowId]);
 
   async function loadSubmission() {
     try {
@@ -205,6 +259,19 @@ export function SubmissionDetailPage() {
         </button>
       </div>
 
+      {/* Interactive ProseMirror Document Viewer with Inline Findings */}
+      <section className="editor-section">
+        <div className="section-header">
+          <h2>📄 Document Content (Interactive Governance View)</h2>
+          <span className="editor-subtext">
+            Inline highlights indicate policy violations directly on the text (click a finding below to highlight)
+          </span>
+        </div>
+        <div className="editor-container">
+          <EditorContent editor={editor} />
+        </div>
+      </section>
+
       {/* Findings list */}
       <section className="findings-section">
         <h2>Findings ({findings.length})</h2>
@@ -217,7 +284,12 @@ export function SubmissionDetailPage() {
             return (
               <div
                 key={f.row_id}
-                className={`finding-card ${f.resolution !== "open" ? "resolved" : ""}`}
+                className={`finding-card ${f.resolution !== "open" ? "resolved" : ""} ${selectedRowId === f.row_id ? "selected" : ""}`}
+                onClick={() => setSelectedRowId(f.row_id)}
+                style={{
+                  cursor: "pointer",
+                  border: selectedRowId === f.row_id ? "1px solid var(--accent-indigo)" : undefined,
+                }}
               >
                 <div className="finding-header">
                   <span

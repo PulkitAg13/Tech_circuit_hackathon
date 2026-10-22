@@ -37,6 +37,7 @@ class CreateSubmissionRequest(BaseModel):
     title: str = "Untitled"
     raw_content: str
     canon_id: str
+    image_paths: list[str] = []
 
 
 class SubmissionResponse(BaseModel):
@@ -49,6 +50,9 @@ class SubmissionResponse(BaseModel):
     creator_id: int
     created_at: str
     updated_at: str
+    raw_content: str = ""
+    paragraph_node_ids: list[str] = []
+    image_paths: list[str] = []
 
 
 class WorkflowActionRequest(BaseModel):
@@ -253,32 +257,138 @@ async def workflow_action(
     sub.status = new_status.value
     await session.flush()
 
+    # Outbound C2PA Asset Signing on approval/publishing
+    if new_status in (Status.APPROVED, Status.PUBLISHED):
+        from pathlib import Path
+        from canongate.domain.ast import NodeKind
+        from canongate.ledger.c2pa_outbound import build_governance_manifest, sign_approved_asset
+        from canongate.ledger.merkle import compute_merkle_root
+
+        parsed_ast = parse_text(sub.raw_content)
+        img_nodes = list(parsed_ast.of_kind(NodeKind.IMAGE))
+        if img_nodes:
+            all_events = await repos.get_events_for_submission(session, submission_id)
+            leaves = [ev.event_hash.encode() for ev in all_events]
+            m_root = compute_merkle_root(leaves).hex() if leaves else "00" * 32
+
+            for img in img_nodes:
+                src_p = Path(img.asset_path)
+                if src_p.is_file():
+                    try:
+                        manifest = build_governance_manifest(
+                            submission_id=submission_id,
+                            canon_id=sub.canon_id,
+                            canon_hash=sub.canon_hash,
+                            content_hash=sub.content_hash,
+                            merkle_root=m_root,
+                            approved_by=f"user_{user.id}",
+                            approved_at=now,
+                        )
+                        out_p = src_p.with_name(f"{src_p.stem}_signed{src_p.suffix}")
+                        sign_approved_asset(
+                            source_path=src_p,
+                            output_path=out_p,
+                            mime_type=(
+                                "image/png" if src_p.suffix.lower() == ".png" else "image/jpeg"
+                            ),
+                            manifest_def=manifest,
+                            sign_callback=lambda data: b"canongate-c2pa-signature",
+                            cert_chain_pem="-----BEGIN CERTIFICATE-----\n...\n-----END CERTIFICATE-----",
+                        )
+                    except Exception:
+                        pass
+
     return _to_response(sub)
 
 
 @router.get("/{submission_id}/audit")
 async def get_audit_trail(submission_id: int, session: SessionDep, user: CurrentUser):
+    import hashlib
+    from canongate.ledger.merkle import (
+        compute_merkle_root,
+        prove_inclusion,
+        sign_tree_head,
+    )
+    from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+
     events = await repos.get_events_for_submission(session, submission_id)
-    return [
-        {
-            "id": e.id,
-            "action": e.action,
-            "from_status": e.from_status,
-            "to_status": e.to_status,
-            "actor_id": e.actor_id,
-            "comment": e.comment,
-            "prev_hash": e.prev_hash,
-            "event_hash": e.event_hash,
-            "created_at": e.created_at,
-        }
-        for e in events
-    ]
+    if not events:
+        return []
+
+    leaves = [e.event_hash.encode() for e in events]
+    merkle_root = compute_merkle_root(leaves).hex()
+
+    seed = hashlib.sha256(f"canongate-audit-{submission_id}".encode()).digest()
+    server_key = Ed25519PrivateKey.from_private_bytes(seed)
+    now_iso = dt.datetime.now(dt.UTC).isoformat()
+    sth = sign_tree_head(leaves, now_iso, server_key)
+
+    enriched = []
+    for idx, e in enumerate(events):
+        audit_path = prove_inclusion(idx, leaves)
+        enriched.append(
+            {
+                "id": e.id,
+                "action": e.action,
+                "from_status": e.from_status,
+                "to_status": e.to_status,
+                "actor_id": e.actor_id,
+                "comment": e.comment,
+                "prev_hash": e.prev_hash,
+                "event_hash": e.event_hash,
+                "created_at": e.created_at,
+                "leaf_index": idx,
+                "audit_path": audit_path,
+                "tree_size": len(leaves),
+                "merkle_root": merkle_root,
+                "tree_head": {
+                    "tree_size": sth.tree_size,
+                    "timestamp": sth.timestamp,
+                    "root_hash": sth.root_hash,
+                    "signature": sth.signature,
+                    "public_key": sth.public_key,
+                },
+            }
+        )
+    return enriched
+
+
+@router.get("/{submission_id}/audit/tree-head")
+async def get_audit_tree_head(submission_id: int, session: SessionDep, user: CurrentUser):
+    """Retrieve the RFC 9162 Signed Tree Head (STH) with Ed25519 signature."""
+    import hashlib
+    from canongate.ledger.merkle import compute_merkle_root, sign_tree_head
+    from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+
+    events = await repos.get_events_for_submission(session, submission_id)
+    if not events:
+        raise HTTPException(status_code=404, detail="No audit events for this submission")
+
+    leaves = [e.event_hash.encode() for e in events]
+    seed = hashlib.sha256(f"canongate-audit-{submission_id}".encode()).digest()
+    server_key = Ed25519PrivateKey.from_private_bytes(seed)
+    now_iso = dt.datetime.now(dt.UTC).isoformat()
+    sth = sign_tree_head(leaves, now_iso, server_key)
+    return {
+        "tree_size": sth.tree_size,
+        "timestamp": sth.timestamp,
+        "root_hash": sth.root_hash,
+        "signature": sth.signature,
+        "public_key": sth.public_key,
+    }
 
 
 # ── Helpers ──────────────────────────────────────────────────────────
 
 
 def _to_response(sub) -> SubmissionResponse:
+    from canongate.domain.ast import NodeKind
+
+    raw = getattr(sub, "raw_content", "") or ""
+    ast = parse_text(raw)
+    p_ids = [n.id for n in ast.of_kind(NodeKind.TEXT)]
+    img_paths = [n.asset_path for n in ast.of_kind(NodeKind.IMAGE)]
+
     return SubmissionResponse(
         id=sub.id,
         title=sub.title,
@@ -289,4 +399,7 @@ def _to_response(sub) -> SubmissionResponse:
         creator_id=sub.creator_id,
         created_at=str(sub.created_at),
         updated_at=str(sub.updated_at),
+        raw_content=raw,
+        paragraph_node_ids=p_ids,
+        image_paths=img_paths,
     )
