@@ -8,7 +8,7 @@ Standard `opencv-python` (v4.11+) does NOT compile `cv2.saliency`
 (`StaticSaliencyFineGrained` lives exclusively in `opencv-contrib-python`).
 This module implements the exact Montabone & Soto (2010) multi-scale
 center-surround integral-image algorithm via SIMD-accelerated `cv2.boxFilter`
-as a built-in fallback whenever `cv2.saliency` is absent.
+and `cv2.absdiff` as a built-in fallback whenever `cv2.saliency` is absent.
 """
 
 from __future__ import annotations
@@ -32,6 +32,10 @@ def compute_fine_grained_saliency(gray_img: np.ndarray) -> np.ndarray:
     Uses `cv2.saliency.StaticSaliencyFineGrained_create()` when `opencv-contrib`
     is present, and falls back to the exact 6-scale integral box-filter
     center-surround difference when running on standard `opencv-python`.
+
+    Optimization: uses the exact algebraic identity
+      max(0, I - S) + max(0, S - I) == |I - S| == cv2.absdiff(I, S)
+    to eliminate double accumulation buffers and temporary positive-part arrays.
     """
     if gray_img.ndim == 3:
         gray_img = cv2.cvtColor(gray_img, cv2.COLOR_RGB2GRAY)
@@ -48,11 +52,9 @@ def compute_fine_grained_saliency(gray_img: np.ndarray) -> np.ndarray:
     h, w = img_f.shape
     base_sigma = max(1, min(h, w) // 64)
     # Six octave-spaced surround radii (Montabone & Soto, 2010)
-    scales = [int(round(base_sigma * f)) for f in (2.0, 2.828, 4.0, 5.657, 8.0, 11.314)]
+    scales = tuple(int(round(base_sigma * f)) for f in (2.0, 2.828, 4.0, 5.657, 8.0, 11.314))
 
-    on_center = np.zeros_like(img_f, dtype=np.float32)
-    off_center = np.zeros_like(img_f, dtype=np.float32)
-
+    combined = np.zeros_like(img_f, dtype=np.float32)
     for r in scales:
         ksize = (2 * r + 1, 2 * r + 1)
         surround = cv2.boxFilter(
@@ -62,12 +64,22 @@ def compute_fine_grained_saliency(gray_img: np.ndarray) -> np.ndarray:
             normalize=True,
             borderType=cv2.BORDER_REPLICATE,
         )
-        on_center += np.maximum(0.0, img_f - surround)
-        off_center += np.maximum(0.0, surround - img_f)
+        combined += cv2.absdiff(img_f, surround)
 
-    combined = (on_center + off_center) / float(2 * len(scales))
+    combined /= float(2 * len(scales))
     max_val = float(combined.max())
     return combined / max_val if max_val > 1e-6 else combined
+
+
+def _load_grayscale_composited(path: Path) -> np.ndarray:
+    """Load an image as 8-bit grayscale, compositing RGBA alpha over white."""
+    with Image.open(path) as im:
+        if im.mode in ("RGBA", "LA") or (im.mode == "P" and "transparency" in im.info):
+            rgba = im.convert("RGBA")
+            bg = Image.new("RGBA", rgba.size, (255, 255, 255, 255))
+            composited = Image.alpha_composite(bg, rgba).convert("L")
+            return np.asarray(composited, dtype=np.uint8)
+        return np.asarray(im.convert("L"), dtype=np.uint8)
 
 
 class VisualSubordinationCheck(Check):
@@ -82,9 +94,7 @@ class VisualSubordinationCheck(Check):
         if not path.exists():
             return []
 
-        with Image.open(path) as im:
-            gray_img = np.asarray(im.convert("L"), dtype=np.uint8)
-
+        gray_img = _load_grayscale_composited(path)
         h, w = gray_img.shape
         if h < 32 or w < 32:
             return []
@@ -110,7 +120,9 @@ class VisualSubordinationCheck(Check):
         rule_ref = Rule(
             rule_id="asci-visual-subordination",
             rule_type="visual",
-            source_text="Disclaimers must not be visually subordinated (< 25% of headline saliency)",
+            source_text=(
+                "Disclaimers must not be visually subordinated (< 25% of headline saliency)"
+            ),
         )
         return [
             self.finding(

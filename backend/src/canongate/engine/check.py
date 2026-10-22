@@ -54,6 +54,20 @@ class Check(_RegistryMixin, abc.ABC):
     def accepts(cls, node: Node) -> bool:
         return NodeKind(node.kind) in cls.node_kinds
 
+    def __call__(self, node: Node, canon: Canon) -> list[Finding]:
+        """Allow invoking a check instance directly as `check(node, canon)`."""
+        if not self.accepts(node):
+            return []
+        return self.run(node, canon)
+
+    def __eq__(self, other: object) -> bool:
+        if not isinstance(other, Check):
+            return NotImplemented
+        return (self.check_id, self.check_version) == (other.check_id, other.check_version)
+
+    def __hash__(self) -> int:
+        return hash((self.check_id, self.check_version))
+
     # ── Convenience helpers for check authors ────────────────────────
 
     def finding(

@@ -18,9 +18,10 @@ Security properties:
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 import hashlib
 import json
+from collections.abc import Iterator, Sequence
+from dataclasses import dataclass
 
 from cryptography.exceptions import InvalidSignature
 from cryptography.hazmat.primitives import serialization
@@ -48,46 +49,70 @@ def hash_children(left: bytes, right: bytes) -> bytes:
 
 
 def _largest_power_of_two_less_than(n: int) -> int:
-    """Return the largest power of 2 strictly less than n (for n >= 2)."""
-    k = 1
-    while (k << 1) < n:
-        k <<= 1
-    return k
+    """Return the largest power of 2 strictly less than n (for n >= 2) in O(1) time."""
+    return 1 << ((n - 1).bit_length() - 1)
 
 
 def _is_exact_power_of_two(n: int) -> bool:
     return n > 0 and (n & (n - 1)) == 0
 
 
-def compute_merkle_root(leaves: list[bytes]) -> bytes:
-    """Compute the RFC 9162 Merkle Tree Hash (MTH) for `leaves`."""
-    n = len(leaves)
+def _mth_range(
+    leaves: Sequence[bytes],
+    lo: int,
+    hi: int,
+    memo: dict[tuple[int, int], bytes] | None = None,
+) -> bytes:
+    """Compute RFC 9162 MTH over `leaves[lo:hi]` without list-slice allocations."""
+    if memo is not None and (lo, hi) in memo:
+        return memo[(lo, hi)]
+    n = hi - lo
     if n == 0:
-        return _sha256(b"")
-    if n == 1:
-        return hash_leaf(leaves[0])
-    k = _largest_power_of_two_less_than(n)
-    return hash_children(
-        compute_merkle_root(leaves[:k]),
-        compute_merkle_root(leaves[k:]),
-    )
+        res = _sha256(b"")
+    elif n == 1:
+        res = hash_leaf(leaves[lo])
+    else:
+        k = _largest_power_of_two_less_than(n)
+        left = _mth_range(leaves, lo, lo + k, memo)
+        right = _mth_range(leaves, lo + k, hi, memo)
+        res = hash_children(left, right)
+    if memo is not None:
+        memo[(lo, hi)] = res
+    return res
 
 
-def prove_inclusion(m: int, leaves: list[bytes]) -> list[str]:
-    """RFC 9162 §2.1.3.1: Generate O(log n) hex audit path for leaf index `m`."""
-    n = len(leaves)
-    if not (0 <= m < n):
-        raise IndexError(f"Leaf index {m} out of range for tree of size {n}")
+def compute_merkle_root(leaves: Sequence[bytes]) -> bytes:
+    """Compute the RFC 9162 Merkle Tree Hash (MTH) for `leaves`."""
+    return _mth_range(leaves, 0, len(leaves))
+
+
+def _prove_inclusion_range(
+    m: int,
+    leaves: Sequence[bytes],
+    lo: int,
+    hi: int,
+    memo: dict[tuple[int, int], bytes],
+) -> list[str]:
+    n = hi - lo
     if n == 1:
         return []
     k = _largest_power_of_two_less_than(n)
     if m < k:
-        path = prove_inclusion(m, leaves[:k])
-        path.append(compute_merkle_root(leaves[k:]).hex())
+        path = _prove_inclusion_range(m, leaves, lo, lo + k, memo)
+        path.append(_mth_range(leaves, lo + k, hi, memo).hex())
         return path
-    path = prove_inclusion(m - k, leaves[k:])
-    path.append(compute_merkle_root(leaves[:k]).hex())
+    path = _prove_inclusion_range(m - k, leaves, lo + k, hi, memo)
+    path.append(_mth_range(leaves, lo, lo + k, memo).hex())
     return path
+
+
+def prove_inclusion(m: int, leaves: Sequence[bytes]) -> list[str]:
+    """RFC 9162 §2.1.3.1: Generate O(log n) hex audit path for leaf index `m`."""
+    n = len(leaves)
+    if not (0 <= m < n):
+        raise IndexError(f"Leaf index {m} out of range for tree of size {n}")
+    memo: dict[tuple[int, int], bytes] = {}
+    return _prove_inclusion_range(m, leaves, 0, n, memo)
 
 
 def verify_inclusion(
@@ -95,7 +120,7 @@ def verify_inclusion(
     leaf_index: int,
     tree_size: int,
     root_hash_hex: str,
-    audit_path_hex: list[str],
+    audit_path_hex: Sequence[str],
 ) -> bool:
     """RFC 9162 §2.1.3.2: Verify a Merkle inclusion proof in O(log n) time."""
     if not (0 <= leaf_index < tree_size):
@@ -125,28 +150,36 @@ def verify_inclusion(
     return sn == 0 and r.hex() == root_hash_hex
 
 
-def _subproof(m: int, leaves: list[bytes], complete: bool) -> list[bytes]:
-    n = len(leaves)
+def _subproof_range(
+    m: int,
+    leaves: Sequence[bytes],
+    lo: int,
+    hi: int,
+    complete: bool,
+    memo: dict[tuple[int, int], bytes],
+) -> list[bytes]:
+    n = hi - lo
     if m == n:
-        return [] if complete else [compute_merkle_root(leaves)]
+        return [] if complete else [_mth_range(leaves, lo, hi, memo)]
     k = _largest_power_of_two_less_than(n)
     if m <= k:
-        path = _subproof(m, leaves[:k], complete)
-        path.append(compute_merkle_root(leaves[k:]))
+        path = _subproof_range(m, leaves, lo, lo + k, complete, memo)
+        path.append(_mth_range(leaves, lo + k, hi, memo))
         return path
-    path = _subproof(m - k, leaves[k:], False)
-    path.append(compute_merkle_root(leaves[:k]))
+    path = _subproof_range(m - k, leaves, lo + k, hi, False, memo)
+    path.append(_mth_range(leaves, lo, lo + k, memo))
     return path
 
 
-def prove_consistency(first_size: int, leaves: list[bytes]) -> list[str]:
+def prove_consistency(first_size: int, leaves: Sequence[bytes]) -> list[str]:
     """RFC 9162 §2.1.4.1: Prove that tree state `first_size` is a prefix of `leaves`."""
     n = len(leaves)
     if not (0 <= first_size <= n):
         raise ValueError(f"Invalid first_size {first_size} for tree size {n}")
     if first_size == 0 or first_size == n:
         return []
-    return [h.hex() for h in _subproof(first_size, leaves, True)]
+    memo: dict[tuple[int, int], bytes] = {}
+    return [h.hex() for h in _subproof_range(first_size, leaves, 0, n, True, memo)]
 
 
 def verify_consistency(
@@ -154,7 +187,7 @@ def verify_consistency(
     second_size: int,
     first_hash_hex: str,
     second_hash_hex: str,
-    consistency_path_hex: list[str],
+    consistency_path_hex: Sequence[str],
 ) -> bool:
     """RFC 9162 §2.1.4.2: Verify consistency between two Merkle Tree Heads.
 
@@ -223,9 +256,12 @@ class SignedTreeHead:
         }
         return json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
 
+    def verify(self) -> bool:
+        return verify_tree_head(self)
+
 
 def sign_tree_head(
-    leaves: list[bytes],
+    leaves: Sequence[bytes],
     timestamp: str,
     private_key: Ed25519PrivateKey,
 ) -> SignedTreeHead:
@@ -261,3 +297,64 @@ def verify_tree_head(sth: SignedTreeHead) -> bool:
         return True
     except (ValueError, InvalidSignature):
         return False
+
+
+class MerkleTree:
+    """Immutable RFC 9162 Merkle Tree with memoized subtree hashes and Pythonic dunders."""
+
+    __slots__ = ("_leaves", "_memo")
+
+    def __init__(self, leaves: Sequence[bytes] = ()) -> None:
+        self._leaves: tuple[bytes, ...] = tuple(leaves)
+        self._memo: dict[tuple[int, int], bytes] = {}
+
+    @property
+    def root(self) -> bytes:
+        return _mth_range(self._leaves, 0, len(self._leaves), self._memo)
+
+    @property
+    def root_hex(self) -> str:
+        return self.root.hex()
+
+    def __len__(self) -> int:
+        return len(self._leaves)
+
+    def __bool__(self) -> bool:
+        return len(self._leaves) > 0
+
+    def __iter__(self) -> Iterator[bytes]:
+        return iter(self._leaves)
+
+    def __getitem__(self, idx: int) -> bytes:
+        return self._leaves[idx]
+
+    def __contains__(self, leaf: object) -> bool:
+        return leaf in self._leaves
+
+    def __eq__(self, other: object) -> bool:
+        if not isinstance(other, MerkleTree):
+            return NotImplemented
+        return len(self) == len(other) and self.root == other.root
+
+    def __repr__(self) -> str:
+        return f"MerkleTree(size={len(self)}, root={self.root_hex[:12]}...)"
+
+    def prove_inclusion(self, index: int) -> list[str]:
+        n = len(self._leaves)
+        if not (0 <= index < n):
+            raise IndexError(f"Leaf index {index} out of range for tree of size {n}")
+        return _prove_inclusion_range(index, self._leaves, 0, n, self._memo)
+
+    def prove_consistency(self, first_size: int) -> list[str]:
+        n = len(self._leaves)
+        if not (0 <= first_size <= n):
+            raise ValueError(f"Invalid first_size {first_size} for tree size {n}")
+        if first_size == 0 or first_size == n:
+            return []
+        return [
+            h.hex()
+            for h in _subproof_range(first_size, self._leaves, 0, n, True, self._memo)
+        ]
+
+    def sign_head(self, timestamp: str, private_key: Ed25519PrivateKey) -> SignedTreeHead:
+        return sign_tree_head(self._leaves, timestamp, private_key)

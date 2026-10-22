@@ -11,7 +11,7 @@ git pull --rebase origin main   # always do this first
 ```bash
 # Backend
 cd backend && uv sync                      # install deps
-cd backend && uv run pytest -q             # run tests (44 must pass)
+cd backend && uv run pytest -q             # run tests (must pass)
 cd backend && uv run ruff check src/ tests/ # lint
 cd backend && uv run ruff format src/ tests/ # format
 cd backend && uv run import-linter lint    # import contracts (3 must pass)
@@ -33,7 +33,7 @@ backend/src/canongate/
   parsers/   # Content → ContentAST. Imports domain only.
   canon/     # YAML → Canon loader.
   store/     # SQLAlchemy tables + async repos. Imports domain + settings.
-  ledger/    # Hash-chained audit log.
+  ledger/    # Hash-chained audit log, RFC 9162 Merkle tree, friction, C2PA.
   api/       # FastAPI app + routes. The only module that imports everything.
   settings.py
 canons/      # YAML brand rule files
@@ -51,11 +51,11 @@ parsers → domain. store → domain + settings. api → everything.
 
 Create `backend/src/canongate/checks/my_check.py`:
 ```python
-from canongate.engine.check import Check
-from canongate.domain.ast import Node, NodeKind
-from canongate.domain.canon import Canon
-from canongate.domain.finding import Finding
 from typing import ClassVar
+from canongate.domain.ast import Node, NodeKind
+from canongate.domain.canon import Canon, Rule
+from canongate.domain.finding import Finding, Span, TermMatch
+from canongate.engine.check import Check
 
 class MyCheck(Check):
     check_id: ClassVar[str] = "my_domain.my_check"
@@ -64,7 +64,16 @@ class MyCheck(Check):
 
     def run(self, node: Node, canon: Canon) -> list[Finding]:
         # Use self.finding() helper to avoid boilerplate:
-        # return [self.finding(node=node, locator_key="...", message="...", severity=60)]
+        # return [
+        #     self.finding(
+        #         node=node,
+        #         locator=Span(start=0, end=5),
+        #         message="...",
+        #         severity=60,
+        #         rule_ref=Rule(rule_id="r1", rule_type="term"),
+        #         evidence=TermMatch(term="bad", preferred="good"),
+        #     )
+        # ]
         return []
 ```
 No registration needed — `__init_subclass__` handles it.

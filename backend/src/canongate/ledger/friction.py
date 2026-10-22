@@ -24,6 +24,10 @@ class RuleFrictionReport:
     posterior_friction: float
     needs_canon_revision: bool
 
+    def __bool__(self) -> bool:
+        """Return True when this rule exceeds the friction revision threshold."""
+        return self.needs_canon_revision
+
 
 def compute_rule_friction(
     rule_id: str,
@@ -40,6 +44,14 @@ def compute_rule_friction(
     alpha_0 / (alpha_0 + beta_0) = 0.20 so a single overridden flag (1/1)
     does not falsely trigger a Canon v1.1 revision alert.
     """
+    if total_flags < 0 or overrides_and_disputes < 0:
+        raise ValueError("total_flags and overrides_and_disputes must be non-negative")
+    if overrides_and_disputes > total_flags:
+        raise ValueError(
+            f"overrides_and_disputes ({overrides_and_disputes}) "
+            f"cannot exceed total_flags ({total_flags})"
+        )
+
     raw = overrides_and_disputes / total_flags if total_flags > 0 else 0.0
     posterior = (alpha_0 + overrides_and_disputes) / (alpha_0 + beta_0 + total_flags)
     return RuleFrictionReport(
@@ -78,14 +90,19 @@ def krippendorff_alpha(
         return 1.0
 
     data = data[:, pairable]
+    valid_pairable = valid_mask[:, pairable]
     m_u = m_u[pairable]
-    values = np.unique(data[~np.isnan(data)])
+
+    values, inv_indices = np.unique(data[valid_pairable], return_inverse=True)
     v_count = len(values)
     if v_count <= 1:
         return 1.0
 
-    # Value-by-unit count matrix n_vu of shape (V, N_pairable)
-    n_vu = np.array([(data == v).sum(axis=0) for v in values], dtype=np.float64)
+    # Vectorized value-by-unit count matrix n_vu of shape (V, N_pairable) via np.add.at
+    n_pairable = data.shape[1]
+    n_vu = np.zeros((v_count, n_pairable), dtype=np.float64)
+    _, col_indices = np.nonzero(valid_pairable)
+    np.add.at(n_vu, (inv_indices, col_indices), 1.0)
 
     # Observed coincidence matrix O of shape (V, V):
     # O_{v, v'} = sum_u [ n_{uv} * (n_{uv'} - I(v == v')) / (m_u - 1) ]

@@ -9,8 +9,9 @@ Upstream `contentauth/c2pa-python` v0.38+ lifecycle notes:
 
 from __future__ import annotations
 
-from collections.abc import Callable
 import json
+from collections.abc import Callable
+from contextlib import nullcontext
 from pathlib import Path
 from typing import Any
 
@@ -57,6 +58,10 @@ def build_governance_manifest(
     }
 
 
+def _as_context_manager(obj: Any) -> Any:
+    return obj if hasattr(obj, "__enter__") else nullcontext(obj)
+
+
 def sign_approved_asset(
     *,
     source_path: str | Path,
@@ -78,15 +83,22 @@ def sign_approved_asset(
     dst = Path(output_path)
     alg = c2pa_module.C2paSigningAlg.ES256
 
-    with c2pa_module.Context() as ctx:
-        with c2pa_module.Signer.from_callback(
+    ctx_obj = c2pa_module.Context() if hasattr(c2pa_module, "Context") else None
+    with _as_context_manager(ctx_obj) as ctx:
+        signer_obj = c2pa_module.Signer.from_callback(
             callback=sign_callback,
             alg=alg,
             certs=cert_chain_pem,
             tsa_url=tsa_url,
-        ) as signer:
+        )
+        with _as_context_manager(signer_obj) as signer:
             # Fresh single-use Builder per signing call (closes Rust FFI handle on exit)
-            with c2pa_module.Builder(manifest_def, context=ctx) as builder:
+            builder_obj = (
+                c2pa_module.Builder(manifest_def, context=ctx)
+                if ctx is not None
+                else c2pa_module.Builder(manifest_def)
+            )
+            with _as_context_manager(builder_obj) as builder:
                 ingredient_json = json.dumps(
                     {
                         "title": src.name,

@@ -23,31 +23,85 @@ from canongate.domain.types import FindingId, NodeId
 class Span(BaseModel, frozen=True):
     """Character-level span within a TextNode, [start, end)."""
 
-    start: int
-    end: int
+    start: Annotated[int, Field(ge=0)]
+    end: Annotated[int, Field(ge=0)]
+
+    def __init__(self, **data: object) -> None:
+        super().__init__(**data)
+        if self.end < self.start:
+            raise ValueError(f"Span end ({self.end}) must be >= start ({self.start})")
 
     def __len__(self) -> int:
         return self.end - self.start
 
-    def __contains__(self, i: int) -> bool:
-        return self.start <= i < self.end
+    def __bool__(self) -> bool:
+        return self.end > self.start
+
+    def __contains__(self, item: int | Span) -> bool:
+        if isinstance(item, Span):
+            return self.start <= item.start and item.end <= self.end
+        return self.start <= item < self.end
+
+    def __lt__(self, other: Span) -> bool:
+        if not isinstance(other, Span):
+            return NotImplemented
+        return (self.start, self.end) < (other.start, other.end)
+
+    def overlaps(self, other: Span) -> bool:
+        """Return True if two non-empty spans overlap."""
+        return max(self.start, other.start) < min(self.end, other.end)
+
+    def slice(self, text: str) -> str:
+        """Extract the substring covered by this span."""
+        return text[self.start : self.end]
 
     @property
     def key(self) -> str:
         return f"s:{self.start}-{self.end}"
 
+    @property
+    def sort_key(self) -> tuple[int, int, int, int, int]:
+        return (0, self.start, self.end, 0, 0)
+
 
 class BBox(BaseModel, frozen=True):
     """Pixel-level bounding box within an ImageNode."""
 
-    x: int
-    y: int
-    w: int
-    h: int
+    x: Annotated[int, Field(ge=0)]
+    y: Annotated[int, Field(ge=0)]
+    w: Annotated[int, Field(ge=0)]
+    h: Annotated[int, Field(ge=0)]
+
+    @property
+    def area(self) -> int:
+        return self.w * self.h
+
+    def __bool__(self) -> bool:
+        return self.w > 0 and self.h > 0
+
+    def __contains__(self, item: tuple[int, int] | BBox) -> bool:
+        if isinstance(item, BBox):
+            return (
+                self.x <= item.x
+                and self.y <= item.y
+                and item.x + item.w <= self.x + self.w
+                and item.y + item.h <= self.y + self.h
+            )
+        px, py = item
+        return self.x <= px < self.x + self.w and self.y <= py < self.y + self.h
+
+    def __lt__(self, other: BBox) -> bool:
+        if not isinstance(other, BBox):
+            return NotImplemented
+        return (self.y, self.x, self.w, self.h) < (other.y, other.x, other.w, other.h)
 
     @property
     def key(self) -> str:
         return f"b:{self.x},{self.y},{self.w},{self.h}"
+
+    @property
+    def sort_key(self) -> tuple[int, int, int, int, int]:
+        return (1, self.y, self.x, self.w, self.h)
 
 
 Locator = Span | BBox
@@ -255,3 +309,26 @@ class Finding(BaseModel, frozen=True):
     @property
     def verdict(self) -> Verdict:
         return Verdict.from_severity(self.severity)
+
+    @property
+    def is_blocker(self) -> bool:
+        return self.verdict == Verdict.BLOCKER
+
+    @property
+    def is_warning(self) -> bool:
+        return self.verdict == Verdict.WARNING
+
+    def __lt__(self, other: Finding) -> bool:
+        if not isinstance(other, Finding):
+            return NotImplemented
+        return (
+            self.locator.sort_key,
+            -self.severity,
+            self.check_id,
+            str(self.id),
+        ) < (
+            other.locator.sort_key,
+            -other.severity,
+            other.check_id,
+            str(other.id),
+        )
