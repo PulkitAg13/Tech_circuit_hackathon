@@ -1,0 +1,78 @@
+[project]
+name = "canongate"
+version = "0.1.0"
+description = "Pre-publication brand & claim governance platform"
+requires-python = ">=3.12"
+dependencies = [
+    "fastapi>=0.115.0",
+    "uvicorn[standard]>=0.30.0",
+    "pydantic>=2.9",
+    "pydantic-settings>=2.5",
+    "sqlalchemy[asyncio]>=2.0.36",
+    "aiosqlite>=0.20.0",
+    "pyjwt>=2.9",
+    "python-multipart>=0.0.12",
+    "scikit-image>=0.24",
+    "pyyaml>=6.0",
+    "sse-starlette>=2.1",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.3",
+    "pytest-asyncio>=0.24",
+    "httpx>=0.27",
+    "ruff>=0.8",
+    "pyright>=1.1",
+    "import-linter>=2.1",
+    "syrupy>=4.7",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/canongate"]
+
+[tool.ruff]
+target-version = "py312"
+line-length = 100
+src = ["src"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM", "RUF"]
+
+[tool.pyright]
+pythonVersion = "3.12"
+typeCheckingMode = "standard"
+venvPath = "."
+venv = ".venv"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "--import-mode=importlib -q"
+
+[tool.pytest-asyncio]
+mode = "auto"
+
+[tool.importlinter]
+root_packages = ["canongate"]
+
+[[tool.importlinter.contracts]]
+name = "domain must not import internal modules"
+type = "forbidden"
+source_modules = ["canongate.domain"]
+forbidden_modules = ["canongate.engine", "canongate.checks", "canongate.parsers", "canongate.store", "canongate.api", "canongate.ledger"]
+
+[[tool.importlinter.contracts]]
+name = "checks must not import store or api"
+type = "forbidden"
+source_modules = ["canongate.checks"]
+forbidden_modules = ["canongate.store", "canongate.api", "canongate.ledger"]
+
+[[tool.importlinter.contracts]]
+name = "engine must not import store or api"
+type = "forbidden"
+source_modules = ["canongate.engine"]
+forbidden_modules = ["canongate.store", "canongate.api", "canongate.ledger"]

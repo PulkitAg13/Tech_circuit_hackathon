@@ -1,0 +1,29 @@
+# Golden test fixture: a content bundle that should trigger known findings.
+# Used in snapshot tests to catch regressions.
+
+title: "Acme Product Launch — Draft"
+
+content: |
+  Introducing our cheap new product line! We believe our cutting-edge technology
+  will revolutionize the industry.
+
+  Buy now and join thousands of happy users who trust Acme Corp.
+
+  Acme Corp was founded in 2018 and has grown to serve millions worldwide.
+
+expected_findings:
+  - check_id: terminology.banned
+    term: cheap
+    preferred: affordable
+
+  - check_id: terminology.banned
+    term: cutting-edge
+    preferred: innovative
+
+  - check_id: terminology.banned
+    term: Buy
+    preferred: purchase
+
+  - check_id: terminology.banned
+    term: users
+    preferred: customers

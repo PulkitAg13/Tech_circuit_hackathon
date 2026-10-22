@@ -1,0 +1,55 @@
+# CanonGate Demo Canon — "Acme Corp" brand rules
+# Used for golden tests and the walking skeleton demo.
+
+id: acme-corp
+version: "1.0"
+
+terminology:
+  - id: term-cheap
+    pattern_text: cheap
+    preferred: affordable
+    severity: 60
+    note: "Brand voice: never use 'cheap' — it implies low quality."
+
+  - id: term-buy
+    pattern_text: buy
+    preferred: purchase
+    severity: 40
+    note: "Formal tone: use 'purchase' instead of 'buy'."
+
+  - id: term-users
+    pattern_text: users
+    preferred: customers
+    severity: 50
+    note: "We serve customers, not users."
+
+  - id: term-cutting-edge
+    pattern_text: cutting-edge
+    preferred: innovative
+    severity: 30
+    note: "Avoid cliché buzzwords."
+
+palette:
+  - id: color-primary
+    hex: "#1A73E8"
+    name: Primary Blue
+    max_delta_e: 3.0
+
+  - id: color-accent
+    hex: "#EA4335"
+    name: Accent Red
+    max_delta_e: 5.0
+
+  - id: color-dark
+    hex: "#202124"
+    name: Dark Gray
+    max_delta_e: 2.0
+
+facts:
+  - id: fact-founding
+    text: "Acme Corp was founded in 2020."
+    conditions: []
+
+  - id: fact-employees
+    text: "Acme Corp has over 500 employees."
+    conditions: ["as of Q3 2025"]

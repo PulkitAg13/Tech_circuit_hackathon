@@ -1,0 +1,14 @@
+# CanonGate
+*.db
+__pycache__/
+*.pyc
+.venv/
+.env
+dist/
+node_modules/
+.ruff_cache/
+.pytest_cache/
+.pyright/
+.import_linter_cache/
+*.egg-info/
+.DS_Store
