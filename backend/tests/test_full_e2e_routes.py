@@ -101,10 +101,15 @@ def _ensure_route_runtime_shims() -> None:
                 _load()
                 return list(cache.keys())
 
+            def register_canon(c: Any, *, persist_yaml: bool = False) -> None:
+                _load()
+                cache[c.id] = c
+
             deps_mod.CurrentUser = Any  # type: ignore[attr-defined]
             deps_mod.SessionDep = Any  # type: ignore[attr-defined]
             deps_mod.get_canon = get_canon  # type: ignore[attr-defined]
             deps_mod.list_canon_ids = list_canon_ids  # type: ignore[attr-defined]
+            deps_mod.register_canon = register_canon  # type: ignore[attr-defined]
             sys.modules["canongate.api.deps"] = deps_mod
 
     if "canongate.store.repos" not in sys.modules:
@@ -1166,7 +1171,9 @@ class TestFullEndToEndRoutes(unittest.TestCase):
 
         # ── Fix #6: Multimodal Bundle Attachment Ingestion (.html + .png base64) ──
         html_b64 = base64.b64encode(
-            b"<html><body><h1>Instant loans charge 0% processing fee today!</h1></body></html>"
+            b"<html><body><h1>Instant loans charge 0% processing fee today!</h1>"
+            b"<div style='display:none'>Undisclosed hidden processing fee clause</div>"
+            b"</body></html>"
         ).decode("ascii")
         merged_raw, att_imgs = subs_route._ingest_bundle_attachments(
             "",
@@ -1174,6 +1181,9 @@ class TestFullEndToEndRoutes(unittest.TestCase):
             [subs_route.BundleAttachmentDto(filename="landing.html", content_base64=html_b64)],
         )
         self.assertIn("Instant loans charge 0% processing fee today!", merged_raw)
+        self.assertIn("[HIDDEN_BLOCK] Undisclosed hidden processing fee clause", merged_raw)
+        parsed_upload_ast = subs_route._parse_submission_ast(merged_raw)
+        self.assertTrue(any("/hidden[" in n.path for n in parsed_upload_ast))
         self.assertEqual(att_imgs, [])
 
 

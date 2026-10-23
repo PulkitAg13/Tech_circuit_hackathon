@@ -10,7 +10,6 @@ import numpy as np
 from fastapi import APIRouter
 from pydantic import BaseModel
 
-from canongate import api as _api_pkg
 from canongate.api.deps import SessionDep, get_canon, list_canon_ids
 from canongate.api.routes.submissions import _parse_submission_ast
 from canongate.canon.compiler import compile_canon
@@ -170,7 +169,9 @@ async def compile_brand_canon(req: CompileCanonRequest) -> CompileCanonResponse:
         version=req.version.strip() or "1.0",
     )
 
-    deps_mod = getattr(_api_pkg, "deps", None)
+    import sys as _sys
+
+    deps_mod = _sys.modules.get("canongate.api.deps")
     if deps_mod is not None and hasattr(deps_mod, "register_canon"):
         deps_mod.register_canon(canon, persist_yaml=req.persist)
 

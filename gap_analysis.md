@@ -16,10 +16,10 @@ Think of it as: the plumbing and wiring of the house is done, but you only have 
 |-------|----------|-------------|--------|
 | `terminology.banned` — regex banned words | ✅ Built, working | ✅ Done | **DONE** |
 | `visual.palette_drift` — CIEDE2000 colour distance | ✅ Built, wired & tested | Sharma-Wu-Dalal (2005) CIEDE2000 ΔE00 drift on flat banner regions & tokens | **DONE** |
-| `claim_fact` / `claim_slot_nli` — NLI-based fact checking | ✅ Built, wired & tested | Tier 2 Predicate-Argument SlotDiff alignment & qualifier-stripping audit | **DONE** |
-| `claim_algebra` — SMT solver proofs | ✅ Built, wired & tested | Tier 1.5 SMT ₹ Lakh/Crore caps, date inequalities, stacked GST discounts | **DONE** |
+| `claim_fact` / `claim_slot_nli` — NLI-based fact checking | ✅ Built, wired & tested | Tier 2 semantic-category value alignment, `substantiation_level` (ASCI in-vitro vs clinical), 400ms timeout guard, & calibrated 0.45–0.85 Warning routing | **DONE** |
+| `claim_algebra` — SMT solver proofs | ✅ Built, wired & tested | Tier 1.5 Z3 SMT solver (`z3.Real`) + interval fallback, ₹ Lakh/Crore caps, date inequalities, & FirstCry (PIB 2171807) single/cross-node Drip Pricing | **DONE** |
 | `accessibility.contrast` — WCAG AA/AAA | ✅ Built, wired & tested | W3C WCAG 2.1 relative luminance, Otsu text fg/bg segmentation, CIELab suggested hex | **DONE** |
-| `legibility.placement` — ASCI 26px rule | ✅ Built, wired & tested | ASCI 26px / 1080p proportional disclaimer height & CCPA Hindi/English parity | **DONE** |
+| `legibility.placement` — ASCI 26px rule | ✅ Built, wired & tested | ASCI 26px / 1080p proportional disclaimer height & single/cross-node (`run_bundle`) CCPA Clause 11 Hindi/English parity | **DONE** |
 | `visual.subordination` — saliency check | ✅ Built, wired & tested | Multi-scale DoG center-surround saliency (<25% floor) | **DONE** |
 | `unicode.confusable` — TR39 homoglyphs | ✅ Built, wired & tested | UTS #39 mixed-script spoof detection & zero-width character detection | **DONE** |
 | `c2pa.inbound` — provenance verification | ✅ Built, wired & tested | c2pa manifest validator & AI provenance blocker | **DONE** |
@@ -42,9 +42,9 @@ Think of it as: the plumbing and wiring of the house is done, but you only have 
 | Feature | Skeleton | Full Feature | Status |
 |---------|----------|-------------|--------|
 | YAML loader | ✅ Working | ✅ Done | **DONE** |
-| Canon compiler (Pipeline A) | ✅ Built, wired & tested | Guards 1, 2 & 3: Value-Anchor Coverage + Verbatim Span Grounding + Bidirectional Round-Trip NLI with LCS Fuzzy Grounding | **DONE** |
+| Canon compiler (Pipeline A) | ✅ Built, wired & tested | Guard 1 Value-Anchor Audit + Guard 2 Exact/LCS Fuzzy Grounding + Guard 3 Round-Trip NLI (≥0.90) + `POST /api/canons/compile` | **DONE** |
 | Canon lint (Contradiction & Overlap Audit) | ✅ Built, wired & tested | Rule contradiction, overlap, & ungrounded pattern linting (wired to `GET /api/canons/{id}/lint`) | **DONE** |
-| Canon versioning + impact sim | ✅ Built, wired & tested | Closed-loop Friction → Canon v1.1 PR simulation for TermRules & FactClaims (wired to `POST /api/canons/{id}/propose-pr`) | **DONE** |
+| Canon versioning + impact sim | ✅ Built, wired & tested | Closed-loop Friction → Canon v1.1 PR simulation across `TermRule`, `ColorToken`, & `FactClaim` + Canon Governance Studio UI | **DONE** |
 | Starter Canons | ✅ Built, wired & tested | RBI 2025 KFS Lending Canon & ASCI/CCPA D2C Nutra Canon | **DONE** |
 
 ### Engine
@@ -73,7 +73,7 @@ Think of it as: the plumbing and wiring of the house is done, but you only have 
 | Chain verification | ✅ Working | ✅ Done | **DONE** |
 | Submission versioning (immutable revisions) | ❌ | Each save → new SubmissionVersion | **MISSING** |
 | Merkle transparency log (RFC 9162) | ✅ Built, wired & tested | O(log n) proofs, Ed25519 tree heads (STH API), memoized MerkleTree | **DONE** |
-| C2PA outbound (embed review in approved PNG) | ✅ Built, wired & tested | Real X.509 v3 certificate chain & ES256 ECDSA signatures + signed `.c2pa.json` sidecars | **DONE** |
+| C2PA outbound (embed review in approved PNG) | ✅ Built, wired & tested | `cryptography.x509` ECDSA P-256 (`ES256`) certificate generator + `c2pa-python` Builder & `.c2pa.json` cryptographic sidecar | **DONE** |
 | Standalone verifier CLI | ❌ | `canongate verify cert.json` | **MISSING** |
 | Override requires reason text | ❌ | Warnings only, stored with finding | **MISSING** |
 | Friction analytics (override rate per rule) | ✅ Built, wired & tested | Empirical Bayes Beta-Binomial + Krippendorff's α API | **DONE** |

@@ -4,11 +4,21 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from pydantic_settings import BaseSettings
+try:
+    from pydantic_settings import BaseSettings
+except ImportError:
+    from pydantic import BaseSettings  # type: ignore[no-redef]
 
 
 class Settings(BaseSettings):
     model_config = {"env_prefix": "CANONGATE_", "env_file": ".env", "extra": "ignore"}
+
+    if not hasattr(BaseSettings, "model_config"):
+
+        class Config:
+            env_prefix = "CANONGATE_"
+            env_file = ".env"
+            extra = "ignore"
 
     # Database
     db_url: str = "sqlite+aiosqlite:///./canongate.db"

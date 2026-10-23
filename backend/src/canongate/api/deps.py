@@ -25,9 +25,19 @@ _settings = Settings()
 _canon_cache: dict[str, Canon] = {}
 
 
+def _resolve_canon_dir() -> Path:
+    canon_dir = _settings.canon_dir
+    if canon_dir.exists():
+        return canon_dir
+    alt_dir = Path(__file__).resolve().parents[4] / "canons"
+    if alt_dir.exists():
+        return alt_dir
+    return canon_dir
+
+
 def _load_all_canons() -> None:
     """Scan the canons directory and cache all Canon files."""
-    canon_dir = _settings.canon_dir
+    canon_dir = _resolve_canon_dir()
     if not canon_dir.exists():
         return
     for p in canon_dir.glob("*.yaml"):
@@ -54,7 +64,7 @@ def register_canon(canon: Canon, *, persist_yaml: bool = False) -> Path | None:
         _load_all_canons()
     _canon_cache[canon.id] = canon
     if persist_yaml:
-        canon_dir = _settings.canon_dir
+        canon_dir = _resolve_canon_dir()
         canon_dir.mkdir(parents=True, exist_ok=True)
         out_path = canon_dir / f"{canon.id}.yaml"
         out_path.write_text(_canon_to_yaml(canon), encoding="utf-8")

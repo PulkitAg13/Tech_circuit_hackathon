@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, type ChangeEvent, type FormEvent } from "react";
 import { useNavigate } from "react-router-dom";
 import {
   listSubmissions,
@@ -80,7 +80,7 @@ export function DashboardPage() {
     }
   }
 
-  async function handleFileSelect(e: React.ChangeEvent<HTMLInputElement>) {
+  async function handleFileSelect(e: ChangeEvent<HTMLInputElement>) {
     const files = Array.from(e.target.files || []);
     if (files.length === 0) return;
     try {
@@ -91,7 +91,7 @@ export function DashboardPage() {
     }
   }
 
-  async function handleCreate(e: React.FormEvent) {
+  async function handleCreate(e: FormEvent) {
     e.preventDefault();
     try {
       const sub = await createSubmission(title || "Untitled", content, canonId, attachments);
@@ -127,7 +127,7 @@ export function DashboardPage() {
     }
   }
 
-  async function handleCompileCanon(e: React.FormEvent) {
+  async function handleCompileCanon(e: FormEvent) {
     e.preventDefault();
     try {
       const res = await compileCanon(compileId, compileText, "1.0", [], false);

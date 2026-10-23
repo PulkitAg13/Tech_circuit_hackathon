@@ -152,7 +152,10 @@ def _ingest_bundle_attachments(
         parsed_ast = default_bundle_parser.parse_one((safe_name, raw_bytes))
         for node in parsed_ast:
             if isinstance(node, TextNode) and node.text.strip():
-                text_blocks.append(node.text.strip())
+                if "/hidden[" in node.path:
+                    text_blocks.append(f"[HIDDEN_BLOCK] {node.text.strip()}")
+                else:
+                    text_blocks.append(node.text.strip())
             elif (
                 isinstance(node, ImageNode)
                 and node.asset_path
@@ -688,6 +691,10 @@ def _parse_submission_ast(raw: str) -> ContentAST:
     base_ast = parse_text(raw)
     expanded_nodes: list[Node] = []
     for node in base_ast:
+        if isinstance(node, TextNode) and node.text.startswith("[HIDDEN_BLOCK] "):
+            clean_txt = node.text[len("[HIDDEN_BLOCK] ") :].strip()
+            expanded_nodes.append(TextNode.from_text(clean_txt, path=f"{node.path}/hidden[0]"))
+            continue
         if isinstance(node, TextNode) and "|" in node.text and "\n" in node.text:
             tbl_ast = parse_markdown_text(node.text, source=node.path)
             if any("/table[" in n.path for n in tbl_ast):
