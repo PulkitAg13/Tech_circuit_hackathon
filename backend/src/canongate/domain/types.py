@@ -1,13 +1,74 @@
-"""Shared type aliases and small value objects used across the domain."""
+"""Shared type aliases, Pydantic v1/v2 compatibility helpers, and value objects."""
 
 from __future__ import annotations
 
 import hashlib
-from typing import NewType
+from collections.abc import Callable
+from typing import Any, NewType, TypeVar
+
+from pydantic import BaseModel
 
 NodeId = NewType("NodeId", str)
 FindingId = NewType("FindingId", str)
 CanonHash = NewType("CanonHash", str)
+
+_F = TypeVar("_F", bound=Callable[..., Any])
+
+try:
+    from pydantic import computed_field as _pydantic_computed_field  # type: ignore[attr-defined]
+
+    computed_field = _pydantic_computed_field
+except ImportError:
+
+    def computed_field(func: _F) -> _F:  # type: ignore[misc] # noqa: UP047
+        """Fallback decorator when running under Pydantic v1."""
+        return func
+
+
+try:
+    from pydantic import ConfigDict
+
+    class FrozenModel(BaseModel):
+        """Base model supporting frozen=True, model_copy, and model_dump_json
+        across Pydantic v1/v2.
+        """
+
+        model_config = ConfigDict(frozen=True)
+
+        def model_copy(self, *, update: dict[str, Any] | None = None, deep: bool = False) -> Any:
+            if hasattr(super(), "model_copy"):
+                return super().model_copy(update=update, deep=deep)  # type: ignore[misc]
+            return self.copy(update=update, deep=deep)
+
+        def model_dump(self, **kwargs: Any) -> dict[str, Any]:
+            if hasattr(super(), "model_dump"):
+                return super().model_dump(**kwargs)  # type: ignore[misc]
+            return self.dict(**kwargs)
+
+        def model_dump_json(self, **kwargs: Any) -> str:
+            if hasattr(super(), "model_dump_json"):
+                return super().model_dump_json(**kwargs)  # type: ignore[misc]
+            return self.json(**kwargs)
+
+except ImportError:
+
+    class FrozenModel(BaseModel):  # type: ignore[no-redef]
+        """Base model supporting frozen=True, model_copy, and model_dump_json
+        across Pydantic v1/v2.
+        """
+
+        class Config:
+            allow_mutation = False
+            frozen = True
+
+        def model_copy(self, *, update: dict[str, Any] | None = None, deep: bool = False) -> Any:
+            return self.copy(update=update, deep=deep)
+
+        def model_dump(self, **kwargs: Any) -> dict[str, Any]:
+            return self.dict(**kwargs)
+
+        def model_dump_json(self, **kwargs: Any) -> str:
+            return self.json(**kwargs)
 
 
 def content_hash(data: bytes) -> str:

@@ -957,6 +957,225 @@ class TestFullEndToEndRoutes(unittest.TestCase):
             subs_route._persist_scan_findings = orig_persist
             store.conn.close()
 
+    def test_six_gap_analysis_partial_items_verified_done(self) -> None:
+        asyncio.run(self._run_six_gap_analysis_fixes())
+
+    async def _run_six_gap_analysis_fixes(self) -> None:
+        import base64
+
+        from canongate.api.routes import submissions as subs_route
+        from canongate.canon.compiler import compile_canon, verify_round_trip_nli
+        from canongate.canon.impact import propose_canon_revision
+        from canongate.checks.claim_algebra import ClaimAlgebraCheck
+        from canongate.checks.claim_slot_nli import ClaimSlotNliCheck
+        from canongate.checks.legibility_placement import LegibilityPlacementCheck
+        from canongate.domain.ast import ContentAST
+        from canongate.domain.canon import Canon, FactClaim
+        from canongate.ledger.c2pa_outbound import (
+            generate_ephemeral_es256_credentials,
+            sign_approved_asset,
+        )
+        from canongate.parsers.text import parse_text
+
+        def _tnode(txt: str, idx: int = 0):
+            return parse_text(txt).nodes[0]
+
+        # ── Fix #1: ClaimSlotNliCheck multi-number, substantiation & calibrated Warning ──
+        canon_nli = Canon(
+            id="d2c-nutra",
+            version="1.0",
+            facts=(
+                FactClaim(
+                    id="fact-founded-2020",
+                    text="Acme Corp was founded in 2020",
+                    conditions=(),
+                    source="Brand Book p.2",
+                ),
+                FactClaim(
+                    id="fact-redensyl-invitro",
+                    text="Redensyl serum boosts hair growth by 23800 strands",
+                    conditions=("after 84 days of daily application",),
+                    substantiation_level="ingredient_in_vitro",
+                    subject_product="Redensyl serum",
+                    metric_value="23800",
+                    source="Lab Report 2026",
+                ),
+            ),
+        )
+        nli_check = ClaimSlotNliCheck()
+
+        # 1a. Multi-number: year 2026 + scalar 500 precede matching 2020 -> NO false positive
+        compliant_node = _tnode(
+            "In 2026, Acme Corp served 500 enterprise clients since it was founded in 2020."
+        )
+        findings_ok = nli_check.run(compliant_node, canon_nli)
+        self.assertEqual(
+            [f for f in findings_ok if f.rule_ref == "fact-founded-2020"],
+            [],
+            "Multi-number matching year 2020 must not trigger false-positive contradiction",
+        )
+
+        # 1b. Multi-number sentence with contradicted year 2018 -> Blocker finding on 2018
+        contradicted_node = _tnode(
+            "In 2026, Acme Corp served 500 enterprise clients since it was founded in 2018."
+        )
+        findings_bad = nli_check.run(contradicted_node, canon_nli)
+        self.assertEqual(len(findings_bad), 1)
+        self.assertIn("2018", findings_bad[0].message)
+
+        # 1c. ASCI FY2025-26 ingredient_in_vitro claimed as whole-product clinical proof
+        substantiation_node = _tnode(
+            "Clinically proven Redensyl serum boosts hair growth by 23800 strands "
+            "after 84 days of daily application."
+        )
+        findings_sub = nli_check.run(substantiation_node, canon_nli)
+        self.assertTrue(
+            any(
+                "Ingredient-vs-product substantiation violation" in f.message for f in findings_sub
+            ),
+            "Must flag ingredient_in_vitro claimed as whole-product clinical proof",
+        )
+
+        # 1d. Calibrated uncertainty routing (0.45 <= P < 0.85 -> Warning severity=40)
+        ClaimSlotNliCheck.set_external_scorer(lambda premise, hyp: 0.62)
+        try:
+            borderline_node = _tnode("Acme Corp was founded in 2020 and operates across India.")
+            findings_warn = await nli_check.run_async(borderline_node, canon_nli)
+            self.assertEqual(len(findings_warn), 1)
+            self.assertEqual(findings_warn[0].severity, 40)
+            self.assertIn("Partially Supported — Needs Human Review", findings_warn[0].message)
+        finally:
+            ClaimSlotNliCheck.set_external_scorer(None)
+
+        # ── Fix #2: FirstCry Drip Pricing (single & cross-node) & cross-node script parity ──
+        algebra_check = ClaimAlgebraCheck()
+        firstcry_single = _tnode(
+            "Flat 27% discount — MRP inclusive of all taxes. "
+            "*GST and Add'l charges may apply on discounted price."
+        )
+        fc_findings = algebra_check.run(firstcry_single, canon_nli)
+        self.assertTrue(any("18.24%" in f.message for f in fc_findings))
+
+        headline_node = _tnode("Mega Sale: 27% discount! MRP inclusive of all taxes.")
+        footnote_node = _tnode("*GST and Add'l charges may apply on discounted price.")
+        bundle_ast = ContentAST(nodes=(headline_node, footnote_node))
+        cross_fc = algebra_check.run_bundle(bundle_ast, canon_nli)
+        self.assertEqual(len(cross_fc), 1)
+        self.assertIn("18.24%", cross_fc[0].message)
+
+        canon_ccpa = Canon(id="ccpa-pack", version="1.0")
+        leg_check = LegibilityPlacementCheck()
+        cross_script_ast = ContentAST(
+            nodes=(
+                _tnode("Get 0% processing fee on instant personal loans today!"),
+                _tnode("अस्वीकरण: शर्तें लागू और ऋण स्वीकृति बैंक के विवेकाधिकार पर है।"),
+            )
+        )
+        script_findings = leg_check.run_bundle(cross_script_ast, canon_ccpa)
+        self.assertTrue(any("cross-node script mismatch" in f.message for f in script_findings))
+
+        # ── Fix #3: Pipeline A Guard 3 Round-Trip NLI & LCS Fuzzy Grounding ──
+        raw_guideline = (
+            "Never use 'guaranteed approval' in lending copy; use 'subject to credit check' "
+            "instead. Fact: Instant loans charge 0% processing fee only under Rs 50,000 "
+            "before 2026-12-31."
+        )
+        compiled_canon, grounded_rules = compile_canon(
+            raw_guideline,
+            canon_id="compiled-bfsi",
+            llm_extractor=lambda _txt: {
+                "terms": [
+                    {
+                        "id": "term-guar",
+                        "pattern_text": "guaranteed approval",
+                        "preferred": "subject to credit check",
+                        "source_text": (
+                            "Never use  'guaranteed approval' in lending copy; "
+                            "use 'subject to credit check' instead."
+                        ),
+                    }
+                ],
+                "facts": [
+                    {
+                        "id": "fact-loan-cap",
+                        "text": "Instant loans charge 0% processing fee",
+                        "conditions": ["only under Rs 50,000"],
+                        "promo_valid_until": "2026-12-31",
+                        "source_text": (
+                            "Instant loans charge 0% processing fee only under Rs 50,000 "
+                            "before 2026-12-31."
+                        ),
+                    }
+                ],
+            },
+        )
+        self.assertEqual(len(grounded_rules), 2)
+        for gr in grounded_rules:
+            self.assertGreaterEqual(gr.round_trip_nli_score, 0.90)
+        score_g3 = verify_round_trip_nli(
+            FactClaim(id="f-bad", text="Instant loans charge 5% processing fee", conditions=()),
+            "Instant loans charge 0% processing fee only under Rs 50,000",
+        )
+        self.assertLess(score_g3, 0.90)
+
+        # ── Fix #4: FactClaim Revision in Closed-Loop Canon v1.1 PR Generator ──
+        pr_fact = propose_canon_revision(
+            compiled_canon,
+            {"fact-loan-cap": (4, 3)},
+            override_notes={"fact-loan-cap": "Clarified tier cap in footnote"},
+        )
+        self.assertTrue(bool(pr_fact))
+        self.assertIn("fact-loan-cap", [r.rule_id for r in pr_fact.revisions])
+
+        # ── Fix #5: Real X.509 ES256 Cryptographic Signing in C2PA Outbound ──
+        from canongate.ledger.c2pa_outbound import build_governance_manifest
+
+        sign_fn, cert_pem, pub_pem = generate_ephemeral_es256_credentials()
+        self.assertIn(b"BEGIN CERTIFICATE", cert_pem)
+        self.assertIn("BEGIN PUBLIC KEY", pub_pem)
+        with tempfile.TemporaryDirectory() as tmpdir:
+            img_p = Path(tmpdir) / "promo.png"
+            from PIL import Image
+
+            Image.new("RGB", (64, 64), (15, 23, 42)).save(img_p, format="PNG")
+            out_p = Path(tmpdir) / "promo_signed.png"
+            manifest_def = build_governance_manifest(
+                submission_id=101,
+                canon_id="compiled-bfsi",
+                canon_hash="abc123456789",
+                content_hash="111222333444",
+                merkle_root="def987654321",
+                approved_by="reviewer@canongate.in",
+                approved_at="2026-10-23T00:00:00Z",
+            )
+            signed_bytes = sign_approved_asset(
+                source_path=img_p,
+                output_path=out_p,
+                mime_type="image/png",
+                manifest_def=manifest_def,
+                sign_callback=sign_fn,
+                cert_chain_pem=cert_pem,
+            )
+            self.assertTrue(out_p.exists())
+            self.assertGreater(len(signed_bytes), 0)
+            sidecar_p = out_p.with_suffix(out_p.suffix + ".c2pa.json")
+            self.assertTrue(sidecar_p.exists())
+            sidecar_data = json.loads(sidecar_p.read_text())
+            self.assertEqual(sidecar_data["signing_alg"], "ES256")
+            self.assertTrue(len(sidecar_data["signature_hex"]) > 32)
+
+        # ── Fix #6: Multimodal Bundle Attachment Ingestion (.html + .png base64) ──
+        html_b64 = base64.b64encode(
+            b"<html><body><h1>Instant loans charge 0% processing fee today!</h1></body></html>"
+        ).decode("ascii")
+        merged_raw, att_imgs = subs_route._ingest_bundle_attachments(
+            "",
+            [],
+            [subs_route.BundleAttachmentDto(filename="landing.html", content_base64=html_b64)],
+        )
+        self.assertIn("Instant loans charge 0% processing fee today!", merged_raw)
+        self.assertEqual(att_imgs, [])
+
 
 if __name__ == "__main__":
     unittest.main()

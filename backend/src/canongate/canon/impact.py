@@ -9,9 +9,9 @@ Delivers Named Improvement #1 and the remaining Canon System milestones:
      their own `max_delta_e` tolerance.
 2. **`propose_canon_revision(canon, friction_stats, override_notes)`:**
    When a rule's Empirical Bayes posterior friction exceeds `0.40` (with
-   `total_flags >= 3`), auto-drafts a bumped `Canon` (`v1.0` -> `v1.1`) that
-   clarifies/downgrades a Blocker rule or retires a noisy Warning rule,
-   producing a human-reviewable unified YAML diff.
+   `total_flags >= 3`), auto-drafts a bumped `Canon` (`v1.0` -> `v1.1`) across
+   `TermRule`, `ColorToken`, AND `FactClaim`, producing a human-reviewable
+   unified YAML diff.
 3. **`simulate_canon_impact(old_canon, new_canon, bundles, check_fn)`:**
    Re-evaluates historical `ContentAST` bundles against both `old_canon` and
    `new_canon` to quantify exact flag reduction before a Canon PR is merged.
@@ -234,6 +234,7 @@ def propose_canon_revision(
     """Draft a Canon v1.1 revision for rules whose Empirical Bayes friction exceeds `threshold`.
 
     `friction_counts` maps `rule_id -> (total_flags, overrides_and_disputes)`.
+    Handles `TermRule`, `ColorToken`, and `FactClaim` rules.
     """
     notes = override_notes or {}
     revisions: list[RuleRevisionDiff] = []
@@ -275,7 +276,6 @@ def propose_canon_revision(
                 )
             )
         else:
-            # High-friction Warning rule (< 50): retire from active terminology in v1.1
             revisions.append(
                 RuleRevisionDiff(
                     rule_id=t.id,
@@ -314,7 +314,52 @@ def propose_canon_revision(
             )
         )
 
-    new_facts: list[FactClaim] = list(canon.facts)
+    new_facts: list[FactClaim] = []
+    for f in canon.facts:
+        if f.id not in high_friction_ids:
+            new_facts.append(f)
+            continue
+
+        post = high_friction_ids[f.id]
+        reason = notes.get(
+            f.id,
+            "Reviewers approved short-form claims when linked to full KFS schedule",
+        )
+        # Relax the most frequently disputed trailing condition or record clarified scope
+        old_conds = list(f.conditions)
+        if len(old_conds) > 1:
+            updated_conds = old_conds[:-1]
+            after_desc = f"conditions={updated_conds!r} (relaxed {old_conds[-1]!r})"
+        elif len(old_conds) == 1:
+            updated_conds = []
+            after_desc = f"conditions=[] (clarified {old_conds[0]!r}: {reason})"
+        else:
+            updated_conds = [f"v1.1 scope: {reason}"]
+            after_desc = f"conditions={updated_conds!r}"
+
+        updated_fact = FactClaim(
+            id=f.id,
+            text=f.text,
+            conditions=updated_conds,
+            valid_until=f.valid_until,
+            subject_product=f.subject_product,
+            metric_value=f.metric_value,
+            comparison_operator=f.comparison_operator,
+            kfs_acceptance_validity_days=f.kfs_acceptance_validity_days,
+            substantiation_level=f.substantiation_level,
+        )
+        new_facts.append(updated_fact)
+        revisions.append(
+            RuleRevisionDiff(
+                rule_id=f.id,
+                posterior_friction=post,
+                action="clarify_fact_conditions",
+                before_summary=f"conditions={old_conds!r}",
+                after_summary=after_desc,
+                rationale=reason,
+            )
+        )
+
     revised_version = _bump_version(canon.version) if revisions else canon.version
     revised_canon = Canon(
         id=canon.id,

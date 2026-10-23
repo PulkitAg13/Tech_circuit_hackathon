@@ -1,14 +1,16 @@
-"""FastAPI dependencies: session, current user, canon loader."""
+"""FastAPI dependencies: session, current user, canon loader & registry."""
 
 from __future__ import annotations
 
 import datetime as dt
+from pathlib import Path
 from typing import Annotated
 
 import jwt
 from fastapi import Depends, Header, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from canongate.canon.impact import _canon_to_yaml
 from canongate.canon.loader import load_canon
 from canongate.domain.canon import Canon
 from canongate.settings import Settings
@@ -44,6 +46,20 @@ def get_canon(canon_id: str) -> Canon:
     if not canon:
         raise HTTPException(status_code=404, detail=f"Canon {canon_id!r} not found")
     return canon
+
+
+def register_canon(canon: Canon, *, persist_yaml: bool = False) -> Path | None:
+    """Register a compiled or revised `Canon` in the live cache and optionally write YAML."""
+    if not _canon_cache:
+        _load_all_canons()
+    _canon_cache[canon.id] = canon
+    if persist_yaml:
+        canon_dir = _settings.canon_dir
+        canon_dir.mkdir(parents=True, exist_ok=True)
+        out_path = canon_dir / f"{canon.id}.yaml"
+        out_path.write_text(_canon_to_yaml(canon), encoding="utf-8")
+        return out_path
+    return None
 
 
 def list_canon_ids() -> list[str]:

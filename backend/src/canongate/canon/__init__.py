@@ -9,6 +9,8 @@ from canongate.canon.compiler import (
     extract_restrictive_qualifiers,
     extract_value_anchors,
     ground_char_interval,
+    reconstruct_rule_prose,
+    verify_round_trip_nli,
 )
 from canongate.canon.impact import (
     CanonLintIssue,
@@ -37,5 +39,7 @@ __all__ = [
     "lint_canon",
     "load_canon",
     "propose_canon_revision",
+    "reconstruct_rule_prose",
     "simulate_canon_impact",
+    "verify_round_trip_nli",
 ]

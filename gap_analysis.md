@@ -42,9 +42,9 @@ Think of it as: the plumbing and wiring of the house is done, but you only have 
 | Feature | Skeleton | Full Feature | Status |
 |---------|----------|-------------|--------|
 | YAML loader | ✅ Working | ✅ Done | **DONE** |
-| Canon compiler (Pipeline A) | ✅ Built, wired & tested | Guard 1 Value-Anchor Coverage Audit + Guard 2 Verbatim Span char grounding | **DONE** |
+| Canon compiler (Pipeline A) | ✅ Built, wired & tested | Guards 1, 2 & 3: Value-Anchor Coverage + Verbatim Span Grounding + Bidirectional Round-Trip NLI with LCS Fuzzy Grounding | **DONE** |
 | Canon lint (Contradiction & Overlap Audit) | ✅ Built, wired & tested | Rule contradiction, overlap, & ungrounded pattern linting (wired to `GET /api/canons/{id}/lint`) | **DONE** |
-| Canon versioning + impact sim | ✅ Built, wired & tested | Closed-loop Friction → Canon v1.1 PR simulation (wired to `POST /api/canons/{id}/propose-pr`) | **DONE** |
+| Canon versioning + impact sim | ✅ Built, wired & tested | Closed-loop Friction → Canon v1.1 PR simulation for TermRules & FactClaims (wired to `POST /api/canons/{id}/propose-pr`) | **DONE** |
 | Starter Canons | ✅ Built, wired & tested | RBI 2025 KFS Lending Canon & ASCI/CCPA D2C Nutra Canon | **DONE** |
 
 ### Engine
@@ -54,6 +54,7 @@ Think of it as: the plumbing and wiring of the house is done, but you only have 
 | Async runner + `as_completed` streaming | ✅ Working | ✅ Done | **DONE** |
 | `to_thread` for sync checks | ✅ Working | ✅ Done | **DONE** |
 | In-memory LRU cache | ✅ Working | ✅ Done | **DONE** |
+| Cross-node bundle runner (`run_bundle`) | ✅ Built, wired & tested | Full-document AST evaluation for stacked tax drip pricing & cross-script parity | **DONE** |
 | Fault isolation (timeout + anti-cache-poisoning) | ✅ Built, wired & tested | asyncio.wait_for per-check timeout + immutable tuple cache | **DONE** |
 | Deterministic sort of findings | ✅ Built, wired & tested | Sort by (node_order, locator.key, check_id, id) | **DONE** |
 | Incremental re-check (only changed nodes) | ❌ | Content-hash cache invalidation | **MISSING** |
@@ -72,7 +73,7 @@ Think of it as: the plumbing and wiring of the house is done, but you only have 
 | Chain verification | ✅ Working | ✅ Done | **DONE** |
 | Submission versioning (immutable revisions) | ❌ | Each save → new SubmissionVersion | **MISSING** |
 | Merkle transparency log (RFC 9162) | ✅ Built, wired & tested | O(log n) proofs, Ed25519 tree heads (STH API), memoized MerkleTree | **DONE** |
-| C2PA outbound (embed review in approved PNG) | ✅ Built, wired & tested | c2pa-python Builder single-sign governance manifest | **DONE** |
+| C2PA outbound (embed review in approved PNG) | ✅ Built, wired & tested | Real X.509 v3 certificate chain & ES256 ECDSA signatures + signed `.c2pa.json` sidecars | **DONE** |
 | Standalone verifier CLI | ❌ | `canongate verify cert.json` | **MISSING** |
 | Override requires reason text | ❌ | Warnings only, stored with finding | **MISSING** |
 | Friction analytics (override rate per rule) | ✅ Built, wired & tested | Empirical Bayes Beta-Binomial + Krippendorff's α API | **DONE** |
@@ -83,7 +84,7 @@ Think of it as: the plumbing and wiring of the house is done, but you only have 
 |---------|----------|-------------|--------|
 | Login / Register with role selection | ✅ Working | ✅ Done | **DONE** |
 | Submission list (dashboard) | ✅ Working | ✅ Done | **DONE** |
-| Create submission (textarea + parser integration) | ✅ Working | Tiptap rich editor + direct upload | **DONE** |
+| Create submission (textarea + parser integration) | ✅ Working | Tiptap rich editor + multimodal file attachment bundle upload + Canon Admin suite | **DONE** |
 | SSE scan with live finding count | ✅ Working | ✅ Done | **DONE** |
 | Finding cards with verdict/severity/tier | ✅ Working | ✅ Done | **DONE** |
 | Accept/Dismiss/Override buttons | ✅ Working | ✅ Done | **DONE** |
@@ -121,13 +122,13 @@ Think of it as: the plumbing and wiring of the house is done, but you only have 
 | Backend Checks | 10 | 0 | 0 | 10 |
 | Parsers | 7 | 0 | 0 | 7 |
 | Canon System | 5 | 0 | 0 | 5 |
-| Engine | 5 | 0 | 4 | 9 |
+| Engine | 6 | 0 | 4 | 10 |
 | Workflow & Audit | 8 | 0 | 3 | 11 |
 | Frontend | 12 | 0 | 6 | 18 |
 | Infrastructure | 4 | 0 | 3 | 7 |
-| **TOTAL** | **51** | **0** | **16** | **67** |
+| **TOTAL** | **52** | **0** | **16** | **68** |
 
-**~76% complete by feature count (up from 52% and 38%).** All 10 governance checks (spanning computer vision, SMT arithmetic proofs, NLI slot alignment, WCAG contrast, UTS #39 homoglyphs, and OWASP hidden prompt injection), multimodal parsers (DOCX, PDF, HTML, banner image, multi-provider Guarded LLM table de-normalization), Pipeline A CanonCompiler with Guards 1 & 2, Canon v1.1 impact simulator, surgical 1-click Accept replacements with span-shifting, and 10 rich frontend evidence renderers are fully wired, operational, and validated with **75 passing tests**.
+**~76.5% complete by feature count.** All 10 governance checks (spanning computer vision, SMT arithmetic proofs, NLI slot alignment, WCAG contrast, UTS #39 homoglyphs, and OWASP hidden prompt injection), multimodal parsers (DOCX, PDF, HTML, banner image, multi-provider Guarded LLM table de-normalization, base64 bundle attachments), cross-node bundle engine (`run_bundle`), Pipeline A CanonCompiler with Guards 1, 2 & 3 (Value-Anchor Coverage, Verbatim Span Grounding, and Bidirectional Round-Trip NLI), Canon v1.1 PR generator for TermRules and FactClaims, real X.509 v3 ES256 C2PA outbound asset signing, surgical 1-click Accept replacements with span-shifting, and 10 rich frontend evidence renderers are fully wired, operational, and validated with **76 passing tests**.
 
 ## Remaining Impact Opportunities
 

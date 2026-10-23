@@ -12,9 +12,9 @@ from enum import StrEnum
 from functools import lru_cache
 from typing import Annotated, Literal, overload
 
-from pydantic import BaseModel, Field
+from pydantic import Field
 
-from canongate.domain.types import NodeId, content_hash, text_node_id
+from canongate.domain.types import FrozenModel, NodeId, content_hash, text_node_id
 
 
 class NodeKind(StrEnum):
@@ -22,7 +22,7 @@ class NodeKind(StrEnum):
     IMAGE = "image"
 
 
-class TextNode(BaseModel, frozen=True):
+class TextNode(FrozenModel, frozen=True):
     """A block of text in the content bundle (paragraph, heading, list item, etc.)."""
 
     kind: Literal[NodeKind.TEXT] = NodeKind.TEXT
@@ -50,7 +50,7 @@ class TextNode(BaseModel, frozen=True):
         return substring in self.text
 
 
-class ImageNode(BaseModel, frozen=True):
+class ImageNode(FrozenModel, frozen=True):
     """An image asset in the content bundle."""
 
     kind: Literal[NodeKind.IMAGE] = NodeKind.IMAGE
@@ -104,7 +104,7 @@ def _compute_ast_hash(node_ids: tuple[NodeId, ...]) -> str:
     return content_hash(":".join(node_ids).encode("utf-8"))
 
 
-class ContentAST(BaseModel, frozen=True):
+class ContentAST(FrozenModel, frozen=True):
     """Immutable sequence of content nodes. This is what checks receive."""
 
     nodes: tuple[Node, ...]

@@ -45,7 +45,12 @@ export async function login(username: string, password: string): Promise<TokenRe
   });
 }
 
-/* ── Submissions ───────────────────────────────────────────────────── */
+/* ── Submissions & Multimodal Bundle Upload ────────────────────────── */
+
+export interface BundleAttachmentDto {
+  filename: string;
+  content_base64: string;
+}
 
 export interface Submission {
   id: number;
@@ -64,11 +69,19 @@ export interface Submission {
 }
 
 export async function createSubmission(
-  title: string, rawContent: string, canonId: string
+  title: string,
+  rawContent: string,
+  canonId: string,
+  attachments: BundleAttachmentDto[] = []
 ): Promise<Submission> {
   return request<Submission>("/submissions", {
     method: "POST",
-    body: JSON.stringify({ title, raw_content: rawContent, canon_id: canonId }),
+    body: JSON.stringify({
+      title,
+      raw_content: rawContent,
+      canon_id: canonId,
+      attachments,
+    }),
   });
 }
 
@@ -295,13 +308,14 @@ export async function resolveFinding(
   submissionId: number,
   findingRowId: number,
   resolution: string,
-  applySuggestion = true
+  applySuggestion = true,
+  reason = ""
 ): Promise<FindingResponse> {
   return request<FindingResponse>(
     `/submissions/${submissionId}/findings/${findingRowId}`,
     {
       method: "PATCH",
-      body: JSON.stringify({ resolution, apply_suggestion: applySuggestion }),
+      body: JSON.stringify({ resolution, apply_suggestion: applySuggestion, reason }),
     }
   );
 }
@@ -323,7 +337,7 @@ export async function getAuditTrail(submissionId: number): Promise<any[]> {
   return request<any[]>(`/submissions/${submissionId}/audit`);
 }
 
-/* ── Canons ────────────────────────────────────────────────────────── */
+/* ── Canons, Lint, Friction, Pipeline A Compile & v1.1 PRs ────────── */
 
 export interface CanonSummary {
   id: string;
@@ -336,6 +350,23 @@ export interface CanonSummary {
 
 export async function listCanons(): Promise<CanonSummary[]> {
   return request<CanonSummary[]>("/canons");
+}
+
+export interface CanonLintIssueDto {
+  rule_ids: string[];
+  kind: string;
+  message: string;
+}
+
+export interface CanonLintResponse {
+  canon_id: string;
+  canon_version: string;
+  is_valid: boolean;
+  issues: CanonLintIssueDto[];
+}
+
+export async function getCanonLint(canonId: string): Promise<CanonLintResponse> {
+  return request<CanonLintResponse>(`/canons/${canonId}/lint`);
 }
 
 export interface RuleFrictionDto {
@@ -359,4 +390,88 @@ export interface CanonFrictionResponse {
 
 export async function getCanonFriction(canonId: string): Promise<CanonFrictionResponse> {
   return request<CanonFrictionResponse>(`/canons/${canonId}/friction`);
+}
+
+export interface RuleRevisionDiffDto {
+  rule_id: string;
+  posterior_friction: number;
+  action: string;
+  before_summary: string;
+  after_summary: string;
+  rationale: string;
+}
+
+export interface CanonRevisionPrResponse {
+  canon_id: string;
+  base_version: string;
+  proposed_version: string;
+  has_changes: boolean;
+  revisions: RuleRevisionDiffDto[];
+  yaml_diff: string;
+  bundles_evaluated: number;
+  before_findings: number;
+  after_findings: number;
+  before_blockers: number;
+  after_blockers: number;
+  reduction_ratio: number;
+  resolved_rule_ids: string[];
+}
+
+export async function proposeCanonPr(
+  canonId: string,
+  overrideNotes: Record<string, string> = {},
+  threshold = 0.40,
+  minFlags = 3
+): Promise<CanonRevisionPrResponse> {
+  return request<CanonRevisionPrResponse>(`/canons/${canonId}/propose-pr`, {
+    method: "POST",
+    body: JSON.stringify({
+      override_notes: overrideNotes,
+      threshold,
+      min_flags: minFlags,
+    }),
+  });
+}
+
+export interface GroundedRuleProvenanceDto {
+  rule_id: string;
+  rule_kind: string;
+  start: number;
+  end: number;
+  source_text: string;
+  raw_anchor_recall: number;
+  effective_anchor_recall: number;
+  recovered_conditions: string[];
+  round_trip_nli_score: number;
+  alignment_status: string;
+}
+
+export interface CompileCanonResponse {
+  canon_id: string;
+  version: string;
+  hash: string;
+  term_count: number;
+  color_count: number;
+  fact_count: number;
+  yaml_preview: string;
+  provenance: GroundedRuleProvenanceDto[];
+}
+
+export async function compileCanon(
+  canonId: string,
+  rawText: string,
+  version = "1.0",
+  attachments: BundleAttachmentDto[] = [],
+  persist = false
+): Promise<CompileCanonResponse> {
+  return request<CompileCanonResponse>("/canons/compile", {
+    method: "POST",
+    body: JSON.stringify({
+      canon_id: canonId,
+      version,
+      raw_text: rawText,
+      attachments,
+      persist,
+    }),
+  });
 }

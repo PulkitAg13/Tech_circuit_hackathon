@@ -2,7 +2,7 @@
 
 The runner:
 1. Discovers all registered checks
-2. For each node x matching check, dispatches work
+2. For each node x matching check, dispatches work (plus any `run_bundle` checks)
 3. Streams findings as they arrive (used for SSE)
 4. Caches results by (check_id, check_version, node.id, canon.hash)
 """
@@ -134,7 +134,31 @@ async def run_checks(ast: ContentAST, canon: Canon) -> AsyncIterator[Finding]:
             _cache_put(key, findings)
         return findings
 
-    # Build task list: each (check, node) pair
+    async def _run_bundle_one(check: Check) -> list[Finding]:
+        key: _CacheKey = (check.check_id, check.check_version, f"bundle:{ast.hash}", canon.hash)
+        cached = _cache_get(key)
+        if cached is not None:
+            return cached
+
+        t0 = time.monotonic()
+        succeeded = False
+        try:
+            if type(check).run_bundle_async is not Check.run_bundle_async:
+                coro = check.run_bundle_async(ast, canon)
+            else:
+                coro = asyncio.to_thread(check.run_bundle, ast, canon)
+            findings = await asyncio.wait_for(coro, timeout=check.timeout_s)
+            succeeded = True
+        except Exception:
+            logger.exception("Bundle check %s failed on AST %s", check.check_id, ast.hash)
+            findings = []
+        elapsed = (time.monotonic() - t0) * 1000
+        if succeeded:
+            findings = _stamp_latency(findings, elapsed)
+            _cache_put(key, findings)
+        return findings
+
+    # Build task list: each (check, node) pair + cross-node bundle checks when len(ast) > 1
     tasks: list[asyncio.Task[list[Finding]]] = []
     for node in ast:
         for check in checks:
@@ -142,11 +166,23 @@ async def run_checks(ast: ContentAST, canon: Canon) -> AsyncIterator[Finding]:
                 task = asyncio.create_task(_run_one(check, node))
                 tasks.append(task)
 
-    # Stream results as they complete
+    if len(ast) > 1:
+        for check in checks:
+            if (
+                type(check).run_bundle is not Check.run_bundle
+                or type(check).run_bundle_async is not Check.run_bundle_async
+            ):
+                tasks.append(asyncio.create_task(_run_bundle_one(check)))
+
+    # Stream results as they complete (deduplicating by finding.id)
+    seen_ids: set[str] = set()
     for coro in asyncio.as_completed(tasks):
         findings = await coro
         for f in findings:
-            yield f
+            fid = str(f.id)
+            if fid not in seen_ids:
+                seen_ids.add(fid)
+                yield f
 
 
 async def run_checks_collect(ast: ContentAST, canon: Canon) -> list[Finding]:

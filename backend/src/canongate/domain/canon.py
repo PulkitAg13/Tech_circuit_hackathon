@@ -1,7 +1,8 @@
 """Canon: the machine-readable representation of brand rules.
 
-Today loaded from YAML. Later, Pipeline A will compile it from PDFs/DOCXs.
-The engine only sees this model, so the compilation path is pluggable.
+Today loaded from YAML or compiled via Pipeline A (`CanonCompiler`).
+Supports all five CanonGate rule schemas (`TermRule`, `ColorToken`, `FactClaim`
+with `substantiation_level` and KFS metadata, `TriggerObligation`, `VoiceProfile`).
 """
 
 from __future__ import annotations
@@ -13,9 +14,9 @@ from collections.abc import Iterator
 from functools import lru_cache
 from typing import Annotated
 
-from pydantic import BaseModel, Field, computed_field
+from pydantic import Field
 
-from canongate.domain.types import CanonHash
+from canongate.domain.types import CanonHash, FrozenModel, computed_field
 
 
 @lru_cache(maxsize=512)
@@ -47,7 +48,7 @@ def _parse_hex_rgb(hex_str: str) -> tuple[int, int, int]:
 # ── Rule models ──────────────────────────────────────────────────────
 
 
-class TermRule(BaseModel, frozen=True):
+class TermRule(FrozenModel, frozen=True):
     """A banned term with its preferred replacement."""
 
     id: str
@@ -55,6 +56,7 @@ class TermRule(BaseModel, frozen=True):
     preferred: str
     severity: Annotated[int, Field(ge=1, le=100)] = 60
     note: str = ""
+    pos_constraint: str | None = None
 
     @property
     def pattern(self) -> re.Pattern[str]:
@@ -67,7 +69,7 @@ class TermRule(BaseModel, frozen=True):
         return bool(self.pattern.search(text))
 
 
-class ColorToken(BaseModel, frozen=True):
+class ColorToken(FrozenModel, frozen=True):
     """An approved brand colour with a maximum drift tolerance (CIEDE2000)."""
 
     id: str
@@ -84,19 +86,24 @@ class ColorToken(BaseModel, frozen=True):
         return f"{self.name} ({self.hex})" if self.name else self.hex
 
 
-class FactClaim(BaseModel, frozen=True):
-    """An approved factual claim that content may reference."""
+class FactClaim(FrozenModel, frozen=True):
+    """An approved factual claim that content may reference (FactClaimSchema)."""
 
     id: str
     text: str
-    conditions: list[str] = []
+    conditions: tuple[str, ...] = ()
     valid_until: str | None = None  # ISO date
+    subject_product: str = ""
+    metric_value: str = ""
+    comparison_operator: str = "=="
+    kfs_acceptance_validity_days: int | None = None
+    substantiation_level: str = "finished_product_clinical"
 
     def __str__(self) -> str:
         return self.text
 
 
-class Rule(BaseModel, frozen=True):
+class Rule(FrozenModel, frozen=True):
     """Generic rule reference used in findings to point back at the Canon source."""
 
     rule_id: str
@@ -155,7 +162,7 @@ def _compute_canon_hash_cached(
 # ── Canon ────────────────────────────────────────────────────────────
 
 
-class Canon(BaseModel, frozen=True):
+class Canon(FrozenModel, frozen=True):
     """The complete, immutable brand rule set. Versioned and content-hashed."""
 
     id: str

@@ -5,6 +5,9 @@ Every check:
 2. Has a `check_version` (ClassVar) for cache invalidation
 3. Declares which NodeKind(s) it processes
 4. Implements `run()` — receives one Node + the Canon, yields Findings
+5. Optionally implements `run_bundle(ast, canon)` — receives the full `ContentAST`
+   for cross-node / cross-page checks (e.g., headline in `p[0]` vs footnote in `p[3]`
+   or `image/ocr[0]`).
 
 Sync checks are dispatched to `asyncio.to_thread` by the runner, so they
 never block the event loop. Async checks (ML model inference) override
@@ -16,7 +19,7 @@ from __future__ import annotations
 import abc
 from typing import ClassVar
 
-from canongate.domain.ast import Node, NodeKind
+from canongate.domain.ast import ContentAST, Node, NodeKind
 from canongate.domain.canon import Canon, Rule
 from canongate.domain.finding import Evidence, Finding, Locator, Suggestion, Tier, Trace
 from canongate.domain.types import stable_finding_id
@@ -24,17 +27,7 @@ from canongate.engine.registry import _RegistryMixin
 
 
 class Check(_RegistryMixin, abc.ABC):
-    """Abstract base for a governance check.
-
-    Subclass recipe:
-        class MyCheck(Check):
-            check_id: ClassVar[str] = "my_check"
-            check_version: ClassVar[str] = "1.0"
-            node_kinds: ClassVar[frozenset[NodeKind]] = frozenset({NodeKind.TEXT})
-
-            def run(self, node: Node, canon: Canon) -> list[Finding]:
-                ...
-    """
+    """Abstract base for a governance check."""
 
     check_id: ClassVar[str]
     check_version: ClassVar[str]
@@ -49,6 +42,14 @@ class Check(_RegistryMixin, abc.ABC):
     async def run_async(self, node: Node, canon: Canon) -> list[Finding]:
         """Override for I/O-bound or GPU checks. Default delegates to sync."""
         return self.run(node, canon)
+
+    def run_bundle(self, ast: ContentAST, canon: Canon) -> list[Finding]:
+        """Optional cross-node / multi-page bundle check. Default returns `[]`."""
+        return []
+
+    async def run_bundle_async(self, ast: ContentAST, canon: Canon) -> list[Finding]:
+        """Async wrapper for `run_bundle`."""
+        return self.run_bundle(ast, canon)
 
     @classmethod
     def accepts(cls, node: Node) -> bool:
@@ -83,12 +84,7 @@ class Check(_RegistryMixin, abc.ABC):
         trace: Trace | None = None,
         locator_key: str | None = None,
     ) -> Finding:
-        """Build a Finding with auto-filled check metadata and stable ID.
-
-        Eliminates boilerplate in `run()`. Defaults `locator_key` to
-        `locator.key` (e.g. `s:10-15` or `b:0,0,100,40`) so re-scans
-        produce the exact same deterministic FindingId.
-        """
+        """Build a Finding with auto-filled check metadata and stable ID."""
         key = locator_key if locator_key is not None else locator.key
         return Finding(
             id=stable_finding_id(

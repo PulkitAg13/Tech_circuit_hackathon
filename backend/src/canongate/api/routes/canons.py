@@ -1,7 +1,8 @@
-"""Canon management, linting, friction telemetry, and v1.1 PR simulation routes."""
+"""Canon management, Pipeline A compilation, linting, friction telemetry, and v1.1 PR routes."""
 
 from __future__ import annotations
 
+import base64
 import json
 from collections import defaultdict
 
@@ -9,12 +10,15 @@ import numpy as np
 from fastapi import APIRouter
 from pydantic import BaseModel
 
+from canongate import api as _api_pkg
 from canongate.api.deps import SessionDep, get_canon, list_canon_ids
 from canongate.api.routes.submissions import _parse_submission_ast
-from canongate.canon.impact import lint_canon, propose_canon_revision
+from canongate.canon.compiler import compile_canon
+from canongate.canon.impact import _canon_to_yaml, lint_canon, propose_canon_revision
 from canongate.domain.canon import Canon
 from canongate.engine.runner import run_checks_collect
 from canongate.ledger.friction import compute_rule_friction, krippendorff_alpha
+from canongate.parsers.bundle import BundleInput
 from canongate.store import repos
 
 router = APIRouter(prefix="/canons", tags=["canons"])
@@ -92,6 +96,43 @@ class CanonRevisionPrResponse(BaseModel):
     resolved_rule_ids: list[str]
 
 
+class CompileCanonAttachmentDto(BaseModel):
+    filename: str
+    content_base64: str
+
+
+class CompileCanonRequest(BaseModel):
+    canon_id: str
+    version: str = "1.0"
+    raw_text: str = ""
+    attachments: list[CompileCanonAttachmentDto] = []
+    persist: bool = False
+
+
+class GroundedRuleProvenanceDto(BaseModel):
+    rule_id: str
+    rule_kind: str
+    start: int
+    end: int
+    source_text: str
+    raw_anchor_recall: float
+    effective_anchor_recall: float
+    recovered_conditions: list[str]
+    round_trip_nli_score: float
+    alignment_status: str
+
+
+class CompileCanonResponse(BaseModel):
+    canon_id: str
+    version: str
+    hash: str
+    term_count: int
+    color_count: int
+    fact_count: int
+    yaml_preview: str
+    provenance: list[GroundedRuleProvenanceDto]
+
+
 @router.get("", response_model=list[CanonSummary])
 async def list_canons() -> list[CanonSummary]:
     summaries = []
@@ -108,6 +149,59 @@ async def list_canons() -> list[CanonSummary]:
             )
         )
     return summaries
+
+
+@router.post("/compile", response_model=CompileCanonResponse, status_code=201)
+async def compile_brand_canon(req: CompileCanonRequest) -> CompileCanonResponse:
+    """Pipeline A endpoint: compile brand text/documents into a grounded Canon behind Guards 1-3."""
+    inputs: list[BundleInput] = []
+    if req.raw_text.strip():
+        inputs.append(req.raw_text)
+    for att in req.attachments:
+        try:
+            raw_bytes = base64.b64decode(att.content_base64)
+            inputs.append((att.filename, raw_bytes))
+        except Exception:
+            continue
+
+    canon, provenance = compile_canon(
+        *inputs,
+        canon_id=req.canon_id.strip() or "compiled-canon",
+        version=req.version.strip() or "1.0",
+    )
+
+    deps_mod = getattr(_api_pkg, "deps", None)
+    if deps_mod is not None and hasattr(deps_mod, "register_canon"):
+        deps_mod.register_canon(canon, persist_yaml=req.persist)
+
+    prov_dtos = [
+        GroundedRuleProvenanceDto(
+            rule_id=p.rule_id,
+            rule_kind=p.rule_kind,
+            start=p.char_interval.start,
+            end=p.char_interval.end,
+            source_text=p.source_text,
+            raw_anchor_recall=p.anchor_audit.raw_recall if p.anchor_audit else 1.0,
+            effective_anchor_recall=p.anchor_audit.effective_recall if p.anchor_audit else 1.0,
+            recovered_conditions=list(p.anchor_audit.recovered_conditions)
+            if p.anchor_audit
+            else [],
+            round_trip_nli_score=p.round_trip_nli_score,
+            alignment_status=p.alignment_status,
+        )
+        for p in provenance
+    ]
+
+    return CompileCanonResponse(
+        canon_id=canon.id,
+        version=canon.version,
+        hash=canon.hash,
+        term_count=len(canon.terminology),
+        color_count=len(canon.palette),
+        fact_count=len(canon.facts),
+        yaml_preview=_canon_to_yaml(canon),
+        provenance=prov_dtos,
+    )
 
 
 @router.get("/{canon_id}", response_model=CanonSummary)

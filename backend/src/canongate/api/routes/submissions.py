@@ -1,7 +1,10 @@
-"""Submission routes: create, list, get findings, workflow actions, SSE stream."""
+"""Submission routes: create, multimodal upload, list, get findings,
+workflow actions, SSE stream.
+"""
 
 from __future__ import annotations
 
+import base64
 import datetime as dt
 import hashlib
 import json
@@ -16,7 +19,7 @@ from pydantic import BaseModel
 from sse_starlette.sse import EventSourceResponse
 
 from canongate.api.deps import CurrentUser, SessionDep, get_canon
-from canongate.domain.ast import ContentAST, Node, NodeKind, TextNode
+from canongate.domain.ast import ContentAST, ImageNode, Node, NodeKind, TextNode
 from canongate.domain.finding import Finding
 from canongate.domain.types import content_hash
 from canongate.domain.workflow import (
@@ -32,24 +35,44 @@ from canongate.engine.runner import run_checks
 from canongate.ledger.c2pa_outbound import build_governance_manifest, sign_approved_asset
 from canongate.ledger.chain import GENESIS_HASH, compute_event_hash
 from canongate.ledger.merkle import MerkleTree
+from canongate.parsers.bundle import default_bundle_parser
 from canongate.parsers.tables import parse_markdown_text
 from canongate.parsers.text import parse_text
 from canongate.store import repos
 
 router = APIRouter(prefix="/submissions", tags=["submissions"])
 
+_IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".webp"}
+_UPLOAD_DIR = Path(".canongate_uploads")
+
+
+class _ApiDto(BaseModel):
+    """Pydantic v1/v2 compatible DTO base with `.model_dump(mode="json")` support."""
+
+    def model_dump(self, **kwargs: Any) -> dict[str, Any]:
+        kwargs.pop("mode", None)
+        if hasattr(super(), "model_dump"):
+            return super().model_dump(**kwargs)
+        return json.loads(self.json(**kwargs))
+
 
 # ── Request / Response models ────────────────────────────────────────
 
 
-class CreateSubmissionRequest(BaseModel):
+class BundleAttachmentDto(_ApiDto):
+    filename: str
+    content_base64: str
+
+
+class CreateSubmissionRequest(_ApiDto):
     title: str = "Untitled"
-    raw_content: str
+    raw_content: str = ""
     canon_id: str
     image_paths: list[str] = []
+    attachments: list[BundleAttachmentDto] = []
 
 
-class SubmissionResponse(BaseModel):
+class SubmissionResponse(_ApiDto):
     id: int
     title: str
     status: str
@@ -65,17 +88,18 @@ class SubmissionResponse(BaseModel):
     image_paths: list[str] = []
 
 
-class WorkflowActionRequest(BaseModel):
+class WorkflowActionRequest(_ApiDto):
     action: str
     comment: str = ""
 
 
-class FindingResolutionRequest(BaseModel):
+class FindingResolutionRequest(_ApiDto):
     resolution: str  # accepted | dismissed | overridden
     apply_suggestion: bool = True
+    reason: str = ""
 
 
-class FindingResponse(BaseModel):
+class FindingResponse(_ApiDto):
     row_id: int
     finding_id: str
     check_id: str
@@ -86,6 +110,59 @@ class FindingResponse(BaseModel):
     payload: dict
 
 
+def _ingest_bundle_attachments(
+    raw_content: str,
+    image_paths: list[str],
+    attachments: list[BundleAttachmentDto],
+    *,
+    upload_dir: Path | None = None,
+) -> tuple[str, list[str]]:
+    """Parse uploaded `.docx`, `.pdf`, `.html`, `.md`, `.png`, `.jpg` attachments
+    via BundleParser.
+    """
+    if not attachments:
+        return raw_content, list(image_paths)
+
+    target_dir = upload_dir or _UPLOAD_DIR
+    target_dir.mkdir(parents=True, exist_ok=True)
+
+    text_blocks: list[str] = [raw_content.strip()] if raw_content.strip() else []
+    merged_images: list[str] = list(image_paths)
+
+    for att in attachments:
+        try:
+            raw_bytes = base64.b64decode(att.content_base64)
+        except Exception:
+            continue
+        if not raw_bytes:
+            continue
+
+        ext = Path(att.filename).suffix.lower()
+        safe_name = re.sub(r"[^A-Za-z0-9._\-]", "_", Path(att.filename).name) or "asset"
+        digest_prefix = content_hash(raw_bytes)[:10]
+
+        if ext in _IMAGE_EXTS:
+            img_file = target_dir / f"{digest_prefix}_{safe_name}"
+            img_file.write_bytes(raw_bytes)
+            img_path_str = str(img_file.resolve())
+            if img_path_str not in merged_images:
+                merged_images.append(img_path_str)
+            continue
+
+        parsed_ast = default_bundle_parser.parse_one((safe_name, raw_bytes))
+        for node in parsed_ast:
+            if isinstance(node, TextNode) and node.text.strip():
+                text_blocks.append(node.text.strip())
+            elif (
+                isinstance(node, ImageNode)
+                and node.asset_path
+                and node.asset_path not in merged_images
+            ):
+                merged_images.append(node.asset_path)
+
+    return "\n\n".join(text_blocks), merged_images
+
+
 # ── Endpoints ────────────────────────────────────────────────────────
 
 
@@ -94,11 +171,13 @@ async def create_submission(
     req: CreateSubmissionRequest, session: SessionDep, user: CurrentUser
 ) -> SubmissionResponse:
     canon = get_canon(req.canon_id)
-    raw_content = req.raw_content
-    if req.image_paths:
+    raw_content, all_image_paths = _ingest_bundle_attachments(
+        req.raw_content, req.image_paths, req.attachments
+    )
+    if all_image_paths:
         extra_blocks = [
             f"{chr(33)}{chr(91)}Banner{chr(93)}{chr(40)}{img_p}{chr(41)}"
-            for img_p in req.image_paths
+            for img_p in all_image_paths
             if img_p and img_p not in raw_content
         ]
         if extra_blocks:
@@ -118,6 +197,14 @@ async def create_submission(
     )
 
     return _to_response(sub)
+
+
+@router.post("/upload", response_model=SubmissionResponse, status_code=201)
+async def upload_submission_bundle(
+    req: CreateSubmissionRequest, session: SessionDep, user: CurrentUser
+) -> SubmissionResponse:
+    """Dedicated multimodal bundle upload endpoint for `.docx`, `.pdf`, `.html`, `.png`, `.jpg`."""
+    return await create_submission(req, session, user)
 
 
 @router.get("", response_model=list[SubmissionResponse])
@@ -203,7 +290,6 @@ async def resolve_finding(
     session: SessionDep,
     user: CurrentUser,
 ) -> FindingResponse:
-    # First fetch the finding so we can read its severity
     row = await repos.get_finding_by_row_id(session, finding_row_id)
     if not row or row.submission_id != submission_id:
         raise HTTPException(status_code=404, detail="Finding not found")
@@ -307,7 +393,7 @@ async def workflow_action(
     if hasattr(session, "flush"):
         await session.flush()
 
-    # Outbound C2PA Asset Signing on approval/publishing
+    # Outbound C2PA Asset Signing on approval/publishing using valid X.509 ES256 credentials
     if new_status in (Status.APPROVED, Status.PUBLISHED):
         parsed_ast = _parse_submission_ast(sub.raw_content)
         img_nodes = list(parsed_ast.of_kind(NodeKind.IMAGE))
@@ -319,31 +405,22 @@ async def workflow_action(
             for img in img_nodes:
                 src_p = Path(img.asset_path)
                 if src_p.is_file():
-                    try:
-                        manifest = build_governance_manifest(
-                            submission_id=submission_id,
-                            canon_id=sub.canon_id,
-                            canon_hash=sub.canon_hash,
-                            content_hash=sub.content_hash,
-                            merkle_root=m_root,
-                            approved_by=f"user_{user.id}",
-                            approved_at=now,
-                        )
-                        out_p = src_p.with_name(f"{src_p.stem}_signed{src_p.suffix}")
-                        sign_approved_asset(
-                            source_path=src_p,
-                            output_path=out_p,
-                            mime_type=(
-                                "image/png" if src_p.suffix.lower() == ".png" else "image/jpeg"
-                            ),
-                            manifest_def=manifest,
-                            sign_callback=lambda data: b"canongate-c2pa-signature",
-                            cert_chain_pem=(
-                                "-----BEGIN CERTIFICATE-----\n...\n-----END CERTIFICATE-----"
-                            ),
-                        )
-                    except Exception:
-                        pass
+                    manifest = build_governance_manifest(
+                        submission_id=submission_id,
+                        canon_id=sub.canon_id,
+                        canon_hash=sub.canon_hash,
+                        content_hash=sub.content_hash,
+                        merkle_root=m_root,
+                        approved_by=f"user_{user.id}",
+                        approved_at=now,
+                    )
+                    out_p = src_p.with_name(f"{src_p.stem}_signed{src_p.suffix}")
+                    sign_approved_asset(
+                        source_path=src_p,
+                        output_path=out_p,
+                        mime_type=("image/png" if src_p.suffix.lower() == ".png" else "image/jpeg"),
+                        manifest_def=manifest,
+                    )
 
     return _to_response(sub)
 
@@ -551,7 +628,6 @@ def _replace_node_in_raw_content(
             if old_sub and old_sub in updated_block:
                 updated_block = updated_block.replace(old_sub, rep_str, 1)
             elif s == 0 and e == len(target_node.text) and ":" in target_node.text:
-                # Whole-row rewrite from claim.slot_nli: replace the offer cell content
                 cell_val = target_node.text.split(":", maxsplit=2)[-1].strip()
                 if cell_val and cell_val in updated_block:
                     updated_block = updated_block.replace(cell_val, rep_str, 1)

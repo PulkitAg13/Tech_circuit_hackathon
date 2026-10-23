@@ -12,15 +12,15 @@ from __future__ import annotations
 from enum import IntEnum, StrEnum
 from typing import Annotated, Literal
 
-from pydantic import BaseModel, Field, computed_field
+from pydantic import Field
 
 from canongate.domain.canon import Rule
-from canongate.domain.types import FindingId, NodeId
+from canongate.domain.types import FindingId, FrozenModel, NodeId, computed_field
 
 # ── Locators ─────────────────────────────────────────────────────────
 
 
-class Span(BaseModel, frozen=True):
+class Span(FrozenModel, frozen=True):
     """Character-level span within a TextNode, [start, end)."""
 
     start: Annotated[int, Field(ge=0)]
@@ -64,7 +64,7 @@ class Span(BaseModel, frozen=True):
         return (0, self.start, self.end, 0, 0)
 
 
-class BBox(BaseModel, frozen=True):
+class BBox(FrozenModel, frozen=True):
     """Pixel-level bounding box within an ImageNode."""
 
     x: Annotated[int, Field(ge=0)]
@@ -110,7 +110,7 @@ Locator = Span | BBox
 # ── Evidence types (discriminated union) ─────────────────────────────
 
 
-class TermMatch(BaseModel, frozen=True):
+class TermMatch(FrozenModel, frozen=True):
     """Evidence: a banned term was found."""
 
     kind: Literal["term_match"] = "term_match"
@@ -118,7 +118,7 @@ class TermMatch(BaseModel, frozen=True):
     preferred: str
 
 
-class ColorDistance(BaseModel, frozen=True):
+class ColorDistance(FrozenModel, frozen=True):
     """Evidence: a colour drifted beyond the allowed ΔE00."""
 
     kind: Literal["color_distance"] = "color_distance"
@@ -128,7 +128,7 @@ class ColorDistance(BaseModel, frozen=True):
     max_allowed: float
 
 
-class ContrastEvidence(BaseModel, frozen=True):
+class ContrastEvidence(FrozenModel, frozen=True):
     """Evidence: WCAG 2.1 AA/AAA relative luminance contrast failure."""
 
     kind: Literal["contrast"] = "contrast"
@@ -140,7 +140,7 @@ class ContrastEvidence(BaseModel, frozen=True):
     suggested_fg_hex: str | None = None
 
 
-class LegibilityEvidence(BaseModel, frozen=True):
+class LegibilityEvidence(FrozenModel, frozen=True):
     """Evidence: ASCI 26px / x-height or CCPA disclaimer legibility violation."""
 
     kind: Literal["legibility"] = "legibility"
@@ -152,7 +152,7 @@ class LegibilityEvidence(BaseModel, frozen=True):
     script_mismatch: bool = False
 
 
-class SaliencyEvidence(BaseModel, frozen=True):
+class SaliencyEvidence(FrozenModel, frozen=True):
     """Evidence: visual subordination of a disclaimer relative to headline claim."""
 
     kind: Literal["saliency"] = "saliency"
@@ -162,7 +162,7 @@ class SaliencyEvidence(BaseModel, frozen=True):
     min_ratio: float = 0.25
 
 
-class ConfusableEvidence(BaseModel, frozen=True):
+class ConfusableEvidence(FrozenModel, frozen=True):
     """Evidence: Unicode UTS #39 homoglyph or mixed-script spoofing detected."""
 
     kind: Literal["confusable"] = "confusable"
@@ -172,7 +172,7 @@ class ConfusableEvidence(BaseModel, frozen=True):
     scripts_detected: tuple[str, ...] = ()
 
 
-class AlgebraicProofEvidence(BaseModel, frozen=True):
+class AlgebraicProofEvidence(FrozenModel, frozen=True):
     """Evidence: Z3 SMT solver counterexample or contradiction proof."""
 
     kind: Literal["algebraic_proof"] = "algebraic_proof"
@@ -182,7 +182,7 @@ class AlgebraicProofEvidence(BaseModel, frozen=True):
     counterexample: dict[str, str] = Field(default_factory=dict)
 
 
-class SlotEntry(BaseModel, frozen=True):
+class SlotEntry(FrozenModel, frozen=True):
     """Single predicate-argument slot comparison entry."""
 
     slot: str
@@ -191,7 +191,7 @@ class SlotEntry(BaseModel, frozen=True):
     status: Literal["match", "dropped", "contradicted", "unverified"]
 
 
-class SlotDiffEvidence(BaseModel, frozen=True):
+class SlotDiffEvidence(FrozenModel, frozen=True):
     """Evidence: MiniCheck NLI entailment probability and slot-level alignment."""
 
     kind: Literal["slot_diff"] = "slot_diff"
@@ -201,7 +201,7 @@ class SlotDiffEvidence(BaseModel, frozen=True):
     slots: tuple[SlotEntry, ...] = ()
 
 
-class C2paEvidence(BaseModel, frozen=True):
+class C2paEvidence(FrozenModel, frozen=True):
     """Evidence: C2PA JUMBF Content Credentials provenance state."""
 
     kind: Literal["c2pa"] = "c2pa"
@@ -211,7 +211,7 @@ class C2paEvidence(BaseModel, frozen=True):
     digital_source_type: str | None = None
 
 
-class HiddenTextEvidence(BaseModel, frozen=True):
+class HiddenTextEvidence(FrozenModel, frozen=True):
     """Evidence: OWASP LLM01 indirect prompt injection or hidden text."""
 
     kind: Literal["hidden_text"] = "hidden_text"
@@ -237,14 +237,14 @@ Evidence = Annotated[
 # ── Suggestion ───────────────────────────────────────────────────────
 
 
-class Replace(BaseModel, frozen=True):
+class Replace(FrozenModel, frozen=True):
     """A suggested text replacement for a span."""
 
     span: Span
     replacement: str
 
 
-class Suggestion(BaseModel, frozen=True):
+class Suggestion(FrozenModel, frozen=True):
     """An engine-proposed fix. Never auto-applied."""
 
     label: str
@@ -278,7 +278,7 @@ class Verdict(IntEnum):
 # ── Trace ────────────────────────────────────────────────────────────
 
 
-class Trace(BaseModel, frozen=True):
+class Trace(FrozenModel, frozen=True):
     """Context Trace: how a finding was produced. Shown on every finding card."""
 
     tier: Tier
@@ -291,7 +291,7 @@ class Trace(BaseModel, frozen=True):
 # ── Finding ──────────────────────────────────────────────────────────
 
 
-class Finding(BaseModel, frozen=True):
+class Finding(FrozenModel, frozen=True):
     """A single issue found in a content node."""
 
     id: FindingId
