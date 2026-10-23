@@ -10,8 +10,8 @@ Delivers Named Improvement #1 and the remaining Canon System milestones:
 2. **`propose_canon_revision(canon, friction_stats, override_notes)`:**
    When a rule's Empirical Bayes posterior friction exceeds `0.40` (with
    `total_flags >= 3`), auto-drafts a bumped `Canon` (`v1.0` -> `v1.1`) that
-   clarifies the rule or relaxes its severity/tolerance, producing a human-
-   reviewable unified YAML diff.
+   clarifies/downgrades a Blocker rule or retires a noisy Warning rule,
+   producing a human-reviewable unified YAML diff.
 3. **`simulate_canon_impact(old_canon, new_canon, bundles, check_fn)`:**
    Re-evaluates historical `ContentAST` bundles against both `old_canon` and
    `new_canon` to quantify exact flag reduction before a Canon PR is merged.
@@ -89,7 +89,9 @@ class ImpactSimulationResult:
         return (self.before_findings - self.after_findings) / float(self.before_findings)
 
     def __bool__(self) -> bool:
-        return self.after_findings < self.before_findings
+        return (
+            self.after_findings < self.before_findings or self.after_blockers < self.before_blockers
+        )
 
 
 def _bump_version(version: str) -> str:
@@ -251,26 +253,39 @@ def propose_canon_revision(
 
         post = high_friction_ids[t.id]
         reason = notes.get(t.id, "Repeatedly overridden by reviewers in context")
-        new_sev = min(35, max(15, t.severity - 25))
-        updated_note = f"{t.note} [v1.1 clarified: {reason}]".strip()
-        updated_term = TermRule(
-            id=t.id,
-            pattern_text=t.pattern_text,
-            preferred=t.preferred,
-            severity=new_sev,
-            note=updated_note,
-        )
-        new_terms.append(updated_term)
-        revisions.append(
-            RuleRevisionDiff(
-                rule_id=t.id,
-                posterior_friction=post,
-                action="downgrade_severity_and_clarify",
-                before_summary=f"severity={t.severity} ({t.pattern_text!r} -> {t.preferred!r})",
-                after_summary=f"severity={new_sev} (Warning with context note)",
-                rationale=reason,
+        if t.severity >= 50:
+            new_sev = min(35, max(15, t.severity - 25))
+            updated_note = f"{t.note} [v1.1 clarified: {reason}]".strip()
+            updated_term = TermRule(
+                id=t.id,
+                pattern_text=t.pattern_text,
+                preferred=t.preferred,
+                severity=new_sev,
+                note=updated_note,
             )
-        )
+            new_terms.append(updated_term)
+            revisions.append(
+                RuleRevisionDiff(
+                    rule_id=t.id,
+                    posterior_friction=post,
+                    action="downgrade_severity_and_clarify",
+                    before_summary=f"severity={t.severity} ({t.pattern_text!r} -> {t.preferred!r})",
+                    after_summary=f"severity={new_sev} (Warning with context note)",
+                    rationale=reason,
+                )
+            )
+        else:
+            # High-friction Warning rule (< 50): retire from active terminology in v1.1
+            revisions.append(
+                RuleRevisionDiff(
+                    rule_id=t.id,
+                    posterior_friction=post,
+                    action="retire_noisy_warning_rule",
+                    before_summary=f"severity={t.severity} ({t.pattern_text!r} -> {t.preferred!r})",
+                    after_summary="retired from active terminology in v1.1",
+                    rationale=reason,
+                )
+            )
 
     new_palette: list[ColorToken] = []
     for c in canon.palette:
@@ -338,8 +353,10 @@ def simulate_canon_impact(
     after_total = 0
     before_blockers = 0
     after_blockers = 0
-    before_rules: set[str] = set()
-    after_rules: set[str] = set()
+    before_blocker_rules: set[str] = set()
+    after_blocker_rules: set[str] = set()
+    before_all_rules: set[str] = set()
+    after_all_rules: set[str] = set()
 
     for ast in bundles:
         f_old = check_fn(ast, old_canon)
@@ -349,13 +366,17 @@ def simulate_canon_impact(
         before_blockers += sum(1 for f in f_old if f.is_blocker)
         after_blockers += sum(1 for f in f_new if f.is_blocker)
         for f in f_old:
+            before_all_rules.add(f.rule_ref.rule_id)
             if f.is_blocker:
-                before_rules.add(f.rule_ref.rule_id)
+                before_blocker_rules.add(f.rule_ref.rule_id)
         for f in f_new:
+            after_all_rules.add(f.rule_ref.rule_id)
             if f.is_blocker:
-                after_rules.add(f.rule_ref.rule_id)
+                after_blocker_rules.add(f.rule_ref.rule_id)
 
-    resolved = tuple(sorted(before_rules - after_rules))
+    resolved = tuple(
+        sorted((before_blocker_rules - after_blocker_rules) | (before_all_rules - after_all_rules))
+    )
     return ImpactSimulationResult(
         bundles_evaluated=len(bundles),
         before_findings=before_total,

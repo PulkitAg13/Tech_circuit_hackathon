@@ -3,14 +3,18 @@
 from __future__ import annotations
 
 import datetime as dt
+import hashlib
 import json
 from collections.abc import AsyncIterator
+from pathlib import Path
 
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 from sse_starlette.sse import EventSourceResponse
 
 from canongate.api.deps import CurrentUser, SessionDep, get_canon
+from canongate.domain.ast import ContentAST, Node, NodeKind, TextNode
 from canongate.domain.finding import Finding
 from canongate.domain.types import content_hash
 from canongate.domain.workflow import (
@@ -23,7 +27,10 @@ from canongate.domain.workflow import (
     validate_resolution,
 )
 from canongate.engine.runner import run_checks
+from canongate.ledger.c2pa_outbound import build_governance_manifest, sign_approved_asset
 from canongate.ledger.chain import GENESIS_HASH, compute_event_hash
+from canongate.ledger.merkle import MerkleTree
+from canongate.parsers.tables import parse_markdown_text
 from canongate.parsers.text import parse_text
 from canongate.store import repos
 
@@ -52,6 +59,7 @@ class SubmissionResponse(BaseModel):
     updated_at: str
     raw_content: str = ""
     paragraph_node_ids: list[str] = []
+    text_blocks: list[str] = []
     image_paths: list[str] = []
 
 
@@ -83,12 +91,23 @@ async def create_submission(
     req: CreateSubmissionRequest, session: SessionDep, user: CurrentUser
 ) -> SubmissionResponse:
     canon = get_canon(req.canon_id)
-    c_hash = content_hash(req.raw_content.encode())
+    raw_content = req.raw_content
+    if req.image_paths:
+        extra_blocks = [
+            f"{chr(33)}{chr(91)}Banner{chr(93)}{chr(40)}{img_p}{chr(41)}"
+            for img_p in req.image_paths
+            if img_p and img_p not in raw_content
+        ]
+        if extra_blocks:
+            suffix = "\n\n".join(extra_blocks)
+            raw_content = f"{raw_content.rstrip()}\n\n{suffix}" if raw_content.strip() else suffix
+
+    c_hash = content_hash(raw_content.encode())
 
     sub = await repos.create_submission(
         session,
         title=req.title,
-        raw_content=req.raw_content,
+        raw_content=raw_content,
         content_hash=c_hash,
         canon_id=canon.id,
         canon_hash=canon.hash,
@@ -114,6 +133,14 @@ async def get_submission(
     return _to_response(sub)
 
 
+async def _persist_scan_findings(submission_id: int, collected: list[Finding]) -> None:
+    """Persist scan findings in an isolated async session after SSE streaming completes."""
+    from canongate.store.db import async_session as session_factory
+
+    async with session_factory() as persist_session, persist_session.begin():
+        await repos.save_findings(persist_session, submission_id, collected)
+
+
 @router.post("/{submission_id}/scan")
 async def scan_submission(submission_id: int, session: SessionDep, user: CurrentUser):
     """Run all checks on a submission and stream findings via SSE."""
@@ -122,7 +149,7 @@ async def scan_submission(submission_id: int, session: SessionDep, user: Current
         raise HTTPException(status_code=404, detail="Submission not found")
 
     canon = get_canon(sub.canon_id)
-    ast = parse_text(sub.raw_content)
+    ast = _parse_submission_ast(sub.raw_content)
 
     async def event_generator() -> AsyncIterator[dict]:
         collected: list[Finding] = []
@@ -130,13 +157,7 @@ async def scan_submission(submission_id: int, session: SessionDep, user: Current
             collected.append(finding)
             yield {"event": "finding", "data": finding.model_dump_json()}
 
-        # Persist all findings at the end (new session because the SSE generator
-        # runs outside the request session scope)
-        from canongate.store.db import async_session as session_factory
-
-        async with session_factory() as persist_session, persist_session.begin():
-            await repos.save_findings(persist_session, submission_id, collected)
-
+        await _persist_scan_findings(submission_id, collected)
         yield {"event": "done", "data": json.dumps({"total": len(collected)})}
 
     return EventSourceResponse(event_generator())
@@ -229,6 +250,19 @@ async def workflow_action(
     except TransitionError as e:
         raise HTTPException(status_code=403, detail=str(e)) from None
 
+    # Enforce Blocker Gate before approving or publishing a submission
+    if action in (Action.APPROVE, Action.PUBLISH):
+        finding_rows = await repos.get_findings_for_submission(session, submission_id)
+        open_blockers = [f for f in finding_rows if f.severity >= 50 and f.resolution == "open"]
+        if open_blockers:
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    f"Cannot {action.value}: {len(open_blockers)} unresolved blocker "
+                    "finding(s) remain open."
+                ),
+            )
+
     # Hash chain: get previous event hash
     events = await repos.get_events_for_submission(session, submission_id)
     prev_hash = events[-1].event_hash if events else GENESIS_HASH
@@ -255,22 +289,17 @@ async def workflow_action(
     )
 
     sub.status = new_status.value
-    await session.flush()
+    if hasattr(session, "flush"):
+        await session.flush()
 
     # Outbound C2PA Asset Signing on approval/publishing
     if new_status in (Status.APPROVED, Status.PUBLISHED):
-        from pathlib import Path
-
-        from canongate.domain.ast import NodeKind
-        from canongate.ledger.c2pa_outbound import build_governance_manifest, sign_approved_asset
-        from canongate.ledger.merkle import compute_merkle_root
-
-        parsed_ast = parse_text(sub.raw_content)
+        parsed_ast = _parse_submission_ast(sub.raw_content)
         img_nodes = list(parsed_ast.of_kind(NodeKind.IMAGE))
         if img_nodes:
             all_events = await repos.get_events_for_submission(session, submission_id)
             leaves = [ev.event_hash.encode() for ev in all_events]
-            m_root = compute_merkle_root(leaves).hex() if leaves else "00" * 32
+            m_root = MerkleTree(leaves).root_hex if leaves else "00" * 32
 
             for img in img_nodes:
                 src_p = Path(img.asset_path)
@@ -306,34 +335,27 @@ async def workflow_action(
 
 @router.get("/{submission_id}/audit")
 async def get_audit_trail(submission_id: int, session: SessionDep, user: CurrentUser):
-    import hashlib
-
-    from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
-
-    from canongate.ledger.merkle import (
-        compute_merkle_root,
-        prove_inclusion,
-        sign_tree_head,
-    )
-
     events = await repos.get_events_for_submission(session, submission_id)
     if not events:
         return []
 
     leaves = [e.event_hash.encode() for e in events]
-    merkle_root = compute_merkle_root(leaves).hex()
+    tree = MerkleTree(leaves)
+    merkle_root = tree.root_hex
 
     seed = hashlib.sha256(f"canongate-audit-{submission_id}".encode()).digest()
     server_key = Ed25519PrivateKey.from_private_bytes(seed)
     now_iso = dt.datetime.now(dt.UTC).isoformat()
-    sth = sign_tree_head(leaves, now_iso, server_key)
+    sth = tree.sign_head(now_iso, server_key)
+    sth_dict = sth.to_dict()
 
     enriched = []
     for idx, e in enumerate(events):
-        audit_path = prove_inclusion(idx, leaves)
+        audit_path = tree.prove_inclusion(idx)
         enriched.append(
             {
                 "id": e.id,
+                "submission_id": e.submission_id,
                 "action": e.action,
                 "from_status": e.from_status,
                 "to_status": e.to_status,
@@ -344,15 +366,9 @@ async def get_audit_trail(submission_id: int, session: SessionDep, user: Current
                 "created_at": e.created_at,
                 "leaf_index": idx,
                 "audit_path": audit_path,
-                "tree_size": len(leaves),
+                "tree_size": len(tree),
                 "merkle_root": merkle_root,
-                "tree_head": {
-                    "tree_size": sth.tree_size,
-                    "timestamp": sth.timestamp,
-                    "root_hash": sth.root_hash,
-                    "signature": sth.signature,
-                    "public_key": sth.public_key,
-                },
+                "tree_head": sth_dict,
             }
         )
     return enriched
@@ -361,39 +377,42 @@ async def get_audit_trail(submission_id: int, session: SessionDep, user: Current
 @router.get("/{submission_id}/audit/tree-head")
 async def get_audit_tree_head(submission_id: int, session: SessionDep, user: CurrentUser):
     """Retrieve the RFC 9162 Signed Tree Head (STH) with Ed25519 signature."""
-    import hashlib
-
-    from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
-
-    from canongate.ledger.merkle import sign_tree_head
-
     events = await repos.get_events_for_submission(session, submission_id)
     if not events:
         raise HTTPException(status_code=404, detail="No audit events for this submission")
 
     leaves = [e.event_hash.encode() for e in events]
+    tree = MerkleTree(leaves)
     seed = hashlib.sha256(f"canongate-audit-{submission_id}".encode()).digest()
     server_key = Ed25519PrivateKey.from_private_bytes(seed)
     now_iso = dt.datetime.now(dt.UTC).isoformat()
-    sth = sign_tree_head(leaves, now_iso, server_key)
-    return {
-        "tree_size": sth.tree_size,
-        "timestamp": sth.timestamp,
-        "root_hash": sth.root_hash,
-        "signature": sth.signature,
-        "public_key": sth.public_key,
-    }
+    sth = tree.sign_head(now_iso, server_key)
+    return sth.to_dict()
 
 
 # ── Helpers ──────────────────────────────────────────────────────────
 
 
-def _to_response(sub) -> SubmissionResponse:
-    from canongate.domain.ast import NodeKind
+def _parse_submission_ast(raw: str) -> ContentAST:
+    """Parse raw submission text into a `ContentAST`, linearizing Markdown pipe tables."""
+    base_ast = parse_text(raw)
+    expanded_nodes: list[Node] = []
+    for node in base_ast:
+        if isinstance(node, TextNode) and "|" in node.text and "\n" in node.text:
+            tbl_ast = parse_markdown_text(node.text, source=node.path)
+            if any("/table[" in n.path for n in tbl_ast):
+                expanded_nodes.extend(tbl_ast.nodes)
+                continue
+        expanded_nodes.append(node)
+    return ContentAST(nodes=tuple(expanded_nodes))
 
+
+def _to_response(sub) -> SubmissionResponse:
     raw = getattr(sub, "raw_content", "") or ""
-    ast = parse_text(raw)
-    p_ids = [n.id for n in ast.of_kind(NodeKind.TEXT)]
+    ast = _parse_submission_ast(raw)
+    text_nodes = [n for n in ast.of_kind(NodeKind.TEXT) if isinstance(n, TextNode)]
+    p_ids = [n.id for n in text_nodes]
+    t_blocks = [n.text for n in text_nodes]
     img_paths = [n.asset_path for n in ast.of_kind(NodeKind.IMAGE)]
 
     return SubmissionResponse(
@@ -408,5 +427,6 @@ def _to_response(sub) -> SubmissionResponse:
         updated_at=str(sub.updated_at),
         raw_content=raw,
         paragraph_node_ids=p_ids,
+        text_blocks=t_blocks,
         image_paths=img_paths,
     )

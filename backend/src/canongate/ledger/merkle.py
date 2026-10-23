@@ -1,19 +1,18 @@
-"""RFC 9162 Binary Merkle Transparency Tree and Ed25519 Signed Tree Heads.
+"""RFC 9162 (Certificate Transparency v2.0) Binary Merkle Tree & Ed25519 Signed Tree Heads.
 
-Licensing note:
-Upstream `fmerg/pymerkle` is licensed under GPL-3.0, which conflicts with
-CanonGate's permissive MIT/Apache-2.0/BSD-3 policy. This module implements
-RFC 9162 Section 2.1 (Certificate Transparency v2.0 Binary Merkle Hash Trees)
-natively using Python's standard library `hashlib` and `pyca/cryptography`
-(Apache-2.0/BSD-3).
+Implements the exact cryptographic specification from RFC 9162 §2.1:
+- Leaf hash:     MTH({d(0)}) = SHA-256(0x00 || d(0))
+- Interior node: MTH(D_n)    = SHA-256(0x01 || MTH(D[0:k]) || MTH(D[k:n]))
+  where k is the largest power of 2 strictly less than n.
+- Inclusion proof generation (PATH(m, D_n)) and verification (§2.1.3.2).
+- Consistency proof generation (SUBPROOF(m, D_n, true)) and verification (§2.1.4.2).
+- Ed25519 Signed Tree Head (STH) generation and verification.
 
 Security properties:
-- Second-preimage resistance via domain-separation prefixes: `0x00` for leaves,
-  `0x01` for interior nodes (RFC 9162 §2.1.1).
-- Immunity to CVE-2012-2459 lonely-leaf duplication attacks by splitting at the
-  largest power of two strictly less than `n` (binary Sakura tree topology).
-- Full RFC 9162 §2.1.4.2 consistency proof verification (`verify_consistency`)
-  to detect split-view / history-rewrite attacks across tree states.
+1. Domain separation prefixes (0x00 leaf vs 0x01 interior) prevent second-preimage
+   tree-height confusion attacks.
+2. Unbalanced largest-power-of-two split (k < n) eliminates the Bitcoin CVE-2012-2459
+   odd-leaf duplication vulnerability.
 """
 
 from __future__ import annotations
@@ -38,13 +37,13 @@ def _sha256(data: bytes) -> bytes:
     return hashlib.sha256(data).digest()
 
 
-def hash_leaf(entry: bytes) -> bytes:
-    """RFC 9162 §2.1.1: MTH({d(0)}) = SHA-256(0x00 || d(0))."""
-    return _sha256(LEAF_PREFIX + entry)
+def hash_leaf(leaf_bytes: bytes) -> bytes:
+    """RFC 9162 §2.1.1: SHA-256(0x00 || leaf_bytes)."""
+    return _sha256(LEAF_PREFIX + leaf_bytes)
 
 
 def hash_children(left: bytes, right: bytes) -> bytes:
-    """RFC 9162 §2.1.1: MTH(D[n]) = SHA-256(0x01 || MTH(D[0:k]) || MTH(D[k:n]))."""
+    """RFC 9162 §2.1.1: SHA-256(0x01 || left || right)."""
     return _sha256(NODE_PREFIX + left + right)
 
 
@@ -125,28 +124,28 @@ def verify_inclusion(
     """RFC 9162 §2.1.3.2: Verify a Merkle inclusion proof in O(log n) time."""
     if not (0 <= leaf_index < tree_size):
         return False
-    if tree_size == 1:
-        return len(audit_path_hex) == 0 and hash_leaf(leaf_entry).hex() == root_hash_hex
+    try:
+        audit_path = [bytes.fromhex(h) for h in audit_path_hex]
+    except ValueError:
+        return False
 
     fn = leaf_index
     sn = tree_size - 1
     r = hash_leaf(leaf_entry)
-    for sibling_hex in audit_path_hex:
-        try:
-            sibling = bytes.fromhex(sibling_hex)
-        except ValueError:
-            return False
+
+    for p in audit_path:
         if sn == 0:
             return False
         if (fn & 1) == 1 or fn == sn:
-            r = hash_children(sibling, r)
+            r = hash_children(p, r)
             while (fn & 1) == 0 and fn != 0:
                 fn >>= 1
                 sn >>= 1
         else:
-            r = hash_children(r, sibling)
+            r = hash_children(r, p)
         fn >>= 1
         sn >>= 1
+
     return sn == 0 and r.hex() == root_hash_hex
 
 
@@ -191,28 +190,26 @@ def verify_consistency(
 ) -> bool:
     """RFC 9162 §2.1.4.2: Verify consistency between two Merkle Tree Heads.
 
-    Proves that the tree of size `second_size` with root `second_hash_hex` is an
-    append-only extension of the earlier tree of size `first_size` with root
-    `first_hash_hex` (detecting history rewrites or split-view tampering).
+    Returns True iff the tree of `first_size` with root `first_hash_hex` is an
+    exact append-only prefix of the tree of `second_size` with root `second_hash_hex`.
     """
-    if first_size < 0 or second_size < first_size:
+    if not (0 <= first_size <= second_size):
         return False
-    if first_size == second_size:
-        return len(consistency_path_hex) == 0 and first_hash_hex == second_hash_hex
     if first_size == 0:
         return len(consistency_path_hex) == 0
-    if len(consistency_path_hex) == 0:
+    if first_size == second_size:
+        return first_hash_hex == second_hash_hex and len(consistency_path_hex) == 0
+    if not consistency_path_hex:
         return False
 
     try:
         first_hash = bytes.fromhex(first_hash_hex)
         second_hash = bytes.fromhex(second_hash_hex)
-        path = [bytes.fromhex(h) for h in consistency_path_hex]
+        raw_path = [bytes.fromhex(h) for h in consistency_path_hex]
     except ValueError:
         return False
 
-    if _is_exact_power_of_two(first_size):
-        path = [first_hash, *path]
+    path = [first_hash, *raw_path] if _is_exact_power_of_two(first_size) else list(raw_path)
 
     fn = first_size - 1
     sn = second_size - 1
@@ -240,13 +237,25 @@ def verify_consistency(
     return sn == 0 and fr == first_hash and sr == second_hash
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class SignedTreeHead:
     tree_size: int
     timestamp: str
     root_hash: str
     signature_hex: str
     public_key_hex: str
+
+    @property
+    def signature(self) -> str:
+        return self.signature_hex
+
+    @property
+    def public_key(self) -> str:
+        return self.public_key_hex
+
+    @property
+    def root_hash_hex(self) -> str:
+        return self.root_hash
 
     def canonical_bytes(self) -> bytes:
         payload = {
@@ -255,6 +264,17 @@ class SignedTreeHead:
             "tree_size": self.tree_size,
         }
         return json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+
+    def to_dict(self) -> dict[str, int | str]:
+        return {
+            "tree_size": self.tree_size,
+            "timestamp": self.timestamp,
+            "root_hash": self.root_hash,
+            "signature": self.signature_hex,
+            "signature_hex": self.signature_hex,
+            "public_key": self.public_key_hex,
+            "public_key_hex": self.public_key_hex,
+        }
 
     def verify(self) -> bool:
         return verify_tree_head(self)

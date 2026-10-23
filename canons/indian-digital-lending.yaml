@@ -26,7 +26,7 @@ terminology:
   - id: term-cheap
     pattern_text: cheap
     preferred: competitive-rate
-    severity: 55
+    severity: 40
     note: "Brand voice: use 'competitive-rate' rather than 'cheap'."
 
 palette:
