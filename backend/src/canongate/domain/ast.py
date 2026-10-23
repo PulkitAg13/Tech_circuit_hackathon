@@ -66,6 +66,10 @@ class ImageNode(BaseModel, frozen=True):
         )
 
     @property
+    def path(self) -> str:
+        return self.asset_path
+
+    @property
     def dimensions(self) -> tuple[int, int]:
         return (self.width, self.height)
 
