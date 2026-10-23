@@ -16,6 +16,14 @@ without requiring external servers:
    (`get_audit_tree_head` + `verify_tree_head`).
 6. Closed-loop Empirical Bayes friction telemetry (`get_canon_friction`) and automated
    Canon v1.1 PR generation + historical backtest (`propose_canon_pr`).
+7. Regression tests for the 4 Frontend/Backend Integration Bugs:
+   - Bug #1: Tiptap `text_blocks` alignment across linearized Markdown tables (preventing
+     block-index drift on paragraphs following tables).
+   - Bug #2: Discriminated `Evidence` serialization across all 10 kinds and `Trace` fields.
+   - Bug #3: Surgical `Replace` span application on `resolve_finding(resolution="accepted")`
+     with automatic character-offset shifting for co-located open findings on the same node.
+   - Bug #4: Path-disambiguated `NodeId` and `FindingId` for duplicate paragraphs so resolving
+     paragraph 0 never silently suppresses identical paragraph 2.
 """
 
 from __future__ import annotations
@@ -23,6 +31,7 @@ from __future__ import annotations
 import asyncio
 import json
 import sqlite3
+import subprocess
 import sys
 import tempfile
 import types
@@ -250,6 +259,25 @@ class _SqliteStoreAdapter:
     ) -> list[_SubmissionRecord]:
         return list(self._sub_objects.values())[offset : offset + limit]
 
+    async def update_submission_content(
+        self,
+        _session: Any,
+        submission_id: int,
+        *,
+        raw_content: str,
+        content_hash: str,
+    ) -> _SubmissionRecord | None:
+        self.conn.execute(
+            "UPDATE submissions SET raw_content = ?, content_hash = ? WHERE id = ?",
+            (raw_content, content_hash, submission_id),
+        )
+        self.conn.commit()
+        rec = self._sub_objects.get(submission_id)
+        if rec is not None:
+            rec.raw_content = raw_content
+            rec.content_hash = content_hash
+        return rec
+
     async def save_findings(
         self, _session: Any, submission_id: int, findings: list[Finding]
     ) -> None:
@@ -304,6 +332,21 @@ class _SqliteStoreAdapter:
         self.conn.execute(
             "UPDATE findings SET resolution = ?, resolved_by = ? WHERE id = ?",
             (resolution, resolved_by, finding_row_id),
+        )
+        self.conn.commit()
+        return await self.get_finding_by_row_id(_session, finding_row_id)
+
+    async def update_finding_node_and_payload(
+        self,
+        _session: Any,
+        finding_row_id: int,
+        *,
+        node_id: str,
+        payload_json: str,
+    ) -> _FindingRecord | None:
+        self.conn.execute(
+            "UPDATE findings SET node_id = ?, payload_json = ? WHERE id = ?",
+            (node_id, payload_json, finding_row_id),
         )
         self.conn.commit()
         return await self.get_finding_by_row_id(_session, finding_row_id)
@@ -408,6 +451,223 @@ class _SqliteStoreAdapter:
 class TestFullEndToEndRoutes(unittest.TestCase):
     def test_complete_end_to_end_lifecycle_across_all_routes_and_checks(self) -> None:
         asyncio.run(self._run_async_lifecycle())
+
+    def test_four_frontend_backend_integration_bug_fixes(self) -> None:
+        asyncio.run(self._run_four_bug_fixes())
+
+    async def _run_four_bug_fixes(self) -> None:
+        """Verify all 4 frontend/backend integration bugs are resolved end-to-end."""
+        _ensure_route_runtime_shims()
+        from canongate.api.routes import submissions as subs_route
+
+        store = _SqliteStoreAdapter()
+        orig_subs_repos = subs_route.repos
+        orig_persist = subs_route._persist_scan_findings
+
+        async def _mock_persist(sub_id: int, findings: list[Finding]) -> None:
+            await store.save_findings(None, sub_id, findings)
+
+        subs_route.repos = store  # type: ignore[assignment]
+        subs_route._persist_scan_findings = _mock_persist
+
+        try:
+            creator = _UserRecord(1, "alice", "Alice", "creator")
+            reviewer = _UserRecord(2, "bob", "Bob", "reviewer")
+            session = None
+
+            # ── Bug #4: Duplicate paragraphs at distinct paths get distinct NodeIds & FindingIds ──
+            dup_body = (
+                "Our cheap plan is live.\n\n"
+                "| Plan | Copy |\n"
+                "| --- | --- |\n"
+                "| Basic | Clean starter row |\n"
+                "| Pro | Second clean row |\n\n"
+                "Our cheap plan is live.\n\n"
+                "Buy our cheap enterprise addon today."
+            )
+            sub = await subs_route.create_submission(
+                subs_route.CreateSubmissionRequest(
+                    title="Duplicate & Table Alignment Test",
+                    raw_content=dup_body,
+                    canon_id="acme-corp",
+                ),
+                session,  # type: ignore[arg-type]
+                creator,  # type: ignore[arg-type]
+            )
+            # 1 intro para + 2 table rows + 1 duplicate para + 1 multi-finding para = 5 text_blocks
+            self.assertEqual(len(sub.text_blocks), 5)
+            self.assertEqual(len(sub.paragraph_node_ids), 5)
+            # Duplicate paragraphs at p[0] and p[2] must have distinct NodeIds!
+            self.assertNotEqual(sub.paragraph_node_ids[0], sub.paragraph_node_ids[3])
+
+            sse = await subs_route.scan_submission(
+                sub.id,
+                session,  # type: ignore[arg-type]
+                creator,  # type: ignore[arg-type]
+            )
+            async for _ in sse.body_iterator:
+                pass
+
+            findings = await subs_route.get_findings(
+                sub.id,
+                session,  # type: ignore[arg-type]
+                reviewer,  # type: ignore[arg-type]
+            )
+            # Findings:
+            # - p[0] ("Our cheap plan is live.") -> "cheap"
+            # - p[2] ("Our cheap plan is live.") -> "cheap" (distinct finding_id & node_id!)
+            # - p[3] ("Buy our cheap enterprise addon today.") -> "Buy" (0..3) and "cheap" (8..13)
+            p0_findings = [f for f in findings if f.node_id == sub.paragraph_node_ids[0]]
+            p2_findings = [f for f in findings if f.node_id == sub.paragraph_node_ids[3]]
+            p3_findings = [f for f in findings if f.node_id == sub.paragraph_node_ids[4]]
+            self.assertEqual(len(p0_findings), 1)
+            self.assertEqual(len(p2_findings), 1)
+            self.assertNotEqual(p0_findings[0].finding_id, p2_findings[0].finding_id)
+            self.assertEqual(len(p3_findings), 2)
+
+            # ── Bug #1: Verify Tiptap text_blocks alignment across multi-row Markdown table ──
+            node_script = """
+            const payload = JSON.parse(process.argv[1]);
+            const blocks = payload.text_blocks;
+            const paragraphNodeIds = payload.paragraph_node_ids;
+            const findings = payload.findings;
+
+            // Simulate ProseMirror doc built from resolveEditorTextBlocks(submission)
+            const fakeDoc = {
+              descendants(cb) {
+                let pos = 0;
+                for (const text of blocks) {
+                  const n = {
+                    isBlock: true,
+                    isTextblock: true,
+                    textContent: text,
+                    nodeSize: text.length + 2,
+                  };
+                  cb(n, pos);
+                  pos += text.length + 2;
+                }
+              }
+            };
+
+            let blockIndex = 0;
+            const matchedSlices = [];
+            fakeDoc.descendants((node, pos) => {
+              const nodeId = paragraphNodeIds[blockIndex++];
+              for (const f of findings) {
+                if (f.node_id !== nodeId || f.resolution !== "open") continue;
+                const loc = f.payload.locator;
+                const slice = node.textContent.slice(loc.start, loc.end);
+                matchedSlices.push(slice.toLowerCase());
+              }
+            });
+            console.log(JSON.stringify(matchedSlices));
+            """
+            proc = subprocess.run(
+                [
+                    "node",
+                    "-e",
+                    node_script,
+                    json.dumps(
+                        {
+                            "text_blocks": sub.text_blocks,
+                            "paragraph_node_ids": sub.paragraph_node_ids,
+                            "findings": [f.model_dump(mode="json") for f in findings],
+                        }
+                    ),
+                ],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertEqual(proc.returncode, 0, proc.stderr)
+            slices = json.loads(proc.stdout.strip())
+            self.assertEqual(slices, ["cheap", "cheap", "buy", "cheap"])
+
+            # ── Bug #3: Accepting "Buy" -> "purchase" updates raw_content & shifts "cheap" span ──
+            buy_finding = next(f for f in p3_findings if "purchase" in f.message)
+            cheap_finding = next(f for f in p3_findings if "affordable" in f.message)
+            self.assertEqual(buy_finding.payload["locator"]["start"], 0)
+            self.assertEqual(buy_finding.payload["locator"]["end"], 3)
+            self.assertEqual(cheap_finding.payload["locator"]["start"], 8)
+            self.assertEqual(cheap_finding.payload["locator"]["end"], 13)
+
+            # Accept "Buy" -> "purchase" (+5 char shift!)
+            await subs_route.resolve_finding(
+                sub.id,
+                buy_finding.row_id,
+                subs_route.FindingResolutionRequest(resolution="accepted"),
+                session,  # type: ignore[arg-type]
+                reviewer,  # type: ignore[arg-type]
+            )
+
+            updated_sub = await subs_route.get_submission(
+                sub.id,
+                session,  # type: ignore[arg-type]
+                reviewer,  # type: ignore[arg-type]
+            )
+            self.assertIn("purchase our cheap enterprise addon today.", updated_sub.raw_content)
+
+            # Verify co-located "cheap" finding shifted from (8, 13) to (13, 18)
+            # and updated node_id!
+            after_first_accept = await subs_route.get_findings(
+                sub.id,
+                session,  # type: ignore[arg-type]
+                reviewer,  # type: ignore[arg-type]
+            )
+            shifted_cheap = next(f for f in after_first_accept if f.row_id == cheap_finding.row_id)
+            self.assertEqual(shifted_cheap.node_id, updated_sub.paragraph_node_ids[4])
+            self.assertEqual(shifted_cheap.payload["locator"]["start"], 13)
+            self.assertEqual(shifted_cheap.payload["locator"]["end"], 18)
+            self.assertEqual(
+                updated_sub.text_blocks[4][13:18],
+                "cheap",
+            )
+
+            # Now accept the shifted "cheap" -> "affordable" finding on the same paragraph!
+            await subs_route.resolve_finding(
+                sub.id,
+                cheap_finding.row_id,
+                subs_route.FindingResolutionRequest(resolution="accepted"),
+                session,  # type: ignore[arg-type]
+                reviewer,  # type: ignore[arg-type]
+            )
+            final_sub = await subs_route.get_submission(
+                sub.id,
+                session,  # type: ignore[arg-type]
+                reviewer,  # type: ignore[arg-type]
+            )
+            self.assertIn(
+                "purchase our affordable enterprise addon today.",
+                final_sub.raw_content,
+            )
+
+            # Also verify resolving p[0] leaves duplicate p[2] open on re-scan!
+            await subs_route.resolve_finding(
+                sub.id,
+                p0_findings[0].row_id,
+                subs_route.FindingResolutionRequest(resolution="accepted", apply_suggestion=False),
+                session,  # type: ignore[arg-type]
+                reviewer,  # type: ignore[arg-type]
+            )
+            rescan_sse = await subs_route.scan_submission(
+                sub.id,
+                session,  # type: ignore[arg-type]
+                creator,  # type: ignore[arg-type]
+            )
+            async for _ in rescan_sse.body_iterator:
+                pass
+            rescan_findings = await subs_route.get_findings(
+                sub.id,
+                session,  # type: ignore[arg-type]
+                reviewer,  # type: ignore[arg-type]
+            )
+            open_After_rescan = [f for f in rescan_findings if f.resolution == "open"]
+            self.assertEqual(len(open_After_rescan), 1)
+            self.assertEqual(open_After_rescan[0].node_id, final_sub.paragraph_node_ids[3])
+        finally:
+            subs_route.repos = orig_subs_repos
+            subs_route._persist_scan_findings = orig_persist
+            store.conn.close()
 
     async def _run_async_lifecycle(self) -> None:
         _ensure_route_runtime_shims()

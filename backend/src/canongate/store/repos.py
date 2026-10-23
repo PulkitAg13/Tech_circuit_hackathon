@@ -71,6 +71,22 @@ async def list_submissions(
     return list(result.scalars().all())
 
 
+async def update_submission_content(
+    session: AsyncSession,
+    submission_id: int,
+    *,
+    raw_content: str,
+    content_hash: str,
+) -> SubmissionRow | None:
+    """Persist updated raw_content and content_hash when a replacement suggestion is accepted."""
+    sub = await get_submission(session, submission_id)
+    if sub:
+        sub.raw_content = raw_content
+        sub.content_hash = content_hash
+        await session.flush()
+    return sub
+
+
 # ── Findings ─────────────────────────────────────────────────────────
 
 
@@ -143,6 +159,23 @@ async def resolve_finding(
     if row:
         row.resolution = resolution
         row.resolved_by = resolved_by
+        await session.flush()
+    return row
+
+
+async def update_finding_node_and_payload(
+    session: AsyncSession,
+    finding_row_id: int,
+    *,
+    node_id: str,
+    payload_json: str,
+) -> FindingRow | None:
+    """Update a co-located finding's `node_id` and shifted `payload_json` after a span edit."""
+    result = await session.execute(select(FindingRow).where(FindingRow.id == finding_row_id))
+    row = result.scalar_one_or_none()
+    if row:
+        row.node_id = node_id
+        row.payload_json = payload_json
         await session.flush()
     return row
 

@@ -64,10 +64,9 @@ def test_visual_subordination_and_c2pa_check_wire_on_image_node(sample_image_pat
     canon = Canon(
         id="test-canon",
         version="1.0",
-        hash="test-hash",
-        terminology=[],
-        palette=[],
-        facts=[],
+        terminology=(),
+        palette=(),
+        facts=(),
     )
 
     vis_check = VisualSubordinationCheck()

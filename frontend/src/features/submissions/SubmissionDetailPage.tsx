@@ -14,6 +14,7 @@ import {
   getAuditTrail,
   type Submission,
   type FindingResponse,
+  type EvidencePayload,
 } from "../../api/client";
 import { useAuth } from "../auth/AuthContext";
 import { createProseMirrorFindingsPlugin } from "./FindingHighlightsExtension";
@@ -46,6 +47,243 @@ const VERDICT_COLORS: Record<string, string> = {
   "2": "#ef4444",
 };
 
+/**
+ * Escape HTML special characters so `<`, `>`, and `&` inside text blocks or
+ * linearized table rows never get stripped as malformed HTML tags by Tiptap,
+ * keeping ProseMirror UTF-16 offsets 1-to-1 with backend `TextNode.text`.
+ */
+export function escapeHtmlBlock(raw: string): string {
+  return raw
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+}
+
+/**
+ * Resolve the exact sequence of textblocks to render in Tiptap so every block
+ * aligns 1-to-1 with `submission.paragraph_node_ids` (including linearized
+ * Markdown table rows produced by `parse_markdown_text` on the backend).
+ */
+export function resolveEditorTextBlocks(submission: Submission): string[] {
+  if (submission.text_blocks && submission.text_blocks.length > 0) {
+    return submission.text_blocks;
+  }
+  if (!submission.raw_content) {
+    return [];
+  }
+  return submission.raw_content
+    .split(/\n{2,}/)
+    .map((b) => b.trim())
+    .filter((b) => b.length > 0);
+}
+
+export function EvidenceView({ evidence }: { evidence?: EvidencePayload }) {
+  if (!evidence) return null;
+
+  switch (evidence.kind) {
+    case "term_match":
+      return (
+        <div className="evidence-box">
+          <span className="evidence-kind-tag">Term Match</span>
+          <span className="ev-del">{evidence.term}</span>
+          <span className="ev-arrow">→</span>
+          <span className="ev-ins">{evidence.preferred}</span>
+        </div>
+      );
+
+    case "color_distance":
+      return (
+        <div className="evidence-box">
+          <span className="evidence-kind-tag">CIEDE2000 Palette Drift</span>
+          <span className="swatch-pair">
+            <span
+              className="color-swatch"
+              style={{ backgroundColor: evidence.found_hex }}
+              title={`Found: ${evidence.found_hex}`}
+            />
+            <code>{evidence.found_hex}</code>
+          </span>
+          <span className="ev-arrow">vs</span>
+          <span className="swatch-pair">
+            <span
+              className="color-swatch"
+              style={{ backgroundColor: evidence.approved_hex }}
+              title={`Approved: ${evidence.approved_hex}`}
+            />
+            <code>{evidence.approved_hex}</code>
+          </span>
+          <span className="ev-metric">
+            ΔE₀₀ = <strong>{evidence.delta_e.toFixed(2)}</strong> (max {evidence.max_allowed.toFixed(1)})
+          </span>
+        </div>
+      );
+
+    case "contrast":
+      return (
+        <div className="evidence-box">
+          <span className="evidence-kind-tag">WCAG {evidence.wcag_level} Contrast</span>
+          <span
+            className="contrast-preview-chip"
+            style={{
+              color: evidence.fg_hex,
+              backgroundColor: evidence.bg_hex,
+            }}
+          >
+            Aa {evidence.fg_hex} on {evidence.bg_hex}
+          </span>
+          <span className="ev-metric">
+            Ratio <strong>{evidence.contrast_ratio.toFixed(2)}:1</strong> (req ≥ {evidence.required_ratio.toFixed(1)}:1)
+          </span>
+          {evidence.suggested_fg_hex && (
+            <span className="swatch-pair">
+              <span>Suggested FG:</span>
+              <span
+                className="color-swatch"
+                style={{ backgroundColor: evidence.suggested_fg_hex }}
+              />
+              <code>{evidence.suggested_fg_hex}</code>
+            </span>
+          )}
+        </div>
+      );
+
+    case "slot_diff":
+      return (
+        <div className="evidence-box evidence-box-block">
+          <div className="evidence-header-row">
+            <span className="evidence-kind-tag">NLI SlotDiff ({evidence.canon_claim_id})</span>
+            <span className="ev-metric">
+              Entailment P = <strong>{(evidence.entailment_prob * 100).toFixed(0)}%</strong>
+            </span>
+          </div>
+          {evidence.slots && evidence.slots.length > 0 && (
+            <table className="slot-diff-table">
+              <thead>
+                <tr>
+                  <th>Slot</th>
+                  <th>Canon Approved</th>
+                  <th>Draft Copy</th>
+                  <th>Status</th>
+                </tr>
+              </thead>
+              <tbody>
+                {evidence.slots.map((s, idx) => (
+                  <tr key={`${s.slot}-${idx}`}>
+                    <td><code>{s.slot}</code></td>
+                    <td>{s.canon_value}</td>
+                    <td>{s.draft_value}</td>
+                    <td>
+                      <span className={`slot-status-pill status-${s.status}`}>
+                        {s.status}
+                      </span>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+        </div>
+      );
+
+    case "algebraic_proof": {
+      const counterEntries = Object.entries(evidence.counterexample || {});
+      return (
+        <div className="evidence-box evidence-box-block">
+          <div className="evidence-header-row">
+            <span className="evidence-kind-tag">Tier 1.5 Algebraic Solver</span>
+            <span className="slot-status-pill status-contradicted">
+              {evidence.solver_status === "sat_counterexample" ? "SAT Counterexample" : "UNSAT Valid"}
+            </span>
+          </div>
+          <div className="ev-algebra-row">
+            <span>Draft: <code>{evidence.draft_expr}</code></span>
+            <span>Canon: <code>{evidence.canon_constraint}</code></span>
+          </div>
+          {counterEntries.length > 0 && (
+            <div className="ev-counterexample">
+              Witness:{" "}
+              {counterEntries.map(([k, v]) => (
+                <code key={k} className="ev-witness-chip">
+                  {k} = {v}
+                </code>
+              ))}
+            </div>
+          )}
+        </div>
+      );
+    }
+
+    case "legibility":
+      return (
+        <div className="evidence-box">
+          <span className="evidence-kind-tag">ASCI / CCPA Legibility</span>
+          <span className="ev-metric">
+            x-height <strong>{evidence.estimated_x_height_px.toFixed(1)}px</strong> / req{" "}
+            <strong>{evidence.required_px.toFixed(1)}px</strong> (box {evidence.measured_box_px.toFixed(0)}px @{" "}
+            {evidence.image_height_px}p, OCR {(evidence.ocr_confidence * 100).toFixed(0)}%)
+          </span>
+          {evidence.script_mismatch && (
+            <span className="slot-status-pill status-contradicted">
+              CCPA Clause 11 Script Mismatch
+            </span>
+          )}
+        </div>
+      );
+
+    case "saliency":
+      return (
+        <div className="evidence-box">
+          <span className="evidence-kind-tag">Montabone & Soto Saliency</span>
+          <span className="ev-metric">
+            Ratio <strong>{evidence.ratio.toFixed(2)}</strong> &lt; floor{" "}
+            <strong>{evidence.min_ratio.toFixed(2)}</strong> (disclaimer {evidence.disclaimer_saliency.toFixed(3)}{" "}
+            vs headline {evidence.headline_saliency.toFixed(3)})
+          </span>
+        </div>
+      );
+
+    case "confusable":
+      return (
+        <div className="evidence-box">
+          <span className="evidence-kind-tag">UTS #39 Homoglyph</span>
+          <span className="ev-del">{evidence.spoofed_token}</span>
+          <span className="ev-arrow">→</span>
+          <span className="ev-ins">{evidence.normalized_token}</span>
+          {evidence.scripts_detected?.length > 0 && (
+            <span className="ev-metric">
+              Scripts: <code>{evidence.scripts_detected.join(" + ")}</code>
+            </span>
+          )}
+        </div>
+      );
+
+    case "c2pa":
+      return (
+        <div className="evidence-box">
+          <span className="evidence-kind-tag">C2PA Provenance</span>
+          <span className="ev-metric">
+            State: <strong>{evidence.validation_state}</strong>
+            {evidence.issuer ? ` | Issuer: ${evidence.issuer}` : ""}
+            {evidence.digital_source_type ? ` | Source: ${evidence.digital_source_type}` : ""}
+          </span>
+        </div>
+      );
+
+    case "hidden_text":
+      return (
+        <div className="evidence-box">
+          <span className="evidence-kind-tag">OWASP LLM01 ({evidence.mechanism})</span>
+          <code className="ev-snippet">{evidence.extracted_snippet}</code>
+        </div>
+      );
+
+    default:
+      return null;
+  }
+}
+
 export function SubmissionDetailPage() {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
@@ -73,17 +311,15 @@ export function SubmissionDetailPage() {
   }, [id]);
 
   useEffect(() => {
-    if (editor && submission?.raw_content) {
-      const paragraphs = submission.raw_content
-        .split(/\n{2,}/)
-        .filter((b) => b.trim().length > 0);
+    if (editor && submission) {
+      const paragraphs = resolveEditorTextBlocks(submission);
       const html =
         paragraphs.length > 0
-          ? paragraphs.map((p) => `<p>${p}</p>`).join("")
+          ? paragraphs.map((p) => `<p>${escapeHtmlBlock(p)}</p>`).join("")
           : "<p><em>(Empty document)</em></p>";
       editor.commands.setContent(html);
     }
-  }, [editor, submission?.raw_content]);
+  }, [editor, submission?.raw_content, submission?.text_blocks]);
 
   useEffect(() => {
     if (!editor || !submission) return;
@@ -122,8 +358,11 @@ export function SubmissionDetailPage() {
       },
       async () => {
         setScanning(false);
-        // Reload persisted findings
-        const fds = await getFindings(subId);
+        const [sub, fds] = await Promise.all([
+          getSubmission(subId),
+          getFindings(subId),
+        ]);
+        setSubmission(sub);
         setFindings(fds);
       },
       () => {
@@ -146,9 +385,19 @@ export function SubmissionDetailPage() {
   async function handleResolve(findingRowId: number, resolution: string) {
     try {
       const updated = await resolveFinding(subId, findingRowId, resolution);
-      setFindings((prev) =>
-        prev.map((f) => (f.row_id === findingRowId ? updated : f))
-      );
+      if (resolution === "accepted") {
+        // Reload updated submission text_blocks/paragraph_node_ids and shifted findings
+        const [updatedSub, updatedFindings] = await Promise.all([
+          getSubmission(subId),
+          getFindings(subId),
+        ]);
+        setSubmission(updatedSub);
+        setFindings(updatedFindings);
+      } else {
+        setFindings((prev) =>
+          prev.map((f) => (f.row_id === findingRowId ? updated : f))
+        );
+      }
     } catch (err: any) {
       setError(err.message);
     }
@@ -281,6 +530,7 @@ export function SubmissionDetailPage() {
         <div className="findings-list">
           {findings.map((f) => {
             const verdict = f.severity >= 50 ? 2 : f.severity > 0 ? 1 : 0;
+            const trace = f.payload?.trace;
             return (
               <div
                 key={f.row_id}
@@ -300,27 +550,46 @@ export function SubmissionDetailPage() {
                   </span>
                   <span className="check-id">{f.check_id}</span>
                   <span className="severity">S:{f.severity}</span>
-                  {f.payload?.trace && (
-                    <span className="tier-badge" title={`Tier: ${f.payload.trace.tier}`}>
-                      {f.payload.trace.tier === "deterministic" ? "⚙️" : "🤖"}{" "}
-                      {f.payload.trace.tier}
+                  {f.payload?.rule_ref?.rule_id && (
+                    <span className="rule-ref-badge" title={f.payload.rule_ref.source_text || ""}>
+                      Rule: {f.payload.rule_ref.rule_id}
+                    </span>
+                  )}
+                  {trace && (
+                    <span
+                      className="tier-badge"
+                      title={`Tier: ${trace.tier}${trace.model_sha ? ` | SHA: ${trace.model_sha}` : ""}`}
+                    >
+                      {trace.tier === "deterministic"
+                        ? "⚙️"
+                        : trace.tier === "smt"
+                          ? "🧮"
+                          : "🤖"}{" "}
+                      {trace.tier}
+                      {typeof trace.latency_ms === "number"
+                        ? ` · ${trace.latency_ms.toFixed(1)}ms`
+                        : ""}
+                      {trace.model_sha ? ` · ${trace.model_sha.slice(0, 7)}` : ""}
                     </span>
                   )}
                 </div>
                 <p className="finding-message">{f.message}</p>
+                <EvidenceView evidence={f.payload?.evidence} />
                 {f.payload?.suggestion && (
                   <div className="suggestion">
                     💡 {f.payload.suggestion.label}
                   </div>
                 )}
-                <div className="finding-actions">
+                <div className="finding-actions" onClick={(e) => e.stopPropagation()}>
                   {f.resolution === "open" ? (
                     <>
                       <button
                         className="btn-sm btn-success"
                         onClick={() => handleResolve(f.row_id, "accepted")}
                       >
-                        Accept
+                        {f.payload?.suggestion?.replacements?.length
+                          ? "Accept & Apply Fix"
+                          : "Accept"}
                       </button>
                       <button
                         className="btn-sm btn-ghost"

@@ -5,8 +5,10 @@ from __future__ import annotations
 import datetime as dt
 import hashlib
 import json
+import re
 from collections.abc import AsyncIterator
 from pathlib import Path
+from typing import Any
 
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from fastapi import APIRouter, HTTPException
@@ -70,6 +72,7 @@ class WorkflowActionRequest(BaseModel):
 
 class FindingResolutionRequest(BaseModel):
     resolution: str  # accepted | dismissed | overridden
+    apply_suggestion: bool = True
 
 
 class FindingResponse(BaseModel):
@@ -157,6 +160,15 @@ async def scan_submission(submission_id: int, session: SessionDep, user: Current
             collected.append(finding)
             yield {"event": "finding", "data": finding.model_dump_json()}
 
+        collected.sort(
+            key=lambda f: (
+                ast.index_of(f.node_id),
+                f.locator.sort_key,
+                -f.severity,
+                f.check_id,
+                str(f.id),
+            )
+        )
         await _persist_scan_findings(submission_id, collected)
         yield {"event": "done", "data": json.dumps({"total": len(collected)})}
 
@@ -204,6 +216,9 @@ async def resolve_finding(
         )
     except ResolutionError as e:
         raise HTTPException(status_code=403, detail=str(e)) from None
+
+    if req.resolution == "accepted" and req.apply_suggestion:
+        await _apply_accepted_suggestion(session, submission_id, row)
 
     row = await repos.resolve_finding(
         session,
@@ -391,6 +406,205 @@ async def get_audit_tree_head(submission_id: int, session: SessionDep, user: Cur
 
 
 # ── Helpers ──────────────────────────────────────────────────────────
+
+_PARA_IDX_RE = re.compile(r"p\[(\d+)\]")
+_BLOCK_SPLIT_RE = re.compile(r"\n{2,}")
+
+
+async def _apply_accepted_suggestion(
+    session: SessionDep,
+    submission_id: int,
+    row: Any,
+) -> None:
+    """Apply `suggestion.replacements` to `sub.raw_content` and shift co-located spans."""
+    try:
+        payload = json.loads(row.payload_json)
+    except Exception:
+        return
+
+    suggestion = payload.get("suggestion")
+    if not isinstance(suggestion, dict):
+        return
+    raw_replacements = suggestion.get("replacements") or []
+    if not raw_replacements:
+        return
+
+    sub = await repos.get_submission(session, submission_id)
+    if not sub or not getattr(sub, "raw_content", ""):
+        return
+
+    old_node_id = str(row.node_id)
+    ast = _parse_submission_ast(sub.raw_content)
+    target_node = next(
+        (
+            n
+            for n in ast.of_kind(NodeKind.TEXT)
+            if isinstance(n, TextNode) and str(n.id) == old_node_id
+        ),
+        None,
+    )
+    if target_node is None:
+        return
+
+    old_text = target_node.text
+    valid_edits: list[tuple[int, int, str]] = []
+    for rep in raw_replacements:
+        span = rep.get("span") if isinstance(rep, dict) else None
+        rep_str = rep.get("replacement") if isinstance(rep, dict) else None
+        if not isinstance(span, dict) or not isinstance(rep_str, str):
+            continue
+        s = span.get("start")
+        e = span.get("end")
+        if isinstance(s, int) and isinstance(e, int) and 0 <= s < e <= len(old_text):
+            valid_edits.append((s, e, rep_str))
+
+    if not valid_edits:
+        return
+
+    valid_edits.sort(key=lambda item: item[0], reverse=True)
+    new_node_text = old_text
+    for s, e, rep_str in valid_edits:
+        new_node_text = new_node_text[:s] + rep_str + new_node_text[e:]
+
+    new_raw_content = _replace_node_in_raw_content(
+        sub.raw_content,
+        target_node=target_node,
+        new_node_text=new_node_text,
+        edits=valid_edits,
+    )
+    if new_raw_content == sub.raw_content:
+        return
+
+    new_c_hash = content_hash(new_raw_content.encode("utf-8"))
+    if hasattr(repos, "update_submission_content"):
+        await repos.update_submission_content(
+            session,
+            submission_id,
+            raw_content=new_raw_content,
+            content_hash=new_c_hash,
+        )
+    else:
+        sub.raw_content = new_raw_content
+        sub.content_hash = new_c_hash
+
+    new_ast = _parse_submission_ast(new_raw_content)
+    updated_node = next(
+        (
+            n
+            for n in new_ast.of_kind(NodeKind.TEXT)
+            if isinstance(n, TextNode) and n.path == target_node.path
+        ),
+        None,
+    )
+    new_node_id = str(updated_node.id) if updated_node is not None else old_node_id
+
+    all_rows = await repos.get_findings_for_submission(session, submission_id)
+    for other in all_rows:
+        if str(other.node_id) != old_node_id:
+            continue
+        try:
+            other_payload = json.loads(other.payload_json)
+        except Exception:
+            continue
+
+        if other.id != row.id and other.resolution == "open":
+            _shift_or_supersede_finding_payload(other_payload, valid_edits)
+
+        other_payload["node_id"] = new_node_id
+        new_payload_json = json.dumps(other_payload)
+        if hasattr(repos, "update_finding_node_and_payload"):
+            await repos.update_finding_node_and_payload(
+                session,
+                other.id,
+                node_id=new_node_id,
+                payload_json=new_payload_json,
+            )
+        else:
+            other.node_id = new_node_id
+            other.payload_json = new_payload_json
+
+
+def _replace_node_in_raw_content(
+    raw_content: str,
+    *,
+    target_node: TextNode,
+    new_node_text: str,
+    edits: list[tuple[int, int, str]],
+) -> str:
+    """Replace the target node's text inside `raw_content`, preserving paragraph/table structure."""
+    blocks = [b.strip() for b in _BLOCK_SPLIT_RE.split(raw_content) if b.strip()]
+    m = _PARA_IDX_RE.search(target_node.path)
+    para_idx = int(m.group(1)) if m else -1
+
+    if "/table[" not in target_node.path:
+        if 0 <= para_idx < len(blocks):
+            blocks[para_idx] = new_node_text
+            return "\n\n".join(blocks)
+        return raw_content.replace(target_node.text, new_node_text, 1)
+
+    # Linearized Markdown table row (`text/p[idx]/table[t]/r[row_idx]`)
+    if 0 <= para_idx < len(blocks):
+        table_block = blocks[para_idx]
+        updated_block = table_block
+        for s, e, rep_str in edits:
+            old_sub = target_node.text[s:e]
+            if old_sub and old_sub in updated_block:
+                updated_block = updated_block.replace(old_sub, rep_str, 1)
+            elif s == 0 and e == len(target_node.text) and ":" in target_node.text:
+                # Whole-row rewrite from claim.slot_nli: replace the offer cell content
+                cell_val = target_node.text.split(":", maxsplit=2)[-1].strip()
+                if cell_val and cell_val in updated_block:
+                    updated_block = updated_block.replace(cell_val, rep_str, 1)
+        blocks[para_idx] = updated_block
+        return "\n\n".join(blocks)
+
+    return raw_content
+
+
+def _shift_or_supersede_finding_payload(
+    payload: dict[str, Any],
+    applied_edits: list[tuple[int, int, str]],
+) -> None:
+    """Shift character offsets of co-located open findings or clear overlapped replacements."""
+    loc = payload.get("locator")
+    if not isinstance(loc, dict):
+        return
+    os = loc.get("start")
+    oe = loc.get("end")
+    if not isinstance(os, int) or not isinstance(oe, int):
+        return
+
+    overlapped = False
+    net_shift = 0
+    for s, e, rep_str in applied_edits:
+        delta = len(rep_str) - (e - s)
+        if os >= e:
+            net_shift += delta
+        elif oe <= s:
+            continue
+        else:
+            overlapped = True
+            break
+
+    if overlapped:
+        sug = payload.get("suggestion")
+        if isinstance(sug, dict):
+            sug["replacements"] = []
+        return
+
+    if net_shift != 0:
+        loc["start"] = os + net_shift
+        loc["end"] = oe + net_shift
+        sug = payload.get("suggestion")
+        if isinstance(sug, dict):
+            for rep in sug.get("replacements") or []:
+                r_span = rep.get("span") if isinstance(rep, dict) else None
+                if isinstance(r_span, dict):
+                    rs = r_span.get("start")
+                    re_ = r_span.get("end")
+                    if isinstance(rs, int) and isinstance(re_, int):
+                        r_span["start"] = rs + net_shift
+                        r_span["end"] = re_ + net_shift
 
 
 def _parse_submission_ast(raw: str) -> ContentAST:

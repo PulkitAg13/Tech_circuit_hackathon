@@ -59,6 +59,7 @@ export interface Submission {
   updated_at: string;
   raw_content?: string;
   paragraph_node_ids?: string[];
+  text_blocks?: string[];
   image_paths?: string[];
 }
 
@@ -131,7 +132,149 @@ export async function scanSubmission(
   }
 }
 
-/* ── Findings ──────────────────────────────────────────────────────── */
+/* ── Findings & Discriminated Evidence Types ───────────────────────── */
+
+export interface TermMatchEvidence {
+  kind: "term_match";
+  term: string;
+  preferred: string;
+}
+
+export interface ColorDistanceEvidence {
+  kind: "color_distance";
+  found_hex: string;
+  approved_hex: string;
+  delta_e: number;
+  max_allowed: number;
+}
+
+export interface ContrastEvidence {
+  kind: "contrast";
+  fg_hex: string;
+  bg_hex: string;
+  contrast_ratio: number;
+  required_ratio: number;
+  wcag_level: "AA" | "AAA";
+  suggested_fg_hex?: string | null;
+}
+
+export interface LegibilityEvidence {
+  kind: "legibility";
+  measured_box_px: number;
+  estimated_x_height_px: number;
+  required_px: number;
+  image_height_px: number;
+  ocr_confidence: number;
+  script_mismatch?: boolean;
+}
+
+export interface SaliencyEvidence {
+  kind: "saliency";
+  disclaimer_saliency: number;
+  headline_saliency: number;
+  ratio: number;
+  min_ratio: number;
+}
+
+export interface ConfusableEvidence {
+  kind: "confusable";
+  spoofed_token: string;
+  normalized_token: string;
+  confusable_chars: string[];
+  scripts_detected: string[];
+}
+
+export interface AlgebraicProofEvidence {
+  kind: "algebraic_proof";
+  draft_expr: string;
+  canon_constraint: string;
+  solver_status: "sat_counterexample" | "unsat_valid";
+  counterexample: Record<string, string>;
+}
+
+export interface SlotEntryDto {
+  slot: string;
+  canon_value: string;
+  draft_value: string;
+  status: "match" | "dropped" | "contradicted" | "unverified";
+}
+
+export interface SlotDiffEvidence {
+  kind: "slot_diff";
+  entailment_prob: number;
+  canon_claim_id: string;
+  canon_text: string;
+  slots: SlotEntryDto[];
+}
+
+export interface C2paEvidence {
+  kind: "c2pa";
+  has_manifest: boolean;
+  validation_state: string;
+  issuer?: string | null;
+  digital_source_type?: string | null;
+}
+
+export interface HiddenTextEvidence {
+  kind: "hidden_text";
+  mechanism: string;
+  extracted_snippet: string;
+}
+
+export type EvidencePayload =
+  | TermMatchEvidence
+  | ColorDistanceEvidence
+  | ContrastEvidence
+  | LegibilityEvidence
+  | SaliencyEvidence
+  | ConfusableEvidence
+  | AlgebraicProofEvidence
+  | SlotDiffEvidence
+  | C2paEvidence
+  | HiddenTextEvidence;
+
+export interface TracePayload {
+  tier: "deterministic" | "smt" | "nli" | "generative";
+  ai_used?: boolean;
+  external_call?: boolean;
+  model_sha?: string | null;
+  latency_ms?: number | null;
+}
+
+export interface ReplaceSpanDto {
+  span: { kind?: "span"; start: number; end: number };
+  replacement: string;
+}
+
+export interface SuggestionPayload {
+  label: string;
+  replacements?: ReplaceSpanDto[];
+}
+
+export interface FindingPayload {
+  id?: string;
+  check_id?: string;
+  node_id?: string;
+  locator?: {
+    kind?: "span" | "bbox";
+    start?: number;
+    end?: number;
+    x?: number;
+    y?: number;
+    w?: number;
+    h?: number;
+  };
+  severity?: number;
+  message?: string;
+  rule_ref?: {
+    rule_id: string;
+    rule_type: string;
+    source_text?: string;
+  };
+  evidence?: EvidencePayload;
+  suggestion?: SuggestionPayload | null;
+  trace?: TracePayload;
+}
 
 export interface FindingResponse {
   row_id: number;
@@ -141,7 +284,7 @@ export interface FindingResponse {
   severity: number;
   message: string;
   resolution: string;
-  payload: any;
+  payload: FindingPayload;
 }
 
 export async function getFindings(submissionId: number): Promise<FindingResponse[]> {
@@ -149,11 +292,17 @@ export async function getFindings(submissionId: number): Promise<FindingResponse
 }
 
 export async function resolveFinding(
-  submissionId: number, findingRowId: number, resolution: string
+  submissionId: number,
+  findingRowId: number,
+  resolution: string,
+  applySuggestion = true
 ): Promise<FindingResponse> {
   return request<FindingResponse>(
     `/submissions/${submissionId}/findings/${findingRowId}`,
-    { method: "PATCH", body: JSON.stringify({ resolution }) }
+    {
+      method: "PATCH",
+      body: JSON.stringify({ resolution, apply_suggestion: applySuggestion }),
+    }
   );
 }
 

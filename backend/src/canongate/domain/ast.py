@@ -1,7 +1,8 @@
 """ContentAST: the unified, immutable representation of a content bundle.
 
-Parsers produce it; checks consume it. Every node is identified by a content hash,
-so unchanged paragraphs keep their identity across edits.
+Parsers produce it; checks consume it. Every node is identified by a deterministic
+content-and-path hash so identical paragraphs at distinct document paths (`p[0]` vs `p[1]`)
+never collide on `NodeId` or `FindingId`, while pathless nodes hash their content directly.
 """
 
 from __future__ import annotations
@@ -31,7 +32,13 @@ class TextNode(BaseModel, frozen=True):
 
     @classmethod
     def from_text(cls, text: str, path: str = "") -> TextNode:
-        return cls(id=text_node_id(text), text=text, path=path)
+        identity_key = f"{path}:{text}" if path else text
+        return cls(id=text_node_id(identity_key), text=text, path=path)
+
+    @property
+    def text_hash(self) -> str:
+        """Pure content hash of `text` independent of document `path`."""
+        return content_hash(self.text.encode("utf-8"))
 
     def __len__(self) -> int:
         return len(self.text)
@@ -57,8 +64,9 @@ class ImageNode(BaseModel, frozen=True):
     def from_bytes(
         cls, data: bytes, *, path: str, width: int, height: int, alt: str | None = None
     ) -> ImageNode:
+        payload = path.encode("utf-8") + b":" + data if path else data
         return cls(
-            id=NodeId(content_hash(data)),
+            id=NodeId(content_hash(payload)),
             asset_path=path,
             width=width,
             height=height,
@@ -149,6 +157,19 @@ class ContentAST(BaseModel, frozen=True):
         if not isinstance(other, ContentAST):
             return NotImplemented
         return ContentAST(nodes=self.nodes + other.nodes)
+
+    def __or__(self, other: ContentAST) -> ContentAST:
+        if not isinstance(other, ContentAST):
+            return NotImplemented
+        return ContentAST(nodes=self.nodes + other.nodes)
+
+    def text_nodes(self) -> tuple[TextNode, ...]:
+        """Return all `TextNode` items in reading order."""
+        return tuple(n for n in self.nodes if isinstance(n, TextNode))
+
+    def image_nodes(self) -> tuple[ImageNode, ...]:
+        """Return all `ImageNode` items in reading order."""
+        return tuple(n for n in self.nodes if isinstance(n, ImageNode))
 
     def index_of(self, node_id: NodeId, default: int = 999_999) -> int:
         """Return the 0-based positional index of `node_id` in O(1) time."""
