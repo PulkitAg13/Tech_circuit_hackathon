@@ -92,11 +92,11 @@ Think of it as: the plumbing and wiring of the house is done, but you only have 
 | **Tiptap editor with inline highlights** | ✅ Built, wired & tested | ProseMirror 1-indexed & UTF-16 surrogate highlights mounted | **DONE** |
 | **Image BBox overlay** | ❌ | Canvas overlay showing colour drift / OCR regions | **MISSING** |
 | **α slider (conformal risk)** | ❌ | Interactive threshold control | **MISSING** |
-| **Context Trace badge details** | ⚠️ Shows tier | Full: model SHA, latency, proof link | **PARTIAL** |
+| **Context Trace badge details** | ✅ Built, wired & tested | Full: tier emoji, latency ms, & model SHA metadata | **DONE** |
 | Auto-generated TypeScript types from OpenAPI | ❌ | `openapi-typescript` + `openapi-fetch` | **MISSING** |
 | TanStack Router (file-based) | ❌ | Using react-router-dom instead | **DEFERRED** |
 | TanStack Query (caching/refetch) | ❌ | Manual fetch + useState | **MISSING** |
-| Evidence renderers (one per kind) | ✅ Built, wired & tested | All Discriminated Evidence UI components mounted | **DONE** |
+| Evidence renderers (one per kind) | ✅ Built, wired & tested | All 10 Discriminated Evidence UI components with CSS styling | **DONE** |
 | Playwright E2E test | ❌ | 1 golden-path test | **MISSING** |
 
 ### Infrastructure
@@ -122,11 +122,11 @@ Think of it as: the plumbing and wiring of the house is done, but you only have 
 | Canon System | 5 | 0 | 0 | 5 |
 | Engine | 5 | 0 | 4 | 9 |
 | Workflow & Audit | 8 | 0 | 3 | 11 |
-| Frontend | 11 | 1 | 6 | 18 |
+| Frontend | 12 | 0 | 6 | 18 |
 | Infrastructure | 4 | 0 | 3 | 7 |
-| **TOTAL** | **49** | **1** | **16** | **66** |
+| **TOTAL** | **50** | **0** | **16** | **66** |
 
-**~75% complete by feature count (up from 52% and 38%).** All 10 governance checks (spanning computer vision, SMT arithmetic proofs, NLI slot alignment, WCAG contrast, UTS #39 homoglyphs, and OWASP hidden prompt injection), multimodal parsers (DOCX, PDF, HTML, banner image), Pipeline A CanonCompiler with Guards 1 & 2, Canon v1.1 impact simulator, and frontend highlights are fully wired, operational, and validated with **72 passing tests** (including full end-to-end API route execution tests).
+**~76% complete by feature count (up from 52% and 38%).** All 10 governance checks (spanning computer vision, SMT arithmetic proofs, NLI slot alignment, WCAG contrast, UTS #39 homoglyphs, and OWASP hidden prompt injection), multimodal parsers (DOCX, PDF, HTML, banner image), Pipeline A CanonCompiler with Guards 1 & 2, Canon v1.1 impact simulator, surgical 1-click Accept replacements with span-shifting, and 10 rich frontend evidence renderers are fully wired, operational, and validated with **73 passing tests**.
 
 ## Remaining Impact Opportunities
 
