@@ -52,7 +52,7 @@ def compute_fine_grained_saliency(gray_img: np.ndarray) -> np.ndarray:
     h, w = img_f.shape
     base_sigma = max(1, min(h, w) // 64)
     # Six octave-spaced surround radii (Montabone & Soto, 2010)
-    scales = tuple(int(round(base_sigma * f)) for f in (2.0, 2.828, 4.0, 5.657, 8.0, 11.314))
+    scales = tuple(round(base_sigma * f) for f in (2.0, 2.828, 4.0, 5.657, 8.0, 11.314))
 
     combined = np.zeros_like(img_f, dtype=np.float32)
     for r in scales:

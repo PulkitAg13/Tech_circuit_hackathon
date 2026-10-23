@@ -147,9 +147,7 @@ class ClaimSlotNliCheck(Check):
                 if not fact_words:
                     continue
                 min_req = (
-                    len(fact_words)
-                    if len(fact_words) <= 3
-                    else max(3, int(len(fact_words) * 0.6))
+                    len(fact_words) if len(fact_words) <= 3 else max(3, int(len(fact_words) * 0.6))
                 )
                 if len(overlap) < min_req:
                     continue
@@ -262,9 +260,7 @@ class ClaimSlotNliCheck(Check):
             return None
 
         metric_val = (
-            re.sub(r"\s+", " ", core_matches[0].group(0).strip())
-            if core_matches
-            else core_text
+            re.sub(r"\s+", " ", core_matches[0].group(0).strip()) if core_matches else core_text
         )
         slot_entries: list[SlotEntry] = [
             SlotEntry(

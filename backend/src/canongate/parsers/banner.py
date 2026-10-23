@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import io
 import logging
+from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
 
@@ -73,9 +74,7 @@ def _extract_ocr_texts(source_path: str, ocr_engine: Any) -> list[str]:
         return []
     try:
         raw_res = (
-            ocr_engine.ocr(source_path)
-            if hasattr(ocr_engine, "ocr")
-            else ocr_engine(source_path)
+            ocr_engine.ocr(source_path) if hasattr(ocr_engine, "ocr") else ocr_engine(source_path)
         )
     except Exception:
         logger.warning("OCR engine failed on %s; continuing without OCR text", source_path)
@@ -161,5 +160,6 @@ def parse_banner_image(
             nodes.append(TextNode.from_text(cleaned, path=f"{path}/ocr[{idx}]"))
 
     return ContentAST(nodes=tuple(nodes))
+
 
 parse_image = parse_banner_image

@@ -190,9 +190,7 @@ async def get_events_for_submission(
     return list(result.scalars().all())
 
 
-async def get_findings_for_canon(
-    session: AsyncSession, canon_id: str
-) -> list[FindingRow]:
+async def get_findings_for_canon(session: AsyncSession, canon_id: str) -> list[FindingRow]:
     """Retrieve all finding rows across all submissions governed by canon_id."""
     result = await session.execute(
         select(FindingRow)

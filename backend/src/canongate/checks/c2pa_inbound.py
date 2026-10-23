@@ -31,15 +31,9 @@ _AI_SOURCE_TYPES = (
 def _extract_active_manifest_and_state(reader: Any) -> tuple[dict[str, Any], str]:
     """Extract the active manifest dict and validation state across c2pa-python versions."""
     val_state = (
-        str(reader.get_validation_state())
-        if hasattr(reader, "get_validation_state")
-        else ""
+        str(reader.get_validation_state()) if hasattr(reader, "get_validation_state") else ""
     )
-    active: Any = (
-        reader.get_active_manifest()
-        if hasattr(reader, "get_active_manifest")
-        else None
-    )
+    active: Any = reader.get_active_manifest() if hasattr(reader, "get_active_manifest") else None
     if isinstance(active, str):
         try:
             active = json.loads(active)

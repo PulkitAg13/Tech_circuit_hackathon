@@ -58,13 +58,11 @@ _DATE_RE = re.compile(r"\b(\d{4}-\d{2}-\d{2})\b")
 
 # Deterministic patterns for zero-LLM offline brand book compilation
 _BANNED_RULE_RE = re.compile(
-    r"""(?:never\s+use|avoid|ban(?:ned)?|do\s+not\s+use)\s+(?:['"])(https://www.google.com/search?q=%5B%5E%27%22%5D%2B)(?:['"])\s*"""
-    r"""(?:[,;—\-]+\s*)?(?:use|prefer|replace\s+with)\s+(?:['"])(https://www.google.com/search?q=%5B%5E%27%22%5D%2B)(?:['"])""",
+    r"""(?:never\s+use|avoid|ban(?:ned)?|do\s+not\s+use)\s+(?:['"])([^'"]+)(?:['"])\s*"""
+    r"""(?:[,;—\-]+\s*)?(?:use|prefer|replace\s+with)\s+(?:['"])([^'"]+)(?:['"])""",
     re.IGNORECASE,
 )
-_HEX_TOKEN_RE = re.compile(
-    r"(?:([A-Za-z][A-Za-z0-9 _\-]{1,32})\s*[:\-–]\s*)?(#[0-9A-Fa-f]{6})\b"
-)
+_HEX_TOKEN_RE = re.compile(r"(?:([A-Za-z][A-Za-z0-9 _\-]{1,32})\s*[:\-–]\s*)?(#[0-9A-Fa-f]{6})\b")
 
 
 @dataclass(frozen=True, slots=True)
@@ -213,9 +211,7 @@ class CanonCompiler:
     ) -> tuple[Canon, tuple[GroundedRuleRecord, ...]]:
         """Compile input documents or a `ContentAST` into `(Canon, provenance_records)`."""
         bundle_ast = ast if ast is not None else parse_bundle(*inputs)
-        text_nodes = [
-            n for n in bundle_ast.of_kind(NodeKind.TEXT) if isinstance(n, TextNode)
-        ]
+        text_nodes = [n for n in bundle_ast.of_kind(NodeKind.TEXT) if isinstance(n, TextNode)]
         full_doc = "\n\n".join(n.text for n in text_nodes)
 
         raw_candidates = (
@@ -291,9 +287,7 @@ class CanonCompiler:
                 conditions=[str(c) for c in f_raw.get("conditions", ())],
                 valid_until=f_raw.get("valid_until"),
             )
-            repaired_fact, audit = audit_and_repair_fact_claim(
-                initial_fact, grounded_sentence
-            )
+            repaired_fact, audit = audit_and_repair_fact_claim(initial_fact, grounded_sentence)
             facts.append(repaired_fact)
             provenance.append(
                 GroundedRuleRecord(

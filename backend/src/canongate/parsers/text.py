@@ -10,8 +10,8 @@ that preserves heading levels, lists, etc.
 
 from __future__ import annotations
 
-from pathlib import Path
 import re
+from pathlib import Path
 
 from PIL import Image
 
@@ -49,9 +49,7 @@ def parse_text(
                     with Image.open(p) as img:
                         w, h = img.size
                     nodes.append(
-                        ImageNode.from_bytes(
-                            data, path=str(p), width=w, height=h, alt=alt or None
-                        )
+                        ImageNode.from_bytes(data, path=str(p), width=w, height=h, alt=alt or None)
                     )
                     continue
                 except Exception:

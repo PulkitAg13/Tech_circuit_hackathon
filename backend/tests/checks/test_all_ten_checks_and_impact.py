@@ -140,9 +140,7 @@ class TestAllTenChecksAndCanonImpact(unittest.TestCase):
         ev = nli_findings[0].evidence
         assert isinstance(ev, SlotDiffEvidence)
         self.assertLess(ev.entailment_prob, 0.20)
-        self.assertTrue(
-            any(s.status == "dropped" and "50,000" in s.canon_value for s in ev.slots)
-        )
+        self.assertTrue(any(s.status == "dropped" and "50,000" in s.canon_value for s in ev.slots))
         # Applying replacement restores the omitted conditions
         assert nli_findings[0].suggestion is not None
         rep = nli_findings[0].suggestion.replacements[0]

@@ -131,9 +131,7 @@ def parse_html(
     # 2. Extract and linearize tables (removing them from DOM so cells are not re-emitted)
     for tbl in soup.find_all("table"):
         raw_grid = _extract_html_table_grid(tbl)
-        tbl_ast = TableGrid.from_raw_grid(
-            raw_grid, source=f"{source}/table[{table_idx}]"
-        ).to_ast()
+        tbl_ast = TableGrid.from_raw_grid(raw_grid, source=f"{source}/table[{table_idx}]").to_ast()
         nodes.extend(tbl_ast.nodes)
         table_idx += 1
         tbl.decompose()

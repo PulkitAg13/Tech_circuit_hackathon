@@ -194,9 +194,7 @@ class ClaimAlgebraCheck(Check):
                         ),
                         suggestion=Suggestion(
                             label=f"Clamp bound to {canon_amt_str}",
-                            replacements=(
-                                Replace(span=d_bound.span, replacement=canon_amt_str),
-                            ),
+                            replacements=(Replace(span=d_bound.span, replacement=canon_amt_str),),
                         ),
                         trace=Trace(tier=Tier.SMT),
                     )

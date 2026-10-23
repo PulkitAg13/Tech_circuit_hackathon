@@ -351,10 +351,7 @@ class MerkleTree:
             raise ValueError(f"Invalid first_size {first_size} for tree size {n}")
         if first_size == 0 or first_size == n:
             return []
-        return [
-            h.hex()
-            for h in _subproof_range(first_size, self._leaves, 0, n, True, self._memo)
-        ]
+        return [h.hex() for h in _subproof_range(first_size, self._leaves, 0, n, True, self._memo)]
 
     def sign_head(self, timestamp: str, private_key: Ed25519PrivateKey) -> SignedTreeHead:
         return sign_tree_head(self._leaves, timestamp, private_key)

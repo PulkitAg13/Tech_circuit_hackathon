@@ -5,7 +5,7 @@ from __future__ import annotations
 from fastapi import APIRouter
 from pydantic import BaseModel
 
-from canongate.api.deps import CurrentUser, SessionDep, get_canon, list_canon_ids
+from canongate.api.deps import SessionDep, get_canon, list_canon_ids
 
 router = APIRouter(prefix="/canons", tags=["canons"])
 
@@ -77,6 +77,7 @@ async def get_canon_friction(
     """Calculate Empirical Bayes Beta-Binomial guideline friction and Krippendorff's alpha."""
     import json
     from collections import defaultdict
+
     from canongate.ledger.friction import compute_rule_friction, krippendorff_alpha
     from canongate.store import repos
 
@@ -104,7 +105,8 @@ async def get_canon_friction(
 
         if f.resolved_by is not None:
             # 0 for accepted, 1 for disputed/overridden
-            reviewer_ratings[f.resolved_by][f.id] = 1 if f.resolution in ("overridden", "dismissed") else 0
+            is_disputed = f.resolution in ("overridden", "dismissed")
+            reviewer_ratings[f.resolved_by][f.id] = 1 if is_disputed else 0
 
     rule_dtos: list[RuleFrictionDto] = []
     recommendations: list[str] = []
@@ -117,7 +119,10 @@ async def get_canon_friction(
         )
         action = None
         if report.needs_canon_revision:
-            action = f"Generate Canon v1.1 PR: relax rule '{rule_id}' due to {report.posterior_friction:.1%} friction"
+            action = (
+                f"Generate Canon v1.1 PR: relax rule '{rule_id}' "
+                f"due to {report.posterior_friction:.1%} friction"
+            )
             recommendations.append(action)
 
         rule_dtos.append(
@@ -136,6 +141,7 @@ async def get_canon_friction(
     all_units = list({f.id for f in findings if f.resolved_by is not None})
     if len(reviewer_ratings) >= 2 and len(all_units) >= 1:
         import numpy as np
+
         matrix = []
         for r_id in reviewer_ratings:
             row = [reviewer_ratings[r_id].get(u, np.nan) for u in all_units]

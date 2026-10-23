@@ -23,6 +23,10 @@ dependencies = [
     "cryptography>=43.0",
     "pyyaml>=6.0",
     "sse-starlette>=2.1",
+    "beautifulsoup4>=4.15.0",
+    "python-docx>=1.2.0",
+    "pypdf>=6.21.2",
+    "pdfplumber>=0.11.10",
 ]
 
 [project.optional-dependencies]
@@ -50,6 +54,7 @@ src = ["src"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B", "SIM", "RUF"]
+ignore = ["RUF001", "RUF002", "RUF003"]  # UTS #39 homoglyphs are intentional in tests and confusable check
 
 [tool.pyright]
 pythonVersion = "3.12"

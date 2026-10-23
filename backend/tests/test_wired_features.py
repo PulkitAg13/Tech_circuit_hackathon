@@ -8,7 +8,6 @@
 
 from __future__ import annotations
 
-import tempfile
 from pathlib import Path
 
 import numpy as np
@@ -19,7 +18,6 @@ from canongate.checks.c2pa_inbound import C2paInboundCheck
 from canongate.checks.visual_subordination import VisualSubordinationCheck
 from canongate.domain.ast import ContentAST, ImageNode, NodeKind
 from canongate.domain.canon import Canon
-from canongate.ledger.merkle import verify_inclusion, verify_tree_head
 from canongate.parsers.image import parse_image, parse_image_ast
 from canongate.parsers.text import parse_text
 
@@ -93,7 +91,9 @@ async def test_audit_merkle_log_endpoint_and_friction_integration():
     assert report_low.needs_canon_revision is True
     assert report_low.posterior_friction > 0.40
 
-    report_noisy_single = compute_rule_friction("term.rare", total_flags=1, overrides_and_disputes=1)
+    report_noisy_single = compute_rule_friction(
+        "term.rare", total_flags=1, overrides_and_disputes=1
+    )
     # 1 out of 1 flags should shrink toward prior (0.20) and not trigger revision alert
     assert report_noisy_single.needs_canon_revision is False
 

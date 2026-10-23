@@ -30,7 +30,7 @@ import numpy as np
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from PIL import Image
 
-from canongate.checks.c2pa_inbound import C2paInboundCheck, inspect_c2pa_asset
+from canongate.checks.c2pa_inbound import C2paInboundCheck
 from canongate.checks.terminology_banned import TerminologyBannedCheck
 from canongate.checks.visual_subordination import (
     VisualSubordinationCheck,
@@ -49,8 +49,6 @@ from canongate.ledger.merkle import (
     hash_children,
     hash_leaf,
     prove_consistency,
-    prove_inclusion,
-    sign_tree_head,
     verify_consistency,
     verify_inclusion,
     verify_tree_head,
@@ -206,7 +204,7 @@ class TestFix3CryptographicMerkleAndKrippendorffEdgeCases(unittest.TestCase):
 
     def test_rfc9162_section_2_1_5_seven_leaf_topology_and_merkle_tree_oop(self) -> None:
         """Verify RFC 9162 §2.1.5 7-leaf topology, consistency proofs, and MerkleTree dunders."""
-        leaves = [f"d{i}".encode("utf-8") for i in range(7)]
+        leaves = [f"d{i}".encode() for i in range(7)]
         a, b, c, d, e, f, d6 = [hash_leaf(x) for x in leaves]
         g = hash_children(a, b)
         h = hash_children(c, d)

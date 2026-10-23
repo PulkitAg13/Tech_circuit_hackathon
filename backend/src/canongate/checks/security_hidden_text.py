@@ -67,11 +67,7 @@ class SecurityHiddenTextCheck(Check):
         # Case 1: Node was already isolated onto a */hidden[*] path by parse_html or parse_pdf
         if "/hidden[" in node.path:
             is_inj = bool(_PROMPT_INJECTION_RE.search(node.text))
-            mechanism = (
-                "css_or_pdf_hidden_prompt_injection"
-                if is_inj
-                else "css_or_pdf_hidden_node"
-            )
+            mechanism = "css_or_pdf_hidden_prompt_injection" if is_inj else "css_or_pdf_hidden_node"
             full_span = Span(start=0, end=len(node.text))
             return [
                 self.finding(

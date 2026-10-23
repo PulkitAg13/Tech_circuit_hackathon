@@ -152,9 +152,9 @@ class VisualPaletteDriftCheck(Check):
             mask = flat_keys == key_val
             med_vals = np.median(rgb_img[mask], axis=0)
             rgb = (
-                int(round(float(med_vals[0]))),
-                int(round(float(med_vals[1]))),
-                int(round(float(med_vals[2]))),
+                round(float(med_vals[0])),
+                round(float(med_vals[1])),
+                round(float(med_vals[2])),
             )
             # Skip near-achromatic grey/white/black backgrounds (low saturation)
             if max(rgb) - min(rgb) < 18:

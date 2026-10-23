@@ -171,12 +171,8 @@ class Canon(BaseModel, frozen=True):
         terms_key = tuple(
             (t.id, t.pattern_text, t.preferred, t.severity, t.note) for t in self.terminology
         )
-        palette_key = tuple(
-            (c.id, c.hex, c.name, c.max_delta_e, c.rgb) for c in self.palette
-        )
-        facts_key = tuple(
-            (f.id, f.text, tuple(f.conditions), f.valid_until) for f in self.facts
-        )
+        palette_key = tuple((c.id, c.hex, c.name, c.max_delta_e, c.rgb) for c in self.palette)
+        facts_key = tuple((f.id, f.text, tuple(f.conditions), f.valid_until) for f in self.facts)
         return _compute_canon_hash_cached(
             self.id,
             self.version,

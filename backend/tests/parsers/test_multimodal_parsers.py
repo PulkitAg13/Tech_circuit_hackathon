@@ -33,7 +33,7 @@ import numpy as np
 from PIL import Image
 
 from canongate.canon import CanonCompiler, compile_canon, ground_char_interval
-from canongate.domain.ast import ImageNode, NodeKind, TextNode
+from canongate.domain.ast import ImageNode, NodeKind
 from canongate.domain.canon import Canon, TermRule
 from canongate.engine.runner import run_checks_collect
 from canongate.parsers.banner import detect_banner_text_boxes, parse_image
@@ -259,9 +259,7 @@ class TestMultimodalParsersAndPipelineA(unittest.TestCase):
         )
 
         # 1. Test deterministic zero-LLM compilation first
-        det_canon, det_prov = compile_canon(
-            brand_book_md, canon_id="fintech-det", version="1.0"
-        )
+        det_canon, _det_prov = compile_canon(brand_book_md, canon_id="fintech-det", version="1.0")
         self.assertEqual(len(det_canon.terminology), 1)
         self.assertEqual(det_canon.terminology[0].pattern_text, "cheap")
         self.assertEqual(len(det_canon.palette), 1)
@@ -317,9 +315,7 @@ class TestMultimodalParsersAndPipelineA(unittest.TestCase):
             }
 
         compiler = CanonCompiler(llm_extractor=faulty_llm_extractor)
-        canon, prov = compiler.compile(
-            brand_book_md, canon_id="fintech-guarded", version="1.0"
-        )
+        canon, prov = compiler.compile(brand_book_md, canon_id="fintech-guarded", version="1.0")
 
         # Guard 2 must have rejected both hallucinated rules!
         self.assertEqual(len(canon.terminology), 1)
@@ -334,7 +330,7 @@ class TestMultimodalParsersAndPipelineA(unittest.TestCase):
         self.assertIn("under Rs 50,000", cond_joined)
 
         # Verify char_interval grounding on every provenance record
-        fact_prov = [p for p in prov if p.rule_id == "fact-loan-fee"][0]
+        fact_prov = next(p for p in prov if p.rule_id == "fact-loan-fee")
         self.assertIsNotNone(fact_prov.anchor_audit)
         assert fact_prov.anchor_audit is not None
         self.assertLess(fact_prov.anchor_audit.raw_recall, 1.0)

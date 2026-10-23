@@ -119,9 +119,7 @@ def parse_pdf(
                 hidden_chars = [str(c.get("text", "")) for c in chars if _is_char_hidden(c)]
                 hidden_text = "".join(hidden_chars).strip()
                 if hidden_text:
-                    nodes.append(
-                        TextNode.from_text(hidden_text, path=f"{page_prefix}/hidden[0]")
-                    )
+                    nodes.append(TextNode.from_text(hidden_text, path=f"{page_prefix}/hidden[0]"))
 
                 # 2. Extract tables and record their bounding boxes to avoid text duplication
                 table_bboxes: list[tuple[float, float, float, float]] = []
@@ -143,15 +141,17 @@ def parse_pdf(
                 body_page = page
                 if (table_bboxes or hidden_text) and hasattr(page, "filter"):
                     body_page = page.filter(
-                        lambda obj: obj.get("object_type") != "char"
-                        or (
-                            not _is_char_hidden(obj)
-                            and not _point_in_bboxes(
-                                float(obj.get("x0", 0.0)),
-                                float(obj.get("top", 0.0)),
-                                float(obj.get("x1", 0.0)),
-                                float(obj.get("bottom", 0.0)),
-                                table_bboxes,
+                        lambda obj, tb=table_bboxes: (
+                            obj.get("object_type") != "char"
+                            or (
+                                not _is_char_hidden(obj)
+                                and not _point_in_bboxes(
+                                    float(obj.get("x0", 0.0)),
+                                    float(obj.get("top", 0.0)),
+                                    float(obj.get("x1", 0.0)),
+                                    float(obj.get("bottom", 0.0)),
+                                    tb,
+                                )
                             )
                         )
                     )

@@ -50,7 +50,7 @@ def hex_to_rgb(hex_str: str) -> tuple[int, int, int]:
 
 
 def rgb_to_hex(rgb: tuple[int, int, int]) -> str:
-    r, g, b = (max(0, min(255, int(round(c)))) for c in rgb)
+    r, g, b = (max(0, min(255, round(c))) for c in rgb)
     return f"#{r:02X}{g:02X}{b:02X}"
 
 
@@ -121,7 +121,7 @@ def lab_to_rgb(lab: tuple[float, float, float]) -> tuple[int, int, int]:
             if c_clamped <= 0.0031308
             else 1.055 * (c_clamped ** (1.0 / 2.4)) - 0.055
         )
-        out.append(max(0, min(255, int(round(srgb * 255.0)))))
+        out.append(max(0, min(255, round(srgb * 255.0))))
     return (out[0], out[1], out[2])
 
 
@@ -233,11 +233,7 @@ def delta_e_ciede2000(
 
 def detect_text_band_boxes(rgb_or_gray: np.ndarray, *, min_width: int = 16) -> tuple[BBox, ...]:
     """Detect horizontal text-line bounding boxes via Sobel + morphological closing."""
-    gray = (
-        cv2.cvtColor(rgb_or_gray, cv2.COLOR_RGB2GRAY)
-        if rgb_or_gray.ndim == 3
-        else rgb_or_gray
-    )
+    gray = cv2.cvtColor(rgb_or_gray, cv2.COLOR_RGB2GRAY) if rgb_or_gray.ndim == 3 else rgb_or_gray
     h, w = gray.shape
     if h < 16 or w < 16:
         return ()
@@ -272,12 +268,12 @@ def segment_fg_bg_rgb(
     pos_mask = mask > 0
     neg_mask = ~pos_mask
     if not np.any(pos_mask) or not np.any(neg_mask):
-        med = tuple(int(round(float(x))) for x in np.median(crop_rgb.reshape(-1, 3), axis=0))
+        med = tuple(round(float(x)) for x in np.median(crop_rgb.reshape(-1, 3), axis=0))
         return (med[0], med[1], med[2]), (med[0], med[1], med[2])
 
     # Backgroundtypically occupies the majority of border pixels in a text bounding box
-    pos_rgb = tuple(int(round(float(x))) for x in np.median(crop_rgb[pos_mask], axis=0))
-    neg_rgb = tuple(int(round(float(x))) for x in np.median(crop_rgb[neg_mask], axis=0))
+    pos_rgb = tuple(round(float(x)) for x in np.median(crop_rgb[pos_mask], axis=0))
+    neg_rgb = tuple(round(float(x)) for x in np.median(crop_rgb[neg_mask], axis=0))
     if int(np.count_nonzero(pos_mask)) >= int(np.count_nonzero(neg_mask)):
         bg_rgb = (pos_rgb[0], pos_rgb[1], pos_rgb[2])
         fg_rgb = (neg_rgb[0], neg_rgb[1], neg_rgb[2])

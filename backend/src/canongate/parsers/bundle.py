@@ -16,9 +16,9 @@ from collections.abc import Callable, Sequence
 from pathlib import Path
 
 from canongate.domain.ast import ContentAST
+from canongate.parsers.banner import parse_banner_image as parse_image
 from canongate.parsers.docx import parse_docx
 from canongate.parsers.html import parse_html
-from canongate.parsers.banner import parse_banner_image as parse_image
 from canongate.parsers.pdf import parse_pdf
 from canongate.parsers.tables import parse_markdown_text as parse_text
 
@@ -107,9 +107,7 @@ class BundleParser:
     ) -> ContentAST:
         if ext in (".txt", ".md", ".markdown"):
             text = (
-                payload.decode("utf-8", errors="replace")
-                if isinstance(payload, bytes)
-                else payload
+                payload.decode("utf-8", errors="replace") if isinstance(payload, bytes) else payload
             )
             return parse_text(text, source=stem)
         if ext in (".html", ".htm"):

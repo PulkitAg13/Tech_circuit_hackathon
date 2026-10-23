@@ -260,6 +260,7 @@ async def workflow_action(
     # Outbound C2PA Asset Signing on approval/publishing
     if new_status in (Status.APPROVED, Status.PUBLISHED):
         from pathlib import Path
+
         from canongate.domain.ast import NodeKind
         from canongate.ledger.c2pa_outbound import build_governance_manifest, sign_approved_asset
         from canongate.ledger.merkle import compute_merkle_root
@@ -293,7 +294,9 @@ async def workflow_action(
                             ),
                             manifest_def=manifest,
                             sign_callback=lambda data: b"canongate-c2pa-signature",
-                            cert_chain_pem="-----BEGIN CERTIFICATE-----\n...\n-----END CERTIFICATE-----",
+                            cert_chain_pem=(
+                                "-----BEGIN CERTIFICATE-----\n...\n-----END CERTIFICATE-----"
+                            ),
                         )
                     except Exception:
                         pass
@@ -304,12 +307,14 @@ async def workflow_action(
 @router.get("/{submission_id}/audit")
 async def get_audit_trail(submission_id: int, session: SessionDep, user: CurrentUser):
     import hashlib
+
+    from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+
     from canongate.ledger.merkle import (
         compute_merkle_root,
         prove_inclusion,
         sign_tree_head,
     )
-    from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
     events = await repos.get_events_for_submission(session, submission_id)
     if not events:
@@ -357,8 +362,10 @@ async def get_audit_trail(submission_id: int, session: SessionDep, user: Current
 async def get_audit_tree_head(submission_id: int, session: SessionDep, user: CurrentUser):
     """Retrieve the RFC 9162 Signed Tree Head (STH) with Ed25519 signature."""
     import hashlib
-    from canongate.ledger.merkle import compute_merkle_root, sign_tree_head
+
     from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+
+    from canongate.ledger.merkle import sign_tree_head
 
     events = await repos.get_events_for_submission(session, submission_id)
     if not events:
