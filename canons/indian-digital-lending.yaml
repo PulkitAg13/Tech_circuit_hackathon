@@ -1,0 +1,55 @@
+# CanonGate Starter Canon — Indian Digital Lending (RBI 2025 KFS & ASCI BFSI Norms)
+# Grounded in RBI Digital Lending Directions (May 2025) & Key Fact Statement (KFS) Mandate
+
+id: indian-digital-lending
+version: "1.0"
+
+terminology:
+  - id: term-guaranteed-approval
+    pattern_text: guaranteed approval
+    preferred: subject to credit assessment
+    severity: 85
+    note: "RBI Digital Lending Directions: never promise guaranteed loan approval without underwriting."
+
+  - id: term-no-credit-check
+    pattern_text: no credit check
+    preferred: streamlined credit verification
+    severity: 80
+    note: "RBI KYC / Bureau mandate: all regulated NBFC loans require bureau reporting."
+
+  - id: term-free-money
+    pattern_text: free money
+    preferred: credit facility
+    severity: 75
+    note: "ASCI BFSI code: do not portray credit or loans as free money."
+
+  - id: term-cheap
+    pattern_text: cheap
+    preferred: competitive-rate
+    severity: 55
+    note: "Brand voice: use 'competitive-rate' rather than 'cheap'."
+
+palette:
+  - id: color-rbi-trust-navy
+    hex: "#0D3B66"
+    name: "Trust Navy"
+    max_delta_e: 3.0
+
+  - id: color-upi-emerald
+    hex: "#1B8A5A"
+    name: "Verified Emerald"
+    max_delta_e: 3.0
+
+facts:
+  - id: fact-kfs-processing-fee
+    text: "0% processing fee on loans"
+    conditions:
+      - "under Rs 50,000"
+      - "for first-time borrowers only"
+    valid_until: "2026-09-30"
+
+  - id: fact-kfs-apr-ceiling
+    text: "Annual Percentage Rate (APR) is 18%"
+    conditions:
+      - "up to Rs 2,00,000"
+    valid_until: "2026-12-31"

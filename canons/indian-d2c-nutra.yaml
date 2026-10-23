@@ -1,0 +1,49 @@
+# CanonGate Starter Canon — Indian D2C Nutraceuticals (ASCI Health & CCPA 2022 Guidelines)
+# Grounded in ASCI F&B/Health Guidelines & CCPA 2022 Misleading Advertisement Clause 11
+
+id: indian-d2c-nutra
+version: "1.0"
+
+terminology:
+  - id: term-miracle-cure
+    pattern_text: miracle cure
+    preferred: nutritional support
+    severity: 90
+    note: "Drugs and Magic Remedies Act / ASCI: never claim a miracle cure."
+
+  - id: term-cures-diabetes
+    pattern_text: cures diabetes
+    preferred: supports healthy glycemic metabolism
+    severity: 95
+    note: "ASCI Health Guidelines: nutraceuticals cannot claim to cure chronic disease."
+
+  - id: term-100pct-fat-burn
+    pattern_text: 100% fat burn
+    preferred: supports active weight management
+    severity: 80
+    note: "CCPA 2022: absolute 100% physiological efficacy claims require clinical trial proof."
+
+palette:
+  - id: color-botanical-sage
+    hex: "#2E6F40"
+    name: "Botanical Sage"
+    max_delta_e: 3.0
+
+  - id: color-turmeric-gold
+    hex: "#D99B26"
+    name: "Turmeric Gold"
+    max_delta_e: 3.5
+
+facts:
+  - id: fact-curcumin-absorption
+    text: "2x faster absorption"
+    conditions:
+      - "in-vitro ingredient study only"
+      - "when taken with piperine for 8 weeks"
+    valid_until: "2026-12-31"
+
+  - id: fact-protein-per-serving
+    text: "24g plant protein per scoop"
+    conditions:
+      - "per 35g serving size"
+    valid_until: "2026-12-31"
