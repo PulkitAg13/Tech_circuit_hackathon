@@ -1,9 +1,10 @@
 """PDF Document, Table, and Hidden Micro-Text Parser (`parsers/pdf.py`).
 
 Uses `pdfplumber` (MIT) with automatic fallback to `pypdf` (BSD-3):
-1. Detects and linearizes PDF tables via `page.find_tables()` and `TableGrid`,
-   filtering table bounding boxes out of the page before body text extraction so
-   tabular numbers are never duplicated as mangled plain text.
+1. Detects and linearizes PDF tables via `page.find_tables()` (both bordered lattice
+   tables and borderless whitespace-aligned tables via `vertical_strategy="text"`) and
+   `TableGrid`, filtering table bounding boxes out of the page before body text
+   extraction so tabular numbers are never duplicated as mangled plain text.
 2. Inspects `page.chars` for OWASP LLM01 indirect prompt-injection vectors:
    micro-font text (`size < 4.0` pt) or white-on-white fill colour
    (`(1, 1, 1)` or `(255, 255, 255)`), emitting `{source}/page[{p}]/hidden[0]`.
@@ -19,11 +20,20 @@ from pathlib import Path
 from typing import Any
 
 from canongate.domain.ast import ContentAST, Node, TextNode
-from canongate.parsers.tables import TableGrid
+from canongate.parsers.llm_table import MultiProviderJsonLLM
+from canongate.parsers.tables import TableGrid, is_footnote_text
 
 logger = logging.getLogger(__name__)
 
 _PARA_SPLIT = re.compile(r"\n{2,}")
+_BORDERLESS_ROW_RE = re.compile(r"\S+\s{2,}\S+")
+
+_TEXT_TABLE_SETTINGS: dict[str, Any] = {
+    "vertical_strategy": "text",
+    "horizontal_strategy": "text",
+    "min_words_vertical": 2,
+    "min_words_horizontal": 1,
+}
 
 
 def _is_white_color(color: Any) -> bool:
@@ -54,7 +64,38 @@ def _point_in_bboxes(
     return any(bx0 <= cx <= bx1 and btop <= cy <= bbottom for bx0, btop, bx1, bbottom in bboxes)
 
 
-def _parse_with_pypdf(raw_bytes: bytes, *, source: str) -> ContentAST:
+def _extract_whitespace_aligned_tables(raw_text: str) -> tuple[list[list[list[str]]], list[str]]:
+    """Recover borderless multi-column tables from raw page text when vector lines are absent."""
+    blocks = [b.strip() for b in _PARA_SPLIT.split(raw_text) if b.strip()]
+    tables: list[list[list[str]]] = []
+    remaining_blocks: list[str] = []
+
+    for blk in blocks:
+        lines = [ln.strip() for ln in blk.splitlines() if ln.strip()]
+        multi_col_lines = [ln for ln in lines if _BORDERLESS_ROW_RE.search(ln)]
+        if len(lines) >= 2 and len(multi_col_lines) >= 2:
+            grid: list[list[str]] = []
+            for ln in lines:
+                if is_footnote_text(ln):
+                    grid.append([ln])
+                else:
+                    cells = [c.strip() for c in re.split(r"\s{2,}|\t+", ln) if c.strip()]
+                    if cells:
+                        grid.append(cells)
+            if len(grid) >= 2 and max(len(r) for r in grid) >= 2:
+                tables.append(grid)
+                continue
+        remaining_blocks.append(blk)
+
+    return tables, remaining_blocks
+
+
+def _parse_with_pypdf(
+    raw_bytes: bytes,
+    *,
+    source: str,
+    llm_client: MultiProviderJsonLLM | None = None,
+) -> ContentAST:
     try:
         import pypdf  # type: ignore[import-untyped]
 
@@ -64,12 +105,19 @@ def _parse_with_pypdf(raw_bytes: bytes, *, source: str) -> ContentAST:
             text = (page.extract_text() or "").strip()
             if not text:
                 continue
-            for b_idx, block in enumerate(_PARA_SPLIT.split(text)):
+            page_prefix = f"{source}/page[{p_idx}]"
+            ws_tables, rem_blocks = _extract_whitespace_aligned_tables(text)
+            for t_idx, raw_grid in enumerate(ws_tables):
+                tbl_ast = TableGrid.from_raw_grid(
+                    raw_grid,
+                    source=f"{page_prefix}/table[{t_idx}]",
+                    llm_client=llm_client,
+                ).to_ast()
+                nodes.extend(tbl_ast.nodes)
+            for b_idx, block in enumerate(rem_blocks):
                 cleaned = block.strip()
                 if cleaned:
-                    nodes.append(
-                        TextNode.from_text(cleaned, path=f"{source}/page[{p_idx}]/p[{b_idx}]")
-                    )
+                    nodes.append(TextNode.from_text(cleaned, path=f"{page_prefix}/p[{b_idx}]"))
         return ContentAST(nodes=tuple(nodes))
     except Exception:
         logger.warning("Failed to parse PDF via pypdf fallback at %s", source)
@@ -80,6 +128,7 @@ def parse_pdf(
     source: str | Path | bytes,
     *,
     source_name: str = "pdf",
+    llm_client: MultiProviderJsonLLM | None = None,
 ) -> ContentAST:
     """Parse a PDF file or byte buffer into a `ContentAST` of paragraphs, tables, and hidden text.
 
@@ -106,7 +155,7 @@ def parse_pdf(
     try:
         import pdfplumber  # type: ignore[import-untyped]
     except ImportError:
-        return _parse_with_pypdf(raw_bytes, source=source_name)
+        return _parse_with_pypdf(raw_bytes, source=source_name, llm_client=llm_client)
 
     nodes: list[Node] = []
     try:
@@ -121,9 +170,24 @@ def parse_pdf(
                 if hidden_text:
                     nodes.append(TextNode.from_text(hidden_text, path=f"{page_prefix}/hidden[0]"))
 
-                # 2. Extract tables and record their bounding boxes to avoid text duplication
+                # 2. Extract bordered tables first; if none found,
+                # probe borderless text-aligned tables
                 table_bboxes: list[tuple[float, float, float, float]] = []
                 found_tables = page.find_tables() if hasattr(page, "find_tables") else []
+                if not found_tables and hasattr(page, "find_tables"):
+                    try:
+                        candidate_tables = page.find_tables(table_settings=_TEXT_TABLE_SETTINGS)
+                        # Only accept text-strategy tables with >= 2 rows and >= 2 columns
+                        found_tables = [
+                            t
+                            for t in (candidate_tables or [])
+                            if (grid := t.extract())
+                            and len(grid) >= 2
+                            and max((len(r) for r in grid), default=0) >= 2
+                        ]
+                    except TypeError:
+                        found_tables = []
+
                 for t_idx, tbl_obj in enumerate(found_tables):
                     bbox = getattr(tbl_obj, "bbox", None)
                     if bbox and len(bbox) == 4:
@@ -133,7 +197,9 @@ def parse_pdf(
                     raw_grid = tbl_obj.extract()
                     if raw_grid:
                         tbl_ast = TableGrid.from_raw_grid(
-                            raw_grid, source=f"{page_prefix}/table[{t_idx}]"
+                            raw_grid,
+                            source=f"{page_prefix}/table[{t_idx}]",
+                            llm_client=llm_client,
                         ).to_ast()
                         nodes.extend(tbl_ast.nodes)
 
@@ -158,14 +224,30 @@ def parse_pdf(
 
                 raw_text = (body_page.extract_text() or "").strip()
                 if raw_text:
-                    for b_idx, block in enumerate(_PARA_SPLIT.split(raw_text)):
-                        cleaned = block.strip()
-                        if cleaned:
-                            nodes.append(
-                                TextNode.from_text(cleaned, path=f"{page_prefix}/p[{b_idx}]")
-                            )
+                    if not found_tables:
+                        ws_tables, rem_blocks = _extract_whitespace_aligned_tables(raw_text)
+                        for t_idx, raw_grid in enumerate(ws_tables):
+                            tbl_ast = TableGrid.from_raw_grid(
+                                raw_grid,
+                                source=f"{page_prefix}/table[{t_idx}]",
+                                llm_client=llm_client,
+                            ).to_ast()
+                            nodes.extend(tbl_ast.nodes)
+                        for b_idx, block in enumerate(rem_blocks):
+                            cleaned = block.strip()
+                            if cleaned:
+                                nodes.append(
+                                    TextNode.from_text(cleaned, path=f"{page_prefix}/p[{b_idx}]")
+                                )
+                    else:
+                        for b_idx, block in enumerate(_PARA_SPLIT.split(raw_text)):
+                            cleaned = block.strip()
+                            if cleaned:
+                                nodes.append(
+                                    TextNode.from_text(cleaned, path=f"{page_prefix}/p[{b_idx}]")
+                                )
     except Exception:
         logger.warning("pdfplumber failed on %s; attempting pypdf fallback", source_name)
-        return _parse_with_pypdf(raw_bytes, source=source_name)
+        return _parse_with_pypdf(raw_bytes, source=source_name, llm_client=llm_client)
 
     return ContentAST(nodes=tuple(nodes))

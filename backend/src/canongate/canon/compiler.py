@@ -32,6 +32,7 @@ from canongate.domain.ast import ContentAST, NodeKind, TextNode
 from canongate.domain.canon import Canon, ColorToken, FactClaim, TermRule
 from canongate.domain.finding import Span
 from canongate.parsers.bundle import BundleInput, parse_bundle
+from canongate.parsers.llm_table import MultiProviderJsonLLM, create_llm_canon_extractor
 
 logger = logging.getLogger(__name__)
 
@@ -199,8 +200,10 @@ class CanonCompiler:
     def __init__(
         self,
         llm_extractor: Callable[[str], dict[str, Any]] | None = None,
+        *,
+        llm_client: MultiProviderJsonLLM | None = None,
     ) -> None:
-        self._llm_extractor = llm_extractor
+        self._llm_extractor = llm_extractor or create_llm_canon_extractor(llm_client)
 
     def compile(
         self,
@@ -379,7 +382,8 @@ def compile_canon(
     canon_id: str = "compiled-canon",
     version: str = "1.0",
     llm_extractor: Callable[[str], dict[str, Any]] | None = None,
+    llm_client: MultiProviderJsonLLM | None = None,
 ) -> tuple[Canon, tuple[GroundedRuleRecord, ...]]:
     """Convenience function to compile inputs into `(Canon, provenance_records)`."""
-    compiler = CanonCompiler(llm_extractor=llm_extractor)
+    compiler = CanonCompiler(llm_extractor=llm_extractor, llm_client=llm_client)
     return compiler.compile(*inputs, canon_id=canon_id, version=version)
