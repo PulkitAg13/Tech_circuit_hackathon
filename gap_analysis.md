@@ -35,6 +35,7 @@ Think of it as: the plumbing and wiring of the house is done, but you only have 
 | PDF parser | ✅ Built, wired & tested | `pdfplumber` / `pypdf` tables, micro-font & white-on-white text isolation | **DONE** |
 | HTML parser | ✅ Built, wired & tested | `BeautifulSoup` script/style strip, CSS-hidden text isolation, table linearization | **DONE** |
 | Banner / Multimodal Bundle parser | ✅ Built, wired & tested | Morphological text-box detection, OCR text node injection, bundle dispatcher | **DONE** |
+| Guarded LLM Table De-Normalizer | ✅ Built, wired & tested | Multi-provider (Gemini, OpenAI/Groq, Ollama) Guard 1 zero-hallucination linearizer | **DONE** |
 
 ### Canon System
 
@@ -118,15 +119,15 @@ Think of it as: the plumbing and wiring of the house is done, but you only have 
 | Category | Done | Partial | Missing | Total |
 |----------|------|---------|---------|-------|
 | Backend Checks | 10 | 0 | 0 | 10 |
-| Parsers | 6 | 0 | 0 | 6 |
+| Parsers | 7 | 0 | 0 | 7 |
 | Canon System | 5 | 0 | 0 | 5 |
 | Engine | 5 | 0 | 4 | 9 |
 | Workflow & Audit | 8 | 0 | 3 | 11 |
 | Frontend | 12 | 0 | 6 | 18 |
 | Infrastructure | 4 | 0 | 3 | 7 |
-| **TOTAL** | **50** | **0** | **16** | **66** |
+| **TOTAL** | **51** | **0** | **16** | **67** |
 
-**~76% complete by feature count (up from 52% and 38%).** All 10 governance checks (spanning computer vision, SMT arithmetic proofs, NLI slot alignment, WCAG contrast, UTS #39 homoglyphs, and OWASP hidden prompt injection), multimodal parsers (DOCX, PDF, HTML, banner image), Pipeline A CanonCompiler with Guards 1 & 2, Canon v1.1 impact simulator, surgical 1-click Accept replacements with span-shifting, and 10 rich frontend evidence renderers are fully wired, operational, and validated with **73 passing tests**.
+**~76% complete by feature count (up from 52% and 38%).** All 10 governance checks (spanning computer vision, SMT arithmetic proofs, NLI slot alignment, WCAG contrast, UTS #39 homoglyphs, and OWASP hidden prompt injection), multimodal parsers (DOCX, PDF, HTML, banner image, multi-provider Guarded LLM table de-normalization), Pipeline A CanonCompiler with Guards 1 & 2, Canon v1.1 impact simulator, surgical 1-click Accept replacements with span-shifting, and 10 rich frontend evidence renderers are fully wired, operational, and validated with **75 passing tests**.
 
 ## Remaining Impact Opportunities
 
