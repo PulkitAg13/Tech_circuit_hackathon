@@ -486,6 +486,9 @@ async def workflow_action(
     sub.status = new_status.value
     if hasattr(session, "flush"):
         await session.flush()
+    refreshed_sub = await repos.get_submission(session, submission_id)
+    if refreshed_sub is not None:
+        sub = refreshed_sub
 
     # Outbound C2PA Asset Signing on approval/publishing
     if new_status in (Status.APPROVED, Status.PUBLISHED):

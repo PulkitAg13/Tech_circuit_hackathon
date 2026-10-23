@@ -1,16 +1,13 @@
 import { useState, useEffect, type ChangeEvent, type FormEvent } from "react";
 import { useNavigate } from "react-router-dom";
+import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import {
   listSubmissions,
   createSubmission,
-  type Submission,
   type BundleAttachmentDto,
   listCanons,
-  type CanonSummary,
   getCanonFriction,
-  type CanonFrictionResponse,
   getCanonLint,
-  type CanonLintResponse,
   proposeCanonPr,
   type CanonRevisionPrResponse,
   compileCanon,
@@ -40,11 +37,26 @@ function fileToBase64Attachment(file: File): Promise<BundleAttachmentDto> {
   });
 }
 
+const EMPTY_SUBMISSIONS: any[] = [];
+const EMPTY_CANONS: any[] = [];
+
 export function DashboardPage() {
   const { username, role, logout } = useAuth();
   const navigate = useNavigate();
-  const [submissions, setSubmissions] = useState<Submission[]>([]);
-  const [canons, setCanons] = useState<CanonSummary[]>([]);
+  const queryClient = useQueryClient();
+
+  // TanStack Query for server state
+  const { data: submissions = EMPTY_SUBMISSIONS } = useQuery({
+    queryKey: ["submissions"],
+    queryFn: listSubmissions,
+  });
+
+  const { data: canons = EMPTY_CANONS } = useQuery({
+    queryKey: ["canons"],
+    queryFn: listCanons,
+  });
+
+  // Local form/UI state
   const [activeTab, setActiveTab] = useState<"submissions" | "governance">("submissions");
   const [showCreate, setShowCreate] = useState(false);
   const [title, setTitle] = useState("");
@@ -53,32 +65,71 @@ export function DashboardPage() {
   const [attachments, setAttachments] = useState<BundleAttachmentDto[]>([]);
   const [error, setError] = useState("");
 
-  // Canon Governance, Friction & PR Studio state
+  // Canon Governance Studio state
   const [selectedCanonId, setSelectedCanonId] = useState("");
-  const [frictionData, setFrictionData] = useState<CanonFrictionResponse | null>(null);
-  const [lintData, setLintData] = useState<CanonLintResponse | null>(null);
   const [prProposal, setPrProposal] = useState<CanonRevisionPrResponse | null>(null);
   const [compileId, setCompileId] = useState("brand-canon-v1");
   const [compileText, setCompileText] = useState("");
   const [compileResult, setCompileResult] = useState<CompileCanonResponse | null>(null);
 
   useEffect(() => {
-    loadData();
-  }, []);
-
-  async function loadData() {
-    try {
-      const [subs, cans] = await Promise.all([listSubmissions(), listCanons()]);
-      setSubmissions(subs);
-      setCanons(cans);
-      if (cans.length > 0 && !canonId) {
-        setCanonId(cans[0].id);
-        setSelectedCanonId(cans[0].id);
-      }
-    } catch (err: any) {
-      setError(err.message);
+    if (canons.length > 0 && !canonId) {
+      setCanonId(canons[0].id);
+      setSelectedCanonId(canons[0].id);
     }
-  }
+  }, [canons, canonId]);
+
+  // Server state for canon governance
+  const { data: frictionData = null } = useQuery({
+    queryKey: ["canonFriction", selectedCanonId],
+    queryFn: () => getCanonFriction(selectedCanonId),
+    enabled: !!selectedCanonId && activeTab === "governance",
+  });
+
+  const { data: lintData = null } = useQuery({
+    queryKey: ["canonLint", selectedCanonId],
+    queryFn: () => getCanonLint(selectedCanonId),
+    enabled: !!selectedCanonId && activeTab === "governance",
+  });
+
+  // Mutations
+  const createMutation = useMutation({
+    mutationFn: (vars: { title: string; rawContent: string; canonId: string; attachments: BundleAttachmentDto[] }) =>
+      createSubmission(vars.title, vars.rawContent, vars.canonId, vars.attachments),
+    onSuccess: (sub) => {
+      queryClient.invalidateQueries({ queryKey: ["submissions"] });
+      setShowCreate(false);
+      setTitle("");
+      setContent("");
+      setAttachments([]);
+      navigate(`/submissions/${sub.id}`);
+    },
+    onError: (err: any) => {
+      setError(err.message || "Failed to create submission");
+    },
+  });
+
+  const proposePrMutation = useMutation({
+    mutationFn: (cid: string) => proposeCanonPr(cid),
+    onSuccess: (pr) => {
+      setPrProposal(pr);
+    },
+    onError: (err: any) => {
+      setError(err.message || "Failed to propose Canon PR");
+    },
+  });
+
+  const compileMutation = useMutation({
+    mutationFn: (vars: { compileId: string; compileText: string }) =>
+      compileCanon(vars.compileId, vars.compileText, "1.0", [], false),
+    onSuccess: (res) => {
+      setCompileResult(res);
+      queryClient.invalidateQueries({ queryKey: ["canons"] });
+    },
+    onError: (err: any) => {
+      setError(err.message || "Failed to compile Canon");
+    },
+  });
 
   async function handleFileSelect(e: ChangeEvent<HTMLInputElement>) {
     const files = Array.from(e.target.files || []);
@@ -91,51 +142,29 @@ export function DashboardPage() {
     }
   }
 
-  async function handleCreate(e: FormEvent) {
+  function handleCreate(e: FormEvent) {
     e.preventDefault();
-    try {
-      const sub = await createSubmission(title || "Untitled", content, canonId, attachments);
-      setShowCreate(false);
-      setTitle("");
-      setContent("");
-      setAttachments([]);
-      navigate(`/submissions/${sub.id}`);
-    } catch (err: any) {
-      setError(err.message);
-    }
+    createMutation.mutate({
+      title: title || "Untitled",
+      rawContent: content,
+      canonId: canonId || (canons[0]?.id ?? "brand-canon-v1"),
+      attachments,
+    });
   }
 
-  async function loadCanonGovernance(cid: string) {
+  function loadCanonGovernance(cid: string) {
     setSelectedCanonId(cid);
     setPrProposal(null);
-    try {
-      const [fric, lint] = await Promise.all([getCanonFriction(cid), getCanonLint(cid)]);
-      setFrictionData(fric);
-      setLintData(lint);
-    } catch (err: any) {
-      setError(err.message);
-    }
   }
 
-  async function handleProposePr() {
+  function handleProposePr() {
     if (!selectedCanonId) return;
-    try {
-      const pr = await proposeCanonPr(selectedCanonId);
-      setPrProposal(pr);
-    } catch (err: any) {
-      setError(err.message);
-    }
+    proposePrMutation.mutate(selectedCanonId);
   }
 
-  async function handleCompileCanon(e: FormEvent) {
+  function handleCompileCanon(e: FormEvent) {
     e.preventDefault();
-    try {
-      const res = await compileCanon(compileId, compileText, "1.0", [], false);
-      setCompileResult(res);
-      await loadData();
-    } catch (err: any) {
-      setError(err.message);
-    }
+    compileMutation.mutate({ compileId, compileText });
   }
 
   return (

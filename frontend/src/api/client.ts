@@ -21,13 +21,15 @@ async function request<T>(path: string, opts?: RequestInit): Promise<T> {
   return res.json();
 }
 
+import type { components } from "./schema";
+
+export type SchemaTypes = components["schemas"];
+
 /* ── Auth ──────────────────────────────────────────────────────────── */
 
-export interface TokenResponse {
-  token: string;
-  username: string;
-  role: string;
-}
+export type TokenResponse = SchemaTypes["TokenResponse"];
+export type RegisterRequest = SchemaTypes["RegisterRequest"];
+export type LoginRequest = SchemaTypes["LoginRequest"];
 
 export async function register(
   username: string, password: string, role: string, displayName?: string
@@ -47,47 +49,11 @@ export async function login(username: string, password: string): Promise<TokenRe
 
 /* ── Submissions & Multimodal Bundle Upload ────────────────────────── */
 
-export interface BundleAttachmentDto {
-  filename: string;
-  content_base64: string;
-}
-
-export interface ImageNodeMetaDto {
-  index: number;
-  node_id: string;
-  asset_path: string;
-  width: number;
-  height: number;
-  alt?: string | null;
-  url: string;
-}
-
-export interface SubmissionVersionDto {
-  version_number: number;
-  content_hash: string;
-  canon_hash: string;
-  raw_content: string;
-  created_by: number;
-  change_note: string;
-  created_at: string;
-}
-
-export interface Submission {
-  id: number;
-  title: string;
-  status: string;
-  content_hash: string;
-  canon_id: string;
-  canon_hash: string;
-  creator_id: number;
-  created_at: string;
-  updated_at: string;
-  raw_content?: string;
-  paragraph_node_ids?: string[];
-  text_blocks?: string[];
-  image_paths?: string[];
-  image_nodes?: ImageNodeMetaDto[];
-}
+export type BundleAttachmentDto = SchemaTypes["BundleAttachmentDto"];
+export type ImageNodeMetaDto = SchemaTypes["ImageNodeMetaDto"];
+export type SubmissionVersionDto = SchemaTypes["SubmissionVersionResponse"];
+export type Submission = SchemaTypes["SubmissionResponse"];
+export type CreateSubmissionRequest = SchemaTypes["CreateSubmissionRequest"];
 
 export async function createSubmission(
   title: string,
@@ -315,17 +281,11 @@ export interface FindingPayload {
   trace?: TracePayload;
 }
 
-export interface FindingResponse {
-  row_id: number;
-  finding_id: string;
-  check_id: string;
-  node_id: string;
-  severity: number;
-  message: string;
-  resolution: string;
-  resolution_reason?: string;
+export type FindingResponse = Omit<SchemaTypes["FindingResponse"], "payload"> & {
   payload: FindingPayload;
-}
+};
+
+export type FindingResolutionRequest = SchemaTypes["FindingResolutionRequest"];
 
 export async function getFindings(submissionId: number): Promise<FindingResponse[]> {
   return request<FindingResponse[]>(`/submissions/${submissionId}/findings`);
@@ -348,6 +308,8 @@ export async function resolveFinding(
 }
 
 /* ── Workflow ──────────────────────────────────────────────────────── */
+
+export type WorkflowActionRequest = SchemaTypes["WorkflowActionRequest"];
 
 export async function workflowAction(
   submissionId: number, action: string, comment?: string
@@ -387,83 +349,28 @@ export async function getReplayManifest(
 
 /* ── Canons, Lint, Friction, Pipeline A Compile & v1.1 PRs ────────── */
 
-export interface CanonSummary {
-  id: string;
-  version: string;
-  hash: string;
-  term_count: number;
-  color_count: number;
-  fact_count: number;
-}
+export type CanonSummary = SchemaTypes["CanonSummary"];
 
 export async function listCanons(): Promise<CanonSummary[]> {
   return request<CanonSummary[]>("/canons");
 }
 
-export interface CanonLintIssueDto {
-  rule_ids: string[];
-  kind: string;
-  message: string;
-}
-
-export interface CanonLintResponse {
-  canon_id: string;
-  canon_version: string;
-  is_valid: boolean;
-  issues: CanonLintIssueDto[];
-}
+export type CanonLintIssueDto = SchemaTypes["CanonLintIssueDto"];
+export type CanonLintResponse = SchemaTypes["CanonLintResponse"];
 
 export async function getCanonLint(canonId: string): Promise<CanonLintResponse> {
   return request<CanonLintResponse>(`/canons/${canonId}/lint`);
 }
 
-export interface RuleFrictionDto {
-  rule_id: string;
-  total_flags: number;
-  overrides_and_disputes: number;
-  raw_friction: number;
-  posterior_friction: number;
-  needs_canon_revision: boolean;
-  proposed_action?: string;
-}
-
-export interface CanonFrictionResponse {
-  canon_id: string;
-  canon_version: string;
-  krippendorff_alpha: number;
-  total_findings: number;
-  rules: RuleFrictionDto[];
-  revision_recommendations: string[];
-}
+export type RuleFrictionDto = SchemaTypes["RuleFrictionDto"];
+export type CanonFrictionResponse = SchemaTypes["CanonFrictionResponse"];
 
 export async function getCanonFriction(canonId: string): Promise<CanonFrictionResponse> {
   return request<CanonFrictionResponse>(`/canons/${canonId}/friction`);
 }
 
-export interface RuleRevisionDiffDto {
-  rule_id: string;
-  posterior_friction: number;
-  action: string;
-  before_summary: string;
-  after_summary: string;
-  rationale: string;
-}
-
-export interface CanonRevisionPrResponse {
-  canon_id: string;
-  base_version: string;
-  proposed_version: string;
-  has_changes: boolean;
-  revisions: RuleRevisionDiffDto[];
-  yaml_diff: string;
-  bundles_evaluated: number;
-  before_findings: number;
-  after_findings: number;
-  before_blockers: number;
-  after_blockers: number;
-  reduction_ratio: number;
-  resolved_rule_ids: string[];
-}
+export type RuleRevisionDiffDto = SchemaTypes["RuleRevisionDiffDto"];
+export type CanonRevisionPrResponse = SchemaTypes["CanonRevisionPrResponse"];
 
 export async function proposeCanonPr(
   canonId: string,
@@ -481,29 +388,8 @@ export async function proposeCanonPr(
   });
 }
 
-export interface GroundedRuleProvenanceDto {
-  rule_id: string;
-  rule_kind: string;
-  start: number;
-  end: number;
-  source_text: string;
-  raw_anchor_recall: number;
-  effective_anchor_recall: number;
-  recovered_conditions: string[];
-  round_trip_nli_score: number;
-  alignment_status: string;
-}
-
-export interface CompileCanonResponse {
-  canon_id: string;
-  version: string;
-  hash: string;
-  term_count: number;
-  color_count: number;
-  fact_count: number;
-  yaml_preview: string;
-  provenance: GroundedRuleProvenanceDto[];
-}
+export type GroundedRuleProvenanceDto = SchemaTypes["GroundedRuleProvenanceDto"];
+export type CompileCanonResponse = SchemaTypes["CompileCanonResponse"];
 
 export async function compileCanon(
   canonId: string,

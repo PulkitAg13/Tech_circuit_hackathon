@@ -1,0 +1,2184 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "CanonGate",
+    "description": "Pre-publication brand & claim governance platform",
+    "version": "0.1.0"
+  },
+  "paths": {
+    "/api/auth/register": {
+      "post": {
+        "tags": [
+          "auth"
+        ],
+        "summary": "Register",
+        "operationId": "register_api_auth_register_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RegisterRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TokenResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/auth/login": {
+      "post": {
+        "tags": [
+          "auth"
+        ],
+        "summary": "Login",
+        "operationId": "login_api_auth_login_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/LoginRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TokenResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/submissions": {
+      "post": {
+        "tags": [
+          "submissions"
+        ],
+        "summary": "Create Submission",
+        "operationId": "create_submission_api_submissions_post",
+        "parameters": [
+          {
+            "name": "authorization",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateSubmissionRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SubmissionResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "get": {
+        "tags": [
+          "submissions"
+        ],
+        "summary": "List Submissions",
+        "operationId": "list_submissions_api_submissions_get",
+        "parameters": [
+          {
+            "name": "authorization",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/SubmissionResponse"
+                  },
+                  "title": "Response List Submissions Api Submissions Get"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/submissions/upload": {
+      "post": {
+        "tags": [
+          "submissions"
+        ],
+        "summary": "Upload Submission Bundle",
+        "description": "Dedicated multimodal bundle upload endpoint for `.docx`, `.pdf`, `.html`, `.png`, `.jpg`.",
+        "operationId": "upload_submission_bundle_api_submissions_upload_post",
+        "parameters": [
+          {
+            "name": "authorization",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateSubmissionRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SubmissionResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/submissions/{submission_id}": {
+      "get": {
+        "tags": [
+          "submissions"
+        ],
+        "summary": "Get Submission",
+        "operationId": "get_submission_api_submissions__submission_id__get",
+        "parameters": [
+          {
+            "name": "submission_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Submission Id"
+            }
+          },
+          {
+            "name": "authorization",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SubmissionResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/submissions/{submission_id}/assets/{asset_index}": {
+      "get": {
+        "tags": [
+          "submissions"
+        ],
+        "summary": "Get Submission Asset",
+        "description": "Serve an attached campaign banner image by its 0-based `ImageNode` index.",
+        "operationId": "get_submission_asset_api_submissions__submission_id__assets__asset_index__get",
+        "parameters": [
+          {
+            "name": "submission_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Submission Id"
+            }
+          },
+          {
+            "name": "asset_index",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Asset Index"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/submissions/{submission_id}/scan": {
+      "post": {
+        "tags": [
+          "submissions"
+        ],
+        "summary": "Scan Submission",
+        "description": "Run all checks on a submission, apply Conformal Risk Control (alpha), and stream via SSE.",
+        "operationId": "scan_submission_api_submissions__submission_id__scan_post",
+        "parameters": [
+          {
+            "name": "submission_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Submission Id"
+            }
+          },
+          {
+            "name": "alpha",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "number",
+              "default": 0.1,
+              "title": "Alpha"
+            }
+          },
+          {
+            "name": "authorization",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/submissions/{submission_id}/findings": {
+      "get": {
+        "tags": [
+          "submissions"
+        ],
+        "summary": "Get Findings",
+        "operationId": "get_findings_api_submissions__submission_id__findings_get",
+        "parameters": [
+          {
+            "name": "submission_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Submission Id"
+            }
+          },
+          {
+            "name": "authorization",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/FindingResponse"
+                  },
+                  "title": "Response Get Findings Api Submissions  Submission Id  Findings Get"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/submissions/{submission_id}/findings/{finding_row_id}": {
+      "patch": {
+        "tags": [
+          "submissions"
+        ],
+        "summary": "Resolve Finding",
+        "operationId": "resolve_finding_api_submissions__submission_id__findings__finding_row_id__patch",
+        "parameters": [
+          {
+            "name": "submission_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Submission Id"
+            }
+          },
+          {
+            "name": "finding_row_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Finding Row Id"
+            }
+          },
+          {
+            "name": "authorization",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/FindingResolutionRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FindingResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/submissions/{submission_id}/workflow": {
+      "post": {
+        "tags": [
+          "submissions"
+        ],
+        "summary": "Workflow Action",
+        "operationId": "workflow_action_api_submissions__submission_id__workflow_post",
+        "parameters": [
+          {
+            "name": "submission_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Submission Id"
+            }
+          },
+          {
+            "name": "authorization",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/WorkflowActionRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SubmissionResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/submissions/{submission_id}/audit": {
+      "get": {
+        "tags": [
+          "submissions"
+        ],
+        "summary": "Get Audit Trail",
+        "operationId": "get_audit_trail_api_submissions__submission_id__audit_get",
+        "parameters": [
+          {
+            "name": "submission_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Submission Id"
+            }
+          },
+          {
+            "name": "authorization",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/submissions/{submission_id}/audit/tree-head": {
+      "get": {
+        "tags": [
+          "submissions"
+        ],
+        "summary": "Get Audit Tree Head",
+        "description": "Retrieve the RFC 9162 Signed Tree Head (STH) with Ed25519 signature.",
+        "operationId": "get_audit_tree_head_api_submissions__submission_id__audit_tree_head_get",
+        "parameters": [
+          {
+            "name": "submission_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Submission Id"
+            }
+          },
+          {
+            "name": "authorization",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/submissions/{submission_id}/certificate": {
+      "get": {
+        "tags": [
+          "submissions"
+        ],
+        "summary": "Get Governance Certificate",
+        "description": "Export a self-contained signed governance certificate verifiable via `canongate verify`.",
+        "operationId": "get_governance_certificate_api_submissions__submission_id__certificate_get",
+        "parameters": [
+          {
+            "name": "submission_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Submission Id"
+            }
+          },
+          {
+            "name": "authorization",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "title": "Response Get Governance Certificate Api Submissions  Submission Id  Certificate Get"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/submissions/{submission_id}/versions": {
+      "get": {
+        "tags": [
+          "submissions"
+        ],
+        "summary": "Get Submission Versions",
+        "description": "Return immutable revision history for `submission_id`.",
+        "operationId": "get_submission_versions_api_submissions__submission_id__versions_get",
+        "parameters": [
+          {
+            "name": "submission_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Submission Id"
+            }
+          },
+          {
+            "name": "authorization",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/SubmissionVersionResponse"
+                  },
+                  "title": "Response Get Submission Versions Api Submissions  Submission Id  Versions Get"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/submissions/{submission_id}/replay-manifest": {
+      "get": {
+        "tags": [
+          "submissions"
+        ],
+        "summary": "Get Replay Manifest",
+        "description": "Export the deterministic replay manifest pinning AST hashes, Canon hash,\ncheck versions, and alpha.",
+        "operationId": "get_replay_manifest_api_submissions__submission_id__replay_manifest_get",
+        "parameters": [
+          {
+            "name": "submission_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Submission Id"
+            }
+          },
+          {
+            "name": "alpha",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "number",
+              "default": 0.1,
+              "title": "Alpha"
+            }
+          },
+          {
+            "name": "authorization",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "title": "Response Get Replay Manifest Api Submissions  Submission Id  Replay Manifest Get"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/canons": {
+      "get": {
+        "tags": [
+          "canons"
+        ],
+        "summary": "List Canons",
+        "operationId": "list_canons_api_canons_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/CanonSummary"
+                  },
+                  "type": "array",
+                  "title": "Response List Canons Api Canons Get"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/canons/compile": {
+      "post": {
+        "tags": [
+          "canons"
+        ],
+        "summary": "Compile Brand Canon",
+        "description": "Pipeline A endpoint: compile brand text/documents into a grounded Canon behind Guards 1-3.",
+        "operationId": "compile_brand_canon_api_canons_compile_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CompileCanonRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CompileCanonResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/canons/{canon_id}": {
+      "get": {
+        "tags": [
+          "canons"
+        ],
+        "summary": "Get Canon Detail",
+        "operationId": "get_canon_detail_api_canons__canon_id__get",
+        "parameters": [
+          {
+            "name": "canon_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Canon Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CanonSummary"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/canons/{canon_id}/lint": {
+      "get": {
+        "tags": [
+          "canons"
+        ],
+        "summary": "Get Canon Lint",
+        "description": "Check a Canon for duplicate IDs, circular terminology rules, and colour collisions.",
+        "operationId": "get_canon_lint_api_canons__canon_id__lint_get",
+        "parameters": [
+          {
+            "name": "canon_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Canon Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CanonLintResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/canons/{canon_id}/friction": {
+      "get": {
+        "tags": [
+          "canons"
+        ],
+        "summary": "Get Canon Friction",
+        "description": "Calculate Empirical Bayes Beta-Binomial guideline friction and Krippendorff's alpha.",
+        "operationId": "get_canon_friction_api_canons__canon_id__friction_get",
+        "parameters": [
+          {
+            "name": "canon_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Canon Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CanonFrictionResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/canons/{canon_id}/propose-pr": {
+      "post": {
+        "tags": [
+          "canons"
+        ],
+        "summary": "Propose Canon Pr",
+        "description": "Auto-draft a Canon v1.1 revision from friction telemetry and backtest on historical runs.",
+        "operationId": "propose_canon_pr_api_canons__canon_id__propose_pr_post",
+        "parameters": [
+          {
+            "name": "canon_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Canon Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/CanonRevisionPrRequest"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "title": "Req"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CanonRevisionPrResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/health": {
+      "get": {
+        "summary": "Health",
+        "operationId": "health_api_health_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "BundleAttachmentDto": {
+        "properties": {
+          "filename": {
+            "type": "string",
+            "title": "Filename"
+          },
+          "content_base64": {
+            "type": "string",
+            "title": "Content Base64"
+          }
+        },
+        "type": "object",
+        "required": [
+          "filename",
+          "content_base64"
+        ],
+        "title": "BundleAttachmentDto"
+      },
+      "CanonFrictionResponse": {
+        "properties": {
+          "canon_id": {
+            "type": "string",
+            "title": "Canon Id"
+          },
+          "canon_version": {
+            "type": "string",
+            "title": "Canon Version"
+          },
+          "krippendorff_alpha": {
+            "type": "number",
+            "title": "Krippendorff Alpha"
+          },
+          "total_findings": {
+            "type": "integer",
+            "title": "Total Findings"
+          },
+          "rules": {
+            "items": {
+              "$ref": "#/components/schemas/RuleFrictionDto"
+            },
+            "type": "array",
+            "title": "Rules"
+          },
+          "revision_recommendations": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Revision Recommendations"
+          }
+        },
+        "type": "object",
+        "required": [
+          "canon_id",
+          "canon_version",
+          "krippendorff_alpha",
+          "total_findings",
+          "rules",
+          "revision_recommendations"
+        ],
+        "title": "CanonFrictionResponse"
+      },
+      "CanonLintIssueDto": {
+        "properties": {
+          "rule_ids": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Rule Ids"
+          },
+          "kind": {
+            "type": "string",
+            "title": "Kind"
+          },
+          "message": {
+            "type": "string",
+            "title": "Message"
+          }
+        },
+        "type": "object",
+        "required": [
+          "rule_ids",
+          "kind",
+          "message"
+        ],
+        "title": "CanonLintIssueDto"
+      },
+      "CanonLintResponse": {
+        "properties": {
+          "canon_id": {
+            "type": "string",
+            "title": "Canon Id"
+          },
+          "canon_version": {
+            "type": "string",
+            "title": "Canon Version"
+          },
+          "is_valid": {
+            "type": "boolean",
+            "title": "Is Valid"
+          },
+          "issues": {
+            "items": {
+              "$ref": "#/components/schemas/CanonLintIssueDto"
+            },
+            "type": "array",
+            "title": "Issues"
+          }
+        },
+        "type": "object",
+        "required": [
+          "canon_id",
+          "canon_version",
+          "is_valid",
+          "issues"
+        ],
+        "title": "CanonLintResponse"
+      },
+      "CanonRevisionPrRequest": {
+        "properties": {
+          "override_notes": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "type": "object",
+            "title": "Override Notes",
+            "default": {}
+          },
+          "threshold": {
+            "type": "number",
+            "title": "Threshold",
+            "default": 0.4
+          },
+          "min_flags": {
+            "type": "integer",
+            "title": "Min Flags",
+            "default": 3
+          }
+        },
+        "type": "object",
+        "title": "CanonRevisionPrRequest"
+      },
+      "CanonRevisionPrResponse": {
+        "properties": {
+          "canon_id": {
+            "type": "string",
+            "title": "Canon Id"
+          },
+          "base_version": {
+            "type": "string",
+            "title": "Base Version"
+          },
+          "proposed_version": {
+            "type": "string",
+            "title": "Proposed Version"
+          },
+          "has_changes": {
+            "type": "boolean",
+            "title": "Has Changes"
+          },
+          "revisions": {
+            "items": {
+              "$ref": "#/components/schemas/RuleRevisionDiffDto"
+            },
+            "type": "array",
+            "title": "Revisions"
+          },
+          "yaml_diff": {
+            "type": "string",
+            "title": "Yaml Diff"
+          },
+          "bundles_evaluated": {
+            "type": "integer",
+            "title": "Bundles Evaluated"
+          },
+          "before_findings": {
+            "type": "integer",
+            "title": "Before Findings"
+          },
+          "after_findings": {
+            "type": "integer",
+            "title": "After Findings"
+          },
+          "before_blockers": {
+            "type": "integer",
+            "title": "Before Blockers"
+          },
+          "after_blockers": {
+            "type": "integer",
+            "title": "After Blockers"
+          },
+          "reduction_ratio": {
+            "type": "number",
+            "title": "Reduction Ratio"
+          },
+          "resolved_rule_ids": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Resolved Rule Ids"
+          }
+        },
+        "type": "object",
+        "required": [
+          "canon_id",
+          "base_version",
+          "proposed_version",
+          "has_changes",
+          "revisions",
+          "yaml_diff",
+          "bundles_evaluated",
+          "before_findings",
+          "after_findings",
+          "before_blockers",
+          "after_blockers",
+          "reduction_ratio",
+          "resolved_rule_ids"
+        ],
+        "title": "CanonRevisionPrResponse"
+      },
+      "CanonSummary": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "title": "Id"
+          },
+          "version": {
+            "type": "string",
+            "title": "Version"
+          },
+          "hash": {
+            "type": "string",
+            "title": "Hash"
+          },
+          "term_count": {
+            "type": "integer",
+            "title": "Term Count"
+          },
+          "color_count": {
+            "type": "integer",
+            "title": "Color Count"
+          },
+          "fact_count": {
+            "type": "integer",
+            "title": "Fact Count"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "version",
+          "hash",
+          "term_count",
+          "color_count",
+          "fact_count"
+        ],
+        "title": "CanonSummary"
+      },
+      "CompileCanonAttachmentDto": {
+        "properties": {
+          "filename": {
+            "type": "string",
+            "title": "Filename"
+          },
+          "content_base64": {
+            "type": "string",
+            "title": "Content Base64"
+          }
+        },
+        "type": "object",
+        "required": [
+          "filename",
+          "content_base64"
+        ],
+        "title": "CompileCanonAttachmentDto"
+      },
+      "CompileCanonRequest": {
+        "properties": {
+          "canon_id": {
+            "type": "string",
+            "title": "Canon Id"
+          },
+          "version": {
+            "type": "string",
+            "title": "Version",
+            "default": "1.0"
+          },
+          "raw_text": {
+            "type": "string",
+            "title": "Raw Text",
+            "default": ""
+          },
+          "attachments": {
+            "items": {
+              "$ref": "#/components/schemas/CompileCanonAttachmentDto"
+            },
+            "type": "array",
+            "title": "Attachments",
+            "default": []
+          },
+          "persist": {
+            "type": "boolean",
+            "title": "Persist",
+            "default": false
+          }
+        },
+        "type": "object",
+        "required": [
+          "canon_id"
+        ],
+        "title": "CompileCanonRequest"
+      },
+      "CompileCanonResponse": {
+        "properties": {
+          "canon_id": {
+            "type": "string",
+            "title": "Canon Id"
+          },
+          "version": {
+            "type": "string",
+            "title": "Version"
+          },
+          "hash": {
+            "type": "string",
+            "title": "Hash"
+          },
+          "term_count": {
+            "type": "integer",
+            "title": "Term Count"
+          },
+          "color_count": {
+            "type": "integer",
+            "title": "Color Count"
+          },
+          "fact_count": {
+            "type": "integer",
+            "title": "Fact Count"
+          },
+          "yaml_preview": {
+            "type": "string",
+            "title": "Yaml Preview"
+          },
+          "provenance": {
+            "items": {
+              "$ref": "#/components/schemas/GroundedRuleProvenanceDto"
+            },
+            "type": "array",
+            "title": "Provenance"
+          }
+        },
+        "type": "object",
+        "required": [
+          "canon_id",
+          "version",
+          "hash",
+          "term_count",
+          "color_count",
+          "fact_count",
+          "yaml_preview",
+          "provenance"
+        ],
+        "title": "CompileCanonResponse"
+      },
+      "CreateSubmissionRequest": {
+        "properties": {
+          "title": {
+            "type": "string",
+            "title": "Title",
+            "default": "Untitled"
+          },
+          "raw_content": {
+            "type": "string",
+            "title": "Raw Content",
+            "default": ""
+          },
+          "canon_id": {
+            "type": "string",
+            "title": "Canon Id"
+          },
+          "image_paths": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Image Paths",
+            "default": []
+          },
+          "attachments": {
+            "items": {
+              "$ref": "#/components/schemas/BundleAttachmentDto"
+            },
+            "type": "array",
+            "title": "Attachments",
+            "default": []
+          }
+        },
+        "type": "object",
+        "required": [
+          "canon_id"
+        ],
+        "title": "CreateSubmissionRequest"
+      },
+      "FindingResolutionRequest": {
+        "properties": {
+          "resolution": {
+            "type": "string",
+            "title": "Resolution"
+          },
+          "apply_suggestion": {
+            "type": "boolean",
+            "title": "Apply Suggestion",
+            "default": true
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reason"
+          }
+        },
+        "type": "object",
+        "required": [
+          "resolution"
+        ],
+        "title": "FindingResolutionRequest"
+      },
+      "FindingResponse": {
+        "properties": {
+          "row_id": {
+            "type": "integer",
+            "title": "Row Id"
+          },
+          "finding_id": {
+            "type": "string",
+            "title": "Finding Id"
+          },
+          "check_id": {
+            "type": "string",
+            "title": "Check Id"
+          },
+          "node_id": {
+            "type": "string",
+            "title": "Node Id"
+          },
+          "severity": {
+            "type": "integer",
+            "title": "Severity"
+          },
+          "message": {
+            "type": "string",
+            "title": "Message"
+          },
+          "resolution": {
+            "type": "string",
+            "title": "Resolution"
+          },
+          "resolution_reason": {
+            "type": "string",
+            "title": "Resolution Reason",
+            "default": ""
+          },
+          "payload": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Payload"
+          }
+        },
+        "type": "object",
+        "required": [
+          "row_id",
+          "finding_id",
+          "check_id",
+          "node_id",
+          "severity",
+          "message",
+          "resolution",
+          "payload"
+        ],
+        "title": "FindingResponse"
+      },
+      "GroundedRuleProvenanceDto": {
+        "properties": {
+          "rule_id": {
+            "type": "string",
+            "title": "Rule Id"
+          },
+          "rule_kind": {
+            "type": "string",
+            "title": "Rule Kind"
+          },
+          "start": {
+            "type": "integer",
+            "title": "Start"
+          },
+          "end": {
+            "type": "integer",
+            "title": "End"
+          },
+          "source_text": {
+            "type": "string",
+            "title": "Source Text"
+          },
+          "raw_anchor_recall": {
+            "type": "number",
+            "title": "Raw Anchor Recall"
+          },
+          "effective_anchor_recall": {
+            "type": "number",
+            "title": "Effective Anchor Recall"
+          },
+          "recovered_conditions": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Recovered Conditions"
+          },
+          "round_trip_nli_score": {
+            "type": "number",
+            "title": "Round Trip Nli Score"
+          },
+          "alignment_status": {
+            "type": "string",
+            "title": "Alignment Status"
+          }
+        },
+        "type": "object",
+        "required": [
+          "rule_id",
+          "rule_kind",
+          "start",
+          "end",
+          "source_text",
+          "raw_anchor_recall",
+          "effective_anchor_recall",
+          "recovered_conditions",
+          "round_trip_nli_score",
+          "alignment_status"
+        ],
+        "title": "GroundedRuleProvenanceDto"
+      },
+      "HTTPValidationError": {
+        "properties": {
+          "detail": {
+            "items": {
+              "$ref": "#/components/schemas/ValidationError"
+            },
+            "type": "array",
+            "title": "Detail"
+          }
+        },
+        "type": "object",
+        "title": "HTTPValidationError"
+      },
+      "ImageNodeMetaDto": {
+        "properties": {
+          "index": {
+            "type": "integer",
+            "title": "Index"
+          },
+          "node_id": {
+            "type": "string",
+            "title": "Node Id"
+          },
+          "asset_path": {
+            "type": "string",
+            "title": "Asset Path"
+          },
+          "width": {
+            "type": "integer",
+            "title": "Width"
+          },
+          "height": {
+            "type": "integer",
+            "title": "Height"
+          },
+          "alt": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Alt"
+          },
+          "url": {
+            "type": "string",
+            "title": "Url"
+          }
+        },
+        "type": "object",
+        "required": [
+          "index",
+          "node_id",
+          "asset_path",
+          "width",
+          "height",
+          "url"
+        ],
+        "title": "ImageNodeMetaDto"
+      },
+      "LoginRequest": {
+        "properties": {
+          "username": {
+            "type": "string",
+            "title": "Username"
+          },
+          "password": {
+            "type": "string",
+            "title": "Password"
+          }
+        },
+        "type": "object",
+        "required": [
+          "username",
+          "password"
+        ],
+        "title": "LoginRequest"
+      },
+      "RegisterRequest": {
+        "properties": {
+          "username": {
+            "type": "string",
+            "title": "Username"
+          },
+          "display_name": {
+            "type": "string",
+            "title": "Display Name",
+            "default": ""
+          },
+          "role": {
+            "type": "string",
+            "title": "Role",
+            "default": "creator"
+          },
+          "password": {
+            "type": "string",
+            "title": "Password"
+          }
+        },
+        "type": "object",
+        "required": [
+          "username",
+          "password"
+        ],
+        "title": "RegisterRequest"
+      },
+      "RuleFrictionDto": {
+        "properties": {
+          "rule_id": {
+            "type": "string",
+            "title": "Rule Id"
+          },
+          "total_flags": {
+            "type": "integer",
+            "title": "Total Flags"
+          },
+          "overrides_and_disputes": {
+            "type": "integer",
+            "title": "Overrides And Disputes"
+          },
+          "raw_friction": {
+            "type": "number",
+            "title": "Raw Friction"
+          },
+          "posterior_friction": {
+            "type": "number",
+            "title": "Posterior Friction"
+          },
+          "needs_canon_revision": {
+            "type": "boolean",
+            "title": "Needs Canon Revision"
+          },
+          "proposed_action": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Proposed Action"
+          }
+        },
+        "type": "object",
+        "required": [
+          "rule_id",
+          "total_flags",
+          "overrides_and_disputes",
+          "raw_friction",
+          "posterior_friction",
+          "needs_canon_revision"
+        ],
+        "title": "RuleFrictionDto"
+      },
+      "RuleRevisionDiffDto": {
+        "properties": {
+          "rule_id": {
+            "type": "string",
+            "title": "Rule Id"
+          },
+          "posterior_friction": {
+            "type": "number",
+            "title": "Posterior Friction"
+          },
+          "action": {
+            "type": "string",
+            "title": "Action"
+          },
+          "before_summary": {
+            "type": "string",
+            "title": "Before Summary"
+          },
+          "after_summary": {
+            "type": "string",
+            "title": "After Summary"
+          },
+          "rationale": {
+            "type": "string",
+            "title": "Rationale"
+          }
+        },
+        "type": "object",
+        "required": [
+          "rule_id",
+          "posterior_friction",
+          "action",
+          "before_summary",
+          "after_summary",
+          "rationale"
+        ],
+        "title": "RuleRevisionDiffDto"
+      },
+      "SubmissionResponse": {
+        "properties": {
+          "id": {
+            "type": "integer",
+            "title": "Id"
+          },
+          "title": {
+            "type": "string",
+            "title": "Title"
+          },
+          "status": {
+            "type": "string",
+            "title": "Status"
+          },
+          "content_hash": {
+            "type": "string",
+            "title": "Content Hash"
+          },
+          "canon_id": {
+            "type": "string",
+            "title": "Canon Id"
+          },
+          "canon_hash": {
+            "type": "string",
+            "title": "Canon Hash"
+          },
+          "creator_id": {
+            "type": "integer",
+            "title": "Creator Id"
+          },
+          "created_at": {
+            "type": "string",
+            "title": "Created At"
+          },
+          "updated_at": {
+            "type": "string",
+            "title": "Updated At"
+          },
+          "raw_content": {
+            "type": "string",
+            "title": "Raw Content",
+            "default": ""
+          },
+          "paragraph_node_ids": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Paragraph Node Ids",
+            "default": []
+          },
+          "text_blocks": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Text Blocks",
+            "default": []
+          },
+          "image_paths": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Image Paths",
+            "default": []
+          },
+          "image_nodes": {
+            "items": {
+              "$ref": "#/components/schemas/ImageNodeMetaDto"
+            },
+            "type": "array",
+            "title": "Image Nodes",
+            "default": []
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "title",
+          "status",
+          "content_hash",
+          "canon_id",
+          "canon_hash",
+          "creator_id",
+          "created_at",
+          "updated_at"
+        ],
+        "title": "SubmissionResponse"
+      },
+      "SubmissionVersionResponse": {
+        "properties": {
+          "version_number": {
+            "type": "integer",
+            "title": "Version Number"
+          },
+          "content_hash": {
+            "type": "string",
+            "title": "Content Hash"
+          },
+          "canon_hash": {
+            "type": "string",
+            "title": "Canon Hash"
+          },
+          "raw_content": {
+            "type": "string",
+            "title": "Raw Content"
+          },
+          "created_by": {
+            "type": "integer",
+            "title": "Created By"
+          },
+          "change_note": {
+            "type": "string",
+            "title": "Change Note",
+            "default": ""
+          },
+          "created_at": {
+            "type": "string",
+            "title": "Created At"
+          }
+        },
+        "type": "object",
+        "required": [
+          "version_number",
+          "content_hash",
+          "canon_hash",
+          "raw_content",
+          "created_by",
+          "created_at"
+        ],
+        "title": "SubmissionVersionResponse"
+      },
+      "TokenResponse": {
+        "properties": {
+          "token": {
+            "type": "string",
+            "title": "Token"
+          },
+          "username": {
+            "type": "string",
+            "title": "Username"
+          },
+          "role": {
+            "type": "string",
+            "title": "Role"
+          }
+        },
+        "type": "object",
+        "required": [
+          "token",
+          "username",
+          "role"
+        ],
+        "title": "TokenResponse"
+      },
+      "ValidationError": {
+        "properties": {
+          "loc": {
+            "items": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "integer"
+                }
+              ]
+            },
+            "type": "array",
+            "title": "Location"
+          },
+          "msg": {
+            "type": "string",
+            "title": "Message"
+          },
+          "type": {
+            "type": "string",
+            "title": "Error Type"
+          },
+          "input": {
+            "title": "Input"
+          },
+          "ctx": {
+            "type": "object",
+            "title": "Context"
+          }
+        },
+        "type": "object",
+        "required": [
+          "loc",
+          "msg",
+          "type"
+        ],
+        "title": "ValidationError"
+      },
+      "WorkflowActionRequest": {
+        "properties": {
+          "action": {
+            "type": "string",
+            "title": "Action"
+          },
+          "comment": {
+            "type": "string",
+            "title": "Comment",
+            "default": ""
+          }
+        },
+        "type": "object",
+        "required": [
+          "action"
+        ],
+        "title": "WorkflowActionRequest"
+      }
+    }
+  }
+}

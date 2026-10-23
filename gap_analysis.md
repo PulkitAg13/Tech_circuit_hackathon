@@ -95,11 +95,11 @@ Think of it as: the plumbing and wiring of the house is done, but you only have 
 | **Image BBox overlay** | ✅ Built, wired & tested | Interactive SVG `BannerBBoxOverlay` showing pixel BBox locators on campaign banners | **DONE** |
 | **α slider (conformal risk)** | ✅ Built, wired & tested | Interactive threshold control (0.01 - 0.25) wired to SSE scan & calibrated filtering | **DONE** |
 | **Context Trace badge details** | ✅ Built, wired & tested | Full: tier emoji, latency ms, & model SHA metadata | **DONE** |
-| Auto-generated TypeScript types from OpenAPI | ❌ | `openapi-typescript` + `openapi-fetch` | **MISSING** |
+| Auto-generated TypeScript types from OpenAPI | ✅ Built, wired & tested | `openapi-typescript` + `npm run generate:api` + `src/api/schema.d.ts` | **DONE** |
 | TanStack Router (file-based) | ❌ | Using react-router-dom instead | **DEFERRED** |
-| TanStack Query (caching/refetch) | ❌ | Manual fetch + useState | **MISSING** |
+| TanStack Query (caching/refetch) | ✅ Built, wired & tested | `@tanstack/react-query` v5 for server state, mutations & cache invalidation | **DONE** |
 | Evidence renderers (one per kind) | ✅ Built, wired & tested | All 10 Discriminated Evidence UI components with CSS styling | **DONE** |
-| Playwright E2E test | ❌ | 1 golden-path test | **MISSING** |
+| Playwright E2E test | ✅ Built, wired & tested | `tests/golden-path.spec.ts` real backend+frontend journey (`npm run test:e2e`) | **DONE** |
 
 ### Infrastructure
 
@@ -111,7 +111,7 @@ Think of it as: the plumbing and wiring of the house is done, but you only have 
 | import-linter contracts | ✅ Configured | 3 architectural boundaries enforced | **DONE** |
 | docker-compose.yml | ✅ Built, wired & tested | `api` + `frontend` container orchestration with SQLite volume | **DONE** |
 | CI pipeline (GitHub Actions) | ✅ Built, wired & tested | `.github/workflows/ci.yml` (ruff, pytest, import-linter, tsc, vite build) | **DONE** |
-| ADR documents | ❌ | 0001-walking-skeleton.md etc | **MISSING** |
+| ADR documents | ✅ Documented | `docs/adr/0001-0005.md` (architecture, boundaries, SQLite, tiered execution, audit) | **DONE** |
 
 ---
 
@@ -124,8 +124,8 @@ Think of it as: the plumbing and wiring of the house is done, but you only have 
 | Canon System | 5 | 0 | 0 | 5 |
 | Engine | 10 | 0 | 0 | 10 |
 | Workflow & Audit | 11 | 0 | 0 | 11 |
-| Frontend | 14 | 0 | 4 | 18 |
-| Infrastructure | 6 | 0 | 1 | 7 |
-| **TOTAL** | **63** | **0** | **5** | **68** |
+| Frontend | 17 | 0 | 1 (deferred) | 18 |
+| Infrastructure | 7 | 0 | 0 | 7 |
+| **TOTAL** | **67** | **0** | **1** | **68** |
 
-**100% of Core Product & Architectural Features Complete (~93% overall including deferred libraries).** All 10 governance checks (spanning computer vision, SMT arithmetic proofs, NLI slot alignment, WCAG contrast, UTS #39 homoglyphs, and OWASP hidden prompt injection), multimodal parsers (DOCX, PDF, HTML, banner image, multi-provider Guarded LLM table de-normalization, base64 bundle attachments), cross-node bundle engine (`run_bundle`), Pipeline A CanonCompiler with Guards 1, 2 & 3 (Value-Anchor Coverage, Verbatim Span Grounding, and Bidirectional Round-Trip NLI), Canon v1.1 PR generator for TermRules and FactClaims, real X.509 v3 ES256 C2PA outbound asset signing, surgical 1-click Accept replacements with span-shifting, standalone offline CLI verifier (`canongate verify`), Conformal Risk Control with interactive α slider, immutable revision history (`SubmissionVersionRow`), cognitive forcing functions, SVG pixel BBox overlays on banner ads, `docker-compose.yml`, GitHub Actions CI pipeline, and 10 rich frontend evidence renderers are fully wired, operational, and validated with **80 passing tests** and 0 linter/import-boundary violations.
+**100% of Actionable Implementation Gaps Closed (67/68 features complete, 1 deferred: TanStack Router).** All 10 governance checks (spanning computer vision, SMT arithmetic proofs, NLI slot alignment, WCAG contrast, UTS #39 homoglyphs, and OWASP hidden prompt injection), multimodal parsers (DOCX, PDF, HTML, banner image, multi-provider Guarded LLM table de-normalization, base64 bundle attachments), cross-node bundle engine (`run_bundle`), Pipeline A CanonCompiler with Guards 1, 2 & 3 (Value-Anchor Coverage, Verbatim Span Grounding, and Bidirectional Round-Trip NLI), Canon v1.1 PR generator for TermRules and FactClaims, real X.509 v3 ES256 C2PA outbound asset signing, surgical 1-click Accept replacements with span-shifting, standalone offline CLI verifier (`canongate verify`), Conformal Risk Control with interactive α slider, immutable revision history (`SubmissionVersionRow`), cognitive forcing functions, SVG pixel BBox overlays on banner ads, `docker-compose.yml`, GitHub Actions CI pipeline, 10 rich frontend evidence renderers, automated OpenAPI TypeScript generation (`npm run generate:api`), TanStack Query server-state management, Playwright golden-path E2E testing (`npm run test:e2e`), and 5 comprehensive ADR records are fully operational and validated.

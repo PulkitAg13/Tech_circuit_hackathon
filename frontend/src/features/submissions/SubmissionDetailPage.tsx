@@ -1,5 +1,6 @@
 import { useState, useEffect } from "react";
 import { useParams, useNavigate } from "react-router-dom";
+import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useEditor, EditorContent } from "@tiptap/react";
 import StarterKit from "@tiptap/starter-kit";
 import { Extension } from "@tiptap/core";
@@ -18,7 +19,6 @@ import {
   type FindingResponse,
   type EvidencePayload,
   type ImageNodeMetaDto,
-  type SubmissionVersionDto,
 } from "../../api/client";
 import { useAuth } from "../auth/AuthContext";
 import { createProseMirrorFindingsPlugin } from "./FindingHighlightsExtension";
@@ -394,22 +394,54 @@ export function EvidenceView({ evidence }: { evidence?: EvidencePayload }) {
   }
 }
 
+const EMPTY_FINDINGS: FindingResponse[] = [];
+const EMPTY_AUDIT: any[] = [];
+const EMPTY_VERSIONS: any[] = [];
+
 export function SubmissionDetailPage() {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
   const { role } = useAuth();
   const subId = Number(id);
 
-  const [submission, setSubmission] = useState<Submission | null>(null);
-  const [findings, setFindings] = useState<FindingResponse[]>([]);
+  const queryClient = useQueryClient();
+
+  // TanStack Query for server state
+  const { data: submission = null } = useQuery({
+    queryKey: ["submission", subId],
+    queryFn: () => getSubmission(subId),
+    enabled: !Number.isNaN(subId),
+  });
+
+  const { data: serverFindings = EMPTY_FINDINGS } = useQuery({
+    queryKey: ["findings", subId],
+    queryFn: () => getFindings(subId),
+    enabled: !Number.isNaN(subId),
+  });
+
+  // Track live SSE stream during active scan
+  const [liveFindings, setLiveFindings] = useState<FindingResponse[] | null>(null);
+  const findings = liveFindings ?? serverFindings;
+
   const [scanning, setScanning] = useState(false);
   const [scanCount, setScanCount] = useState(0);
   const [alpha, setAlpha] = useState<number>(0.10);
   const [conformalCutoff, setConformalCutoff] = useState<number | null>(null);
-  const [audit, setAudit] = useState<any[]>([]);
+
   const [showAudit, setShowAudit] = useState(false);
-  const [versions, setVersions] = useState<SubmissionVersionDto[]>([]);
+  const { data: audit = EMPTY_AUDIT } = useQuery({
+    queryKey: ["audit", subId],
+    queryFn: () => getAuditTrail(subId),
+    enabled: showAudit && !Number.isNaN(subId),
+  });
+
   const [showVersions, setShowVersions] = useState(false);
+  const { data: versions = EMPTY_VERSIONS } = useQuery({
+    queryKey: ["versions", subId],
+    queryFn: () => getSubmissionVersions(subId),
+    enabled: showVersions && !Number.isNaN(subId),
+  });
+
   const [error, setError] = useState("");
   const [selectedRowId, setSelectedRowId] = useState<number | null>(null);
 
@@ -425,19 +457,17 @@ export function SubmissionDetailPage() {
   });
 
   useEffect(() => {
-    loadData();
-  }, [id]);
-
-  useEffect(() => {
     if (editor && submission) {
       const paragraphs = resolveEditorTextBlocks(submission);
       const html =
         paragraphs.length > 0
           ? paragraphs.map((p) => `<p>${escapeHtmlBlock(p)}</p>`).join("")
           : "<p><em>(Empty document)</em></p>";
-      editor.commands.setContent(html);
+      if (editor.getHTML() !== html) {
+        editor.commands.setContent(html);
+      }
     }
-  }, [editor, submission?.raw_content, submission?.text_blocks]);
+  }, [editor, submission?.id, submission?.raw_content]);
 
   useEffect(() => {
     if (!editor || !submission) return;
@@ -447,7 +477,7 @@ export function SubmissionDetailPage() {
       selectedRowId,
     });
     editor.view.dispatch(tr);
-  }, [editor, submission?.paragraph_node_ids, findings, selectedRowId]);
+  }, [editor, submission?.id, findings, selectedRowId]);
 
   useEffect(() => {
     if (!editor) return;
@@ -465,81 +495,80 @@ export function SubmissionDetailPage() {
     return () => dom.removeEventListener("click", handleClick);
   }, [editor]);
 
-  async function loadData() {
-    try {
-      const [sub, fds] = await Promise.all([
-        getSubmission(subId),
-        getFindings(subId),
-      ]);
-      setSubmission(sub);
-      setFindings(fds);
-    } catch (err: any) {
-      setError(err.message);
-    }
-  }
+  // Mutations
+  const workflowMutation = useMutation({
+    mutationFn: (vars: { action: string; comment?: string }) =>
+      workflowAction(subId, vars.action, vars.comment),
+    onSuccess: (updated) => {
+      queryClient.setQueryData(["submission", subId], updated);
+      queryClient.invalidateQueries({ queryKey: ["submission", subId] });
+      queryClient.invalidateQueries({ queryKey: ["audit", subId] });
+      queryClient.invalidateQueries({ queryKey: ["submissions"] });
+    },
+    onError: (err: any) => {
+      setError(err.message || "Workflow action failed");
+    },
+  });
+
+  const resolveMutation = useMutation({
+    mutationFn: (vars: { rowId: number; resolution: string; reason?: string }) =>
+      resolveFinding(subId, vars.rowId, vars.resolution, true, vars.reason),
+    onSuccess: () => {
+      setPendingReasonRowId(null);
+      setReasonDraft("");
+      queryClient.invalidateQueries({ queryKey: ["findings", subId] });
+      queryClient.invalidateQueries({ queryKey: ["submission", subId] });
+      queryClient.invalidateQueries({ queryKey: ["audit", subId] });
+      queryClient.invalidateQueries({ queryKey: ["versions", subId] });
+      queryClient.invalidateQueries({ queryKey: ["submissions"] });
+    },
+    onError: (err: any) => {
+      setError(err.message || "Failed to resolve finding");
+    },
+  });
 
   async function handleScan() {
     setScanning(true);
     setScanCount(0);
-    setFindings([]);
+    setLiveFindings([]);
     setError("");
 
     await scanSubmission(
       subId,
-      () => {
+      (finding) => {
         setScanCount((c) => c + 1);
+        setLiveFindings((prev) => [...(prev || []), finding]);
       },
       async (_total, meta) => {
         setScanning(false);
+        setLiveFindings(null);
         if (meta && typeof meta.conformal_threshold === "number") {
           setConformalCutoff(meta.conformal_threshold);
         }
-        const [sub, fds] = await Promise.all([
-          getSubmission(subId),
-          getFindings(subId),
+        await Promise.all([
+          queryClient.invalidateQueries({ queryKey: ["submission", subId] }),
+          queryClient.invalidateQueries({ queryKey: ["findings", subId] }),
+          queryClient.invalidateQueries({ queryKey: ["audit", subId] }),
+          queryClient.invalidateQueries({ queryKey: ["submissions"] }),
         ]);
-        setSubmission(sub);
-        setFindings(fds);
       },
       (err) => {
         setScanning(false);
+        setLiveFindings(null);
         setError(err.message);
       },
       alpha
     );
   }
 
-  async function handleWorkflow(action: string, comment?: string) {
+  function handleWorkflow(action: string, comment?: string) {
     setError("");
-    try {
-      const updated = await workflowAction(subId, action, comment);
-      setSubmission(updated);
-    } catch (err: any) {
-      setError(err.message);
-    }
+    workflowMutation.mutate({ action, comment });
   }
 
-  async function handleResolve(findingRowId: number, resolution: string, reason?: string) {
+  function handleResolve(findingRowId: number, resolution: string, reason?: string) {
     setError("");
-    try {
-      const updated = await resolveFinding(subId, findingRowId, resolution, true, reason);
-      setPendingReasonRowId(null);
-      setReasonDraft("");
-      if (resolution === "accepted") {
-        const [updatedSub, updatedFindings] = await Promise.all([
-          getSubmission(subId),
-          getFindings(subId),
-        ]);
-        setSubmission(updatedSub);
-        setFindings(updatedFindings);
-      } else {
-        setFindings((prev) =>
-          prev.map((f) => (f.row_id === findingRowId ? updated : f))
-        );
-      }
-    } catch (err: any) {
-      setError(err.message);
-    }
+    resolveMutation.mutate({ rowId: findingRowId, resolution, reason });
   }
 
   function startReasonPrompt(rowId: number, kind: "dismissed" | "overridden") {
@@ -548,24 +577,12 @@ export function SubmissionDetailPage() {
     setReasonDraft("");
   }
 
-  async function loadAudit() {
-    try {
-      const trail = await getAuditTrail(subId);
-      setAudit(trail);
-      setShowAudit(true);
-    } catch (err: any) {
-      setError(err.message);
-    }
+  function loadAudit() {
+    setShowAudit(true);
   }
 
-  async function loadVersions() {
-    try {
-      const revs = await getSubmissionVersions(subId);
-      setVersions(revs);
-      setShowVersions(true);
-    } catch (err: any) {
-      setError(err.message);
-    }
+  function loadVersions() {
+    setShowVersions(true);
   }
 
   async function handleExportCertificate() {
