@@ -938,3 +938,111 @@ form .btn-primary {
   padding: 0.1rem 0.4rem;
   border-radius: 3px;
 }
+
+/* ── Banner BBox Overlay, Conformal Slider & Forcing Function ─────── */
+
+.conformal-slider-box {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.6rem;
+  padding: 0.35rem 0.75rem;
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  font-size: 0.8rem;
+  color: var(--text-secondary);
+}
+
+.conformal-slider-box input[type="range"] {
+  width: 95px;
+  accent-color: var(--accent-indigo);
+  cursor: pointer;
+}
+
+.banner-overlay-section {
+  margin-bottom: 1.75rem;
+}
+
+.banner-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(360px, 1fr));
+  gap: 1rem;
+}
+
+.banner-canvas-card {
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  overflow: hidden;
+}
+
+.banner-canvas-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 0.5rem 0.85rem;
+  font-size: 0.78rem;
+  color: var(--text-secondary);
+  border-bottom: 1px solid var(--border);
+}
+
+.banner-stage {
+  position: relative;
+  width: 100%;
+  background: #0b0f19;
+  line-height: 0;
+}
+
+.banner-img {
+  width: 100%;
+  height: auto;
+  display: block;
+}
+
+.bbox-svg-overlay {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+}
+
+.bbox-group {
+  cursor: pointer;
+  transition: opacity 0.15s ease;
+}
+
+.bbox-group:hover rect {
+  filter: brightness(1.25);
+}
+
+.reason-forcing-box {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.45rem;
+  width: 100%;
+}
+
+.reason-input {
+  flex: 1;
+  min-width: 220px;
+  padding: 0.35rem 0.6rem;
+  font-size: 0.8rem;
+  background: var(--bg-input);
+  border: 1px solid var(--border-focus);
+  border-radius: var(--radius-sm);
+  color: var(--text-primary);
+}
+
+.resolved-meta {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+}
+
+.resolution-reason-note {
+  font-size: 0.78rem;
+  color: var(--text-secondary);
+  font-style: italic;
+}

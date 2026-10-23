@@ -52,6 +52,26 @@ export interface BundleAttachmentDto {
   content_base64: string;
 }
 
+export interface ImageNodeMetaDto {
+  index: number;
+  node_id: string;
+  asset_path: string;
+  width: number;
+  height: number;
+  alt?: string | null;
+  url: string;
+}
+
+export interface SubmissionVersionDto {
+  version_number: number;
+  content_hash: string;
+  canon_hash: string;
+  raw_content: string;
+  created_by: number;
+  change_note: string;
+  created_at: string;
+}
+
 export interface Submission {
   id: number;
   title: string;
@@ -66,6 +86,7 @@ export interface Submission {
   paragraph_node_ids?: string[];
   text_blocks?: string[];
   image_paths?: string[];
+  image_nodes?: ImageNodeMetaDto[];
 }
 
 export async function createSubmission(
@@ -98,11 +119,12 @@ export async function getSubmission(id: number): Promise<Submission> {
 export async function scanSubmission(
   id: number,
   onFinding: (finding: any) => void,
-  onDone: (total: number) => void,
-  onError?: (err: any) => void
+  onDone: (total: number, meta?: { alpha?: number; conformal_threshold?: number }) => void,
+  onError?: (err: any) => void,
+  alpha = 0.10
 ): Promise<void> {
   try {
-    const res = await fetch(`${API_BASE}/submissions/${id}/scan`, {
+    const res = await fetch(`${API_BASE}/submissions/${id}/scan?alpha=${alpha}`, {
       method: "POST",
       headers: getHeaders(),
     });
@@ -135,7 +157,11 @@ export async function scanSubmission(
           if (currentEvent === "finding") {
             onFinding(JSON.parse(data));
           } else if (currentEvent === "done") {
-            onDone(JSON.parse(data).total);
+            const parsed = JSON.parse(data);
+            onDone(parsed.total, {
+              alpha: parsed.alpha,
+              conformal_threshold: parsed.conformal_threshold,
+            });
           }
         }
       }
@@ -297,6 +323,7 @@ export interface FindingResponse {
   severity: number;
   message: string;
   resolution: string;
+  resolution_reason?: string;
   payload: FindingPayload;
 }
 
@@ -331,10 +358,31 @@ export async function workflowAction(
   });
 }
 
-/* ── Audit ─────────────────────────────────────────────────────────── */
+/* ── Audit & Governance Certificates ───────────────────────────────── */
 
 export async function getAuditTrail(submissionId: number): Promise<any[]> {
   return request<any[]>(`/submissions/${submissionId}/audit`);
+}
+
+export async function getGovernanceCertificate(
+  submissionId: number
+): Promise<Record<string, unknown>> {
+  return request<Record<string, unknown>>(`/submissions/${submissionId}/certificate`);
+}
+
+export async function getSubmissionVersions(
+  submissionId: number
+): Promise<SubmissionVersionDto[]> {
+  return request<SubmissionVersionDto[]>(`/submissions/${submissionId}/versions`);
+}
+
+export async function getReplayManifest(
+  submissionId: number,
+  alpha = 0.10
+): Promise<Record<string, unknown>> {
+  return request<Record<string, unknown>>(
+    `/submissions/${submissionId}/replay-manifest?alpha=${alpha}`
+  );
 }
 
 /* ── Canons, Lint, Friction, Pipeline A Compile & v1.1 PRs ────────── */

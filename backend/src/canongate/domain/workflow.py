@@ -123,6 +123,8 @@ def validate_resolution(
     *,
     severity: int,
     role: Role,
+    reason: str | None = None,
+    require_reason: bool = False,
 ) -> None:
     """Check whether `role` may apply `resolution` to a finding of `severity`.
 
@@ -131,6 +133,9 @@ def validate_resolution(
     - "dismissed": reviewer/admin only, warnings only (severity < 50).
     - "overridden": reviewer/admin only, warnings only.
     - Blockers (severity >= 50) can only be "accepted".
+    - Cognitive forcing function: when `require_reason=True` or when `reason` is
+      explicitly provided as a string, `dismissed` and `overridden` require a
+      non-empty justification reason.
 
     Raises ResolutionError if the combination is disallowed.
     """
@@ -150,4 +155,9 @@ def validate_resolution(
         raise ResolutionError(
             f"Cannot {resolution} a blocker (severity={severity}). "
             "Blockers must be accepted (fix applied) or the content must be changed."
+        )
+
+    if (require_reason or reason is not None) and len((reason or "").strip()) < 3:
+        raise ResolutionError(
+            f"Cannot {resolution} a finding without a justification reason (at least 3 characters)."
         )

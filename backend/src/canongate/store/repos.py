@@ -6,11 +6,17 @@ No business logic here, just persistence.
 
 from __future__ import annotations
 
-from sqlalchemy import delete, select
+from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from canongate.domain.finding import Finding
-from canongate.store.tables import FindingRow, SubmissionRow, UserRow, WorkflowEventRow
+from canongate.store.tables import (
+    FindingRow,
+    SubmissionRow,
+    SubmissionVersionRow,
+    UserRow,
+    WorkflowEventRow,
+)
 
 # ── Users ────────────────────────────────────────────────────────────
 
@@ -31,7 +37,7 @@ async def create_user(
     return user
 
 
-# ── Submissions ──────────────────────────────────────────────────────
+# ── Submissions & Immutable Revisions ────────────────────────────────
 
 
 async def create_submission(
@@ -53,6 +59,18 @@ async def create_submission(
         creator_id=creator_id,
     )
     session.add(sub)
+    await session.flush()
+
+    ver = SubmissionVersionRow(
+        submission_id=sub.id,
+        version_number=1,
+        raw_content=raw_content,
+        content_hash=content_hash,
+        canon_hash=canon_hash,
+        created_by=creator_id,
+        change_note="Initial submission",
+    )
+    session.add(ver)
     await session.flush()
     return sub
 
@@ -77,14 +95,45 @@ async def update_submission_content(
     *,
     raw_content: str,
     content_hash: str,
+    actor_id: int | None = None,
+    change_note: str = "Applied governance fix",
 ) -> SubmissionRow | None:
-    """Persist updated raw_content and content_hash when a replacement suggestion is accepted."""
+    """Persist updated raw_content, content_hash, and append an immutable SubmissionVersionRow."""
     sub = await get_submission(session, submission_id)
     if sub:
         sub.raw_content = raw_content
         sub.content_hash = content_hash
+
+        max_ver_res = await session.execute(
+            select(func.max(SubmissionVersionRow.version_number)).where(
+                SubmissionVersionRow.submission_id == submission_id
+            )
+        )
+        current_max = max_ver_res.scalar_one_or_none() or 1
+        ver = SubmissionVersionRow(
+            submission_id=submission_id,
+            version_number=int(current_max) + 1,
+            raw_content=raw_content,
+            content_hash=content_hash,
+            canon_hash=sub.canon_hash,
+            created_by=actor_id if actor_id is not None else sub.creator_id,
+            change_note=change_note,
+        )
+        session.add(ver)
         await session.flush()
     return sub
+
+
+async def list_submission_versions(
+    session: AsyncSession, submission_id: int
+) -> list[SubmissionVersionRow]:
+    """Return all immutable revisions for `submission_id` in chronological order."""
+    result = await session.execute(
+        select(SubmissionVersionRow)
+        .where(SubmissionVersionRow.submission_id == submission_id)
+        .order_by(SubmissionVersionRow.version_number.asc())
+    )
+    return list(result.scalars().all())
 
 
 # ── Findings ─────────────────────────────────────────────────────────
@@ -101,7 +150,6 @@ async def save_findings(
     Already-resolved findings (accepted/dismissed/overridden) are kept
     so reviewer decisions survive a re-scan.
     """
-    # Collect already-resolved finding_ids so we don't overwrite them
     existing = await session.execute(
         select(FindingRow).where(
             FindingRow.submission_id == submission_id,
@@ -110,7 +158,6 @@ async def save_findings(
     )
     resolved_ids = {r.finding_id for r in existing.scalars().all()}
 
-    # Delete old open findings (they'll be replaced by this batch)
     await session.execute(
         delete(FindingRow).where(
             FindingRow.submission_id == submission_id,
@@ -120,7 +167,7 @@ async def save_findings(
 
     for f in findings:
         if f.id in resolved_ids:
-            continue  # don't overwrite a reviewer's decision
+            continue
         row = FindingRow(
             finding_id=f.id,
             submission_id=submission_id,
@@ -152,13 +199,19 @@ async def get_finding_by_row_id(
 
 
 async def resolve_finding(
-    session: AsyncSession, finding_row_id: int, *, resolution: str, resolved_by: int
+    session: AsyncSession,
+    finding_row_id: int,
+    *,
+    resolution: str,
+    resolved_by: int,
+    reason: str = "",
 ) -> FindingRow | None:
     result = await session.execute(select(FindingRow).where(FindingRow.id == finding_row_id))
     row = result.scalar_one_or_none()
     if row:
         row.resolution = resolution
         row.resolved_by = resolved_by
+        row.resolution_reason = reason
         await session.flush()
     return row
 

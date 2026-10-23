@@ -12,3 +12,4 @@ node_modules/
 .import_linter_cache/
 *.egg-info/
 .DS_Store
+*.zip

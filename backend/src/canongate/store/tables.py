@@ -52,6 +52,27 @@ class SubmissionRow(Base):
     events: Mapped[list[WorkflowEventRow]] = relationship(
         back_populates="submission", cascade="all, delete-orphan"
     )
+    versions: Mapped[list[SubmissionVersionRow]] = relationship(
+        back_populates="submission", cascade="all, delete-orphan"
+    )
+
+
+class SubmissionVersionRow(Base):
+    __tablename__ = "submission_versions"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    submission_id: Mapped[int] = mapped_column(
+        Integer, ForeignKey("submissions.id"), nullable=False
+    )
+    version_number: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    raw_content: Mapped[str] = mapped_column(Text, nullable=False)
+    content_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    canon_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    created_by: Mapped[int] = mapped_column(Integer, ForeignKey("users.id"), nullable=False)
+    change_note: Mapped[str] = mapped_column(Text, default="")
+    created_at: Mapped[dt.datetime] = mapped_column(DateTime, server_default=func.now())
+
+    submission: Mapped[SubmissionRow] = relationship(back_populates="versions")
 
 
 class FindingRow(Base):
@@ -70,6 +91,7 @@ class FindingRow(Base):
     resolution: Mapped[str] = mapped_column(
         String(32), default="open"
     )  # open | accepted | dismissed | overridden
+    resolution_reason: Mapped[str] = mapped_column(Text, default="")
     resolved_by: Mapped[int | None] = mapped_column(Integer, ForeignKey("users.id"), nullable=True)
 
     submission: Mapped[SubmissionRow] = relationship(back_populates="findings")

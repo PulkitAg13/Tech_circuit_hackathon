@@ -2,27 +2,31 @@ import { useState, useEffect } from "react";
 import { useParams, useNavigate } from "react-router-dom";
 import { useEditor, EditorContent } from "@tiptap/react";
 import StarterKit from "@tiptap/starter-kit";
+import { Extension } from "@tiptap/core";
 import { Plugin, PluginKey } from "@tiptap/pm/state";
 import { Decoration, DecorationSet } from "@tiptap/pm/view";
-import { Extension } from "@tiptap/core";
 import {
   getSubmission,
   getFindings,
   scanSubmission,
-  workflowAction,
   resolveFinding,
+  workflowAction,
   getAuditTrail,
+  getGovernanceCertificate,
+  getSubmissionVersions,
   type Submission,
   type FindingResponse,
   type EvidencePayload,
+  type ImageNodeMetaDto,
+  type SubmissionVersionDto,
 } from "../../api/client";
 import { useAuth } from "../auth/AuthContext";
 import { createProseMirrorFindingsPlugin } from "./FindingHighlightsExtension";
 
-const findingsPluginKey = new PluginKey("findingsHighlights");
+const findingsPluginKey = new PluginKey("canongateFindings");
 
-const FindingsHighlightExtension = Extension.create({
-  name: "findingsHighlights",
+const FindingsDecorationExtension = Extension.create({
+  name: "findingsDecoration",
   addProseMirrorPlugins() {
     return [
       createProseMirrorFindingsPlugin({
@@ -40,7 +44,6 @@ const VERDICT_LABELS: Record<string, string> = {
   "1": "WARNING",
   "2": "BLOCKER",
 };
-
 const VERDICT_COLORS: Record<string, string> = {
   "0": "#22c55e",
   "1": "#f59e0b",
@@ -77,6 +80,113 @@ export function resolveEditorTextBlocks(submission: Submission): string[] {
     .split(/\n{2,}/)
     .map((b) => b.trim())
     .filter((b) => b.length > 0);
+}
+
+/**
+ * Interactive SVG viewBox overlay rendering pixel BBox(x, y, w, h) locators
+ * on top of attached campaign banner images.
+ */
+export function BannerBBoxOverlay({
+  imageNodes,
+  findings,
+  selectedRowId,
+  onSelectFinding,
+}: {
+  imageNodes: ImageNodeMetaDto[];
+  findings: FindingResponse[];
+  selectedRowId: number | null;
+  onSelectFinding: (rowId: number) => void;
+}) {
+  if (!imageNodes || imageNodes.length === 0) return null;
+
+  return (
+    <section className="banner-overlay-section">
+      <div className="section-header">
+        <h2>🖼️ Visual Creative Inspection (BBox Governance Overlay)</h2>
+        <span className="editor-subtext">
+          Click any bounding box on the banner to inspect its CIEDE2000, WCAG 2.1, ASCI 26px, or Saliency evidence
+        </span>
+      </div>
+      <div className="banner-grid">
+        {imageNodes.map((img) => {
+          const boxFindings = findings.filter(
+            (f) =>
+              f.node_id === img.node_id &&
+              f.resolution === "open" &&
+              f.payload?.locator &&
+              typeof f.payload.locator.x === "number" &&
+              typeof f.payload.locator.y === "number"
+          );
+          const viewW = Math.max(1, img.width || 800);
+          const viewH = Math.max(1, img.height || 400);
+          const srcUrl = img.url.startsWith("http")
+            ? img.url
+            : `http://localhost:8000${img.url}`;
+
+          return (
+            <div key={img.node_id} className="banner-canvas-card">
+              <div className="banner-canvas-header">
+                <code>{img.asset_path.split("/").pop() || img.asset_path}</code>
+                <span>
+                  {viewW}×{viewH}px · {boxFindings.length} open visual finding(s)
+                </span>
+              </div>
+              <div className="banner-stage">
+                <img
+                  src={srcUrl}
+                  alt={img.alt || "Campaign Banner"}
+                  className="banner-img"
+                />
+                <svg
+                  className="bbox-svg-overlay"
+                  viewBox={`0 0 ${viewW} ${viewH}`}
+                  preserveAspectRatio="xMidYMid meet"
+                >
+                  {boxFindings.map((f) => {
+                    const loc = f.payload.locator!;
+                    const x = loc.x ?? 0;
+                    const y = loc.y ?? 0;
+                    const w = Math.max(12, loc.w ?? 40);
+                    const h = Math.max(12, loc.h ?? 24);
+                    const isBlocker = f.severity >= 50;
+                    const isSelected = f.row_id === selectedRowId;
+                    const strokeColor = isBlocker ? "#ef4444" : "#f59e0b";
+
+                    return (
+                      <g
+                        key={f.row_id}
+                        className={`bbox-group ${isSelected ? "bbox-selected" : ""}`}
+                        onClick={() => onSelectFinding(f.row_id)}
+                      >
+                        <rect
+                          x={x}
+                          y={y}
+                          width={w}
+                          height={h}
+                          fill={
+                            isSelected
+                              ? "rgba(99, 102, 241, 0.28)"
+                              : isBlocker
+                                ? "rgba(239, 68, 68, 0.16)"
+                                : "rgba(245, 158, 11, 0.16)"
+                          }
+                          stroke={isSelected ? "#818cf8" : strokeColor}
+                          strokeWidth={isSelected ? 3 : 2}
+                          rx={3}
+                        >
+                          <title>{`${f.check_id}: ${f.message}`}</title>
+                        </rect>
+                      </g>
+                    );
+                  })}
+                </svg>
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    </section>
+  );
 }
 
 export function EvidenceView({ evidence }: { evidence?: EvidencePayload }) {
@@ -288,26 +398,34 @@ export function SubmissionDetailPage() {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
   const { role } = useAuth();
+  const subId = Number(id);
+
   const [submission, setSubmission] = useState<Submission | null>(null);
   const [findings, setFindings] = useState<FindingResponse[]>([]);
   const [scanning, setScanning] = useState(false);
   const [scanCount, setScanCount] = useState(0);
+  const [alpha, setAlpha] = useState<number>(0.10);
+  const [conformalCutoff, setConformalCutoff] = useState<number | null>(null);
   const [audit, setAudit] = useState<any[]>([]);
   const [showAudit, setShowAudit] = useState(false);
+  const [versions, setVersions] = useState<SubmissionVersionDto[]>([]);
+  const [showVersions, setShowVersions] = useState(false);
   const [error, setError] = useState("");
-  const [actionComment, setActionComment] = useState("");
   const [selectedRowId, setSelectedRowId] = useState<number | null>(null);
 
-  const subId = Number(id);
+  // Cognitive forcing function state: track pending Override/Dismiss justification reason
+  const [pendingReasonRowId, setPendingReasonRowId] = useState<number | null>(null);
+  const [pendingResolutionKind, setPendingResolutionKind] = useState<"dismissed" | "overridden">("dismissed");
+  const [reasonDraft, setReasonDraft] = useState<string>("");
 
   const editor = useEditor({
-    extensions: [StarterKit, FindingsHighlightExtension],
-    content: "<p>Loading document content...</p>",
+    extensions: [StarterKit, FindingsDecorationExtension],
+    content: "",
     editable: false,
   });
 
   useEffect(() => {
-    loadSubmission();
+    loadData();
   }, [id]);
 
   useEffect(() => {
@@ -323,17 +441,31 @@ export function SubmissionDetailPage() {
 
   useEffect(() => {
     if (!editor || !submission) return;
-    const { view } = editor;
-    const tr = view.state.tr;
-    tr.setMeta(findingsPluginKey, {
+    const tr = editor.state.tr.setMeta(findingsPluginKey, {
       findings,
       paragraphNodeIds: submission.paragraph_node_ids || [],
       selectedRowId,
     });
-    view.dispatch(tr);
-  }, [editor, findings, submission?.paragraph_node_ids, selectedRowId]);
+    editor.view.dispatch(tr);
+  }, [editor, submission?.paragraph_node_ids, findings, selectedRowId]);
 
-  async function loadSubmission() {
+  useEffect(() => {
+    if (!editor) return;
+    const dom = editor.view.dom;
+    const handleClick = (e: MouseEvent) => {
+      const target = (e.target as HTMLElement).closest("[data-finding-row-id]");
+      if (target) {
+        const rowId = Number(target.getAttribute("data-finding-row-id"));
+        if (!Number.isNaN(rowId)) {
+          setSelectedRowId(rowId);
+        }
+      }
+    };
+    dom.addEventListener("click", handleClick);
+    return () => dom.removeEventListener("click", handleClick);
+  }, [editor]);
+
+  async function loadData() {
     try {
       const [sub, fds] = await Promise.all([
         getSubmission(subId),
@@ -348,16 +480,20 @@ export function SubmissionDetailPage() {
 
   async function handleScan() {
     setScanning(true);
-    setFindings([]);
     setScanCount(0);
+    setFindings([]);
+    setError("");
 
     await scanSubmission(
       subId,
       () => {
         setScanCount((c) => c + 1);
       },
-      async () => {
+      async (_total, meta) => {
         setScanning(false);
+        if (meta && typeof meta.conformal_threshold === "number") {
+          setConformalCutoff(meta.conformal_threshold);
+        }
         const [sub, fds] = await Promise.all([
           getSubmission(subId),
           getFindings(subId),
@@ -365,28 +501,31 @@ export function SubmissionDetailPage() {
         setSubmission(sub);
         setFindings(fds);
       },
-      () => {
+      (err) => {
         setScanning(false);
-        setError("Scan stream disconnected");
-      }
+        setError(err.message);
+      },
+      alpha
     );
   }
 
-  async function handleWorkflow(action: string) {
+  async function handleWorkflow(action: string, comment?: string) {
+    setError("");
     try {
-      const updated = await workflowAction(subId, action, actionComment);
+      const updated = await workflowAction(subId, action, comment);
       setSubmission(updated);
-      setActionComment("");
     } catch (err: any) {
       setError(err.message);
     }
   }
 
-  async function handleResolve(findingRowId: number, resolution: string) {
+  async function handleResolve(findingRowId: number, resolution: string, reason?: string) {
+    setError("");
     try {
-      const updated = await resolveFinding(subId, findingRowId, resolution);
+      const updated = await resolveFinding(subId, findingRowId, resolution, true, reason);
+      setPendingReasonRowId(null);
+      setReasonDraft("");
       if (resolution === "accepted") {
-        // Reload updated submission text_blocks/paragraph_node_ids and shifted findings
         const [updatedSub, updatedFindings] = await Promise.all([
           getSubmission(subId),
           getFindings(subId),
@@ -403,11 +542,45 @@ export function SubmissionDetailPage() {
     }
   }
 
+  function startReasonPrompt(rowId: number, kind: "dismissed" | "overridden") {
+    setPendingReasonRowId(rowId);
+    setPendingResolutionKind(kind);
+    setReasonDraft("");
+  }
+
   async function loadAudit() {
     try {
       const trail = await getAuditTrail(subId);
       setAudit(trail);
       setShowAudit(true);
+    } catch (err: any) {
+      setError(err.message);
+    }
+  }
+
+  async function loadVersions() {
+    try {
+      const revs = await getSubmissionVersions(subId);
+      setVersions(revs);
+      setShowVersions(true);
+    } catch (err: any) {
+      setError(err.message);
+    }
+  }
+
+  async function handleExportCertificate() {
+    setError("");
+    try {
+      const cert = await getGovernanceCertificate(subId);
+      const blob = new Blob([JSON.stringify(cert, null, 2)], {
+        type: "application/json",
+      });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `canongate_cert_sub_${subId}.json`;
+      a.click();
+      URL.revokeObjectURL(url);
     } catch (err: any) {
       setError(err.message);
     }
@@ -458,7 +631,7 @@ export function SubmissionDetailPage() {
         </div>
       </div>
 
-      {/* Actions bar */}
+      {/* Actions bar & Conformal Risk Control Slider */}
       <div className="actions-bar">
         <button
           className="btn-primary"
@@ -468,22 +641,28 @@ export function SubmissionDetailPage() {
           {scanning ? `Scanning... (${scanCount})` : "🔍 Run Scan"}
         </button>
 
+        <div className="conformal-slider-box" title="Angelopoulos et al. Conformal Risk Control (controls max expected False Negative Rate α)">
+          <label htmlFor="conformal-alpha">
+            Conformal Risk α = <strong>{(alpha * 100).toFixed(0)}%</strong>
+            {conformalCutoff !== null ? ` (λ̂ = ${conformalCutoff.toFixed(2)})` : ""}
+          </label>
+          <input
+            id="conformal-alpha"
+            type="range"
+            min={0.02}
+            max={0.25}
+            step={0.01}
+            value={alpha}
+            onChange={(e) => setAlpha( parseFloat(e.target.value) )}
+          />
+        </div>
+
         {submission.status === "draft" && (
           <button className="btn-accent" onClick={() => handleWorkflow("submit")}>
             Submit for Review
           </button>
         )}
-        {submission.status === "in_review" && role === "reviewer" && (
-          <>
-            <button className="btn-success" onClick={() => handleWorkflow("approve")}>
-              ✓ Approve
-            </button>
-            <button className="btn-warning" onClick={() => handleWorkflow("request_changes")}>
-              ✎ Request Changes
-            </button>
-          </>
-        )}
-        {submission.status === "in_review" && role === "admin" && (
+        {submission.status === "in_review" && (role === "reviewer" || role === "admin") && (
           <>
             <button className="btn-success" onClick={() => handleWorkflow("approve")}>
               ✓ Approve
@@ -503,10 +682,26 @@ export function SubmissionDetailPage() {
             🚀 Publish
           </button>
         )}
+        <button className="btn-ghost" onClick={loadVersions}>
+          🕘 Revisions
+        </button>
         <button className="btn-ghost" onClick={loadAudit}>
           📜 Audit Trail
         </button>
+        <button className="btn-ghost" onClick={handleExportCertificate}>
+          🔐 Export Certificate
+        </button>
       </div>
+
+      {/* Interactive Banner Image BBox SVG Overlay */}
+      {submission.image_nodes && submission.image_nodes.length > 0 && (
+        <BannerBBoxOverlay
+          imageNodes={submission.image_nodes}
+          findings={findings}
+          selectedRowId={selectedRowId}
+          onSelectFinding={(rowId) => setSelectedRowId(rowId)}
+        />
+      )}
 
       {/* Interactive ProseMirror Document Viewer with Inline Findings */}
       <section className="editor-section">
@@ -582,30 +777,72 @@ export function SubmissionDetailPage() {
                 )}
                 <div className="finding-actions" onClick={(e) => e.stopPropagation()}>
                   {f.resolution === "open" ? (
-                    <>
-                      <button
-                        className="btn-sm btn-success"
-                        onClick={() => handleResolve(f.row_id, "accepted")}
-                      >
-                        {f.payload?.suggestion?.replacements?.length
-                          ? "Accept & Apply Fix"
-                          : "Accept"}
-                      </button>
-                      <button
-                        className="btn-sm btn-ghost"
-                        onClick={() => handleResolve(f.row_id, "dismissed")}
-                      >
-                        Dismiss
-                      </button>
-                      <button
-                        className="btn-sm btn-warning"
-                        onClick={() => handleResolve(f.row_id, "overridden")}
-                      >
-                        Override
-                      </button>
-                    </>
+                    pendingReasonRowId === f.row_id ? (
+                      <div className="reason-forcing-box">
+                        <input
+                          type="text"
+                          className="reason-input"
+                          placeholder={`Justification required to ${pendingResolutionKind === "overridden" ? "override" : "dismiss"} (min 3 chars)...`}
+                          value={reasonDraft}
+                          onChange={(e) => setReasonDraft(e.target.value)}
+                          autoFocus
+                        />
+                        <button
+                          className="btn-sm btn-warning"
+                          disabled={reasonDraft.trim().length < 3}
+                          onClick={() =>
+                            handleResolve(
+                              f.row_id,
+                              pendingResolutionKind,
+                              reasonDraft.trim()
+                            )
+                          }
+                        >
+                          Confirm {pendingResolutionKind === "overridden" ? "Override" : "Dismiss"}
+                        </button>
+                        <button
+                          className="btn-sm btn-ghost"
+                          onClick={() => {
+                            setPendingReasonRowId(null);
+                            setReasonDraft("");
+                          }}
+                        >
+                          Cancel
+                        </button>
+                      </div>
+                    ) : (
+                      <>
+                        <button
+                          className="btn-sm btn-success"
+                          onClick={() => handleResolve(f.row_id, "accepted")}
+                        >
+                          {f.payload?.suggestion?.replacements?.length
+                            ? "Accept & Apply Fix"
+                            : "Accept"}
+                        </button>
+                        <button
+                          className="btn-sm btn-ghost"
+                          onClick={() => startReasonPrompt(f.row_id, "dismissed")}
+                        >
+                          Dismiss
+                        </button>
+                        <button
+                          className="btn-sm btn-warning"
+                          onClick={() => startReasonPrompt(f.row_id, "overridden")}
+                        >
+                          Override
+                        </button>
+                      </>
+                    )
                   ) : (
-                    <span className="resolution-badge">{f.resolution}</span>
+                    <div className="resolved-meta">
+                      <span className="resolution-badge">{f.resolution}</span>
+                      {f.resolution_reason && (
+                        <span className="resolution-reason-note">
+                          “{f.resolution_reason}”
+                        </span>
+                      )}
+                    </div>
                   )}
                 </div>
               </div>
@@ -614,11 +851,37 @@ export function SubmissionDetailPage() {
         </div>
       </section>
 
+      {/* Immutable Revision History modal */}
+      {showVersions && (
+        <div className="modal-overlay" onClick={() => setShowVersions(false)}>
+          <div className="modal-content" onClick={(e) => e.stopPropagation()}>
+            <h2>Immutable Revision History</h2>
+            <div className="audit-list">
+              {versions.map((ver) => (
+                <div key={ver.version_number} className="audit-event">
+                  <div className="audit-chain">
+                    <strong>v{ver.version_number}</strong>
+                    <code title={ver.content_hash}>{ver.content_hash.slice(0, 10)}…</code>
+                  </div>
+                  <div className="audit-body">
+                    <span>{ver.change_note || "Revision snapshot"}</span>
+                  </div>
+                  <span className="audit-time">{ver.created_at}</span>
+                </div>
+              ))}
+            </div>
+            <button className="btn-ghost" onClick={() => setShowVersions(false)}>
+              Close
+            </button>
+          </div>
+        </div>
+      )}
+
       {/* Audit trail modal */}
       {showAudit && (
         <div className="modal-overlay" onClick={() => setShowAudit(false)}>
           <div className="modal-content" onClick={(e) => e.stopPropagation()}>
-            <h2>Audit Trail</h2>
+            <h2>Audit Trail (RFC 9162 Merkle + Ed25519 STH)</h2>
             <div className="audit-list">
               {audit.map((evt, i) => (
                 <div key={evt.id} className="audit-event">

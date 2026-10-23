@@ -38,8 +38,8 @@ from canongate.domain.finding import (
 from canongate.engine.check import Check
 
 _CSS_FG_BG_RE = re.compile(
-    r"color\s*:\s*(#[0-9A-Fa-f]{3,6})\b[^;\n]*;\s*"
-    r"(?:background-color|background)\s*:\s*(#[0-9A-Fa-f]{3,6})\b",
+    r"color\s*[:=]\s*['\"]?(#[0-9A-Fa-f]{3,6})\b['\"]?[^;\n]*?[;\s]+"
+    r"(?:background-color|background)\s*[:=]\s*['\"]?(#[0-9A-Fa-f]{3,6})\b",
     re.IGNORECASE,
 )
 
