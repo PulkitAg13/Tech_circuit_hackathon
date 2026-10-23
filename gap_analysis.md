@@ -42,8 +42,8 @@ Think of it as: the plumbing and wiring of the house is done, but you only have 
 |---------|----------|-------------|--------|
 | YAML loader | ✅ Working | ✅ Done | **DONE** |
 | Canon compiler (Pipeline A) | ✅ Built, wired & tested | Guard 1 Value-Anchor Coverage Audit + Guard 2 Verbatim Span char grounding | **DONE** |
-| Canon lint (Contradiction & Overlap Audit) | ✅ Built, wired & tested | Rule contradiction, overlap, and ungrounded pattern linting in `canon/impact.py` | **DONE** |
-| Canon versioning + impact sim | ✅ Built, wired & tested | Closed-loop Friction → Canon v1.1 PR generation & impact simulation | **DONE** |
+| Canon lint (Contradiction & Overlap Audit) | ✅ Built, wired & tested | Rule contradiction, overlap, & ungrounded pattern linting (wired to `GET /api/canons/{id}/lint`) | **DONE** |
+| Canon versioning + impact sim | ✅ Built, wired & tested | Closed-loop Friction → Canon v1.1 PR simulation (wired to `POST /api/canons/{id}/propose-pr`) | **DONE** |
 | Starter Canons | ✅ Built, wired & tested | RBI 2025 KFS Lending Canon & ASCI/CCPA D2C Nutra Canon | **DONE** |
 
 ### Engine
@@ -64,13 +64,13 @@ Think of it as: the plumbing and wiring of the house is done, but you only have 
 
 | Feature | Skeleton | Full Feature | Status |
 |---------|----------|-------------|--------|
-| State machine (5 states, 7 transitions) | ✅ Working | ✅ Done | **DONE** |
+| State machine (5 states, 7 transitions) | ✅ Working | Role-gated transitions + Blocker gate (409 on APPROVE/PUBLISH with open blockers) | **DONE** |
 | Role-gated transitions | ✅ Working | ✅ Done | **DONE** |
 | Finding resolution (accept/dismiss/override) | ✅ Working | ✅ Done | **DONE** |
-| SHA-256 hash-chained audit log | ✅ Working | ✅ Done | **DONE** |
+| SHA-256 hash-chained audit log | ✅ Working | Unbroken hash-chain verification with submission_id | **DONE** |
 | Chain verification | ✅ Working | ✅ Done | **DONE** |
 | Submission versioning (immutable revisions) | ❌ | Each save → new SubmissionVersion | **MISSING** |
-| Merkle transparency log (RFC 9162) | ✅ Built, wired & tested | O(log n) proofs, Ed25519 tree heads, consistency verifier | **DONE** |
+| Merkle transparency log (RFC 9162) | ✅ Built, wired & tested | O(log n) proofs, Ed25519 tree heads (STH API), memoized MerkleTree | **DONE** |
 | C2PA outbound (embed review in approved PNG) | ✅ Built, wired & tested | c2pa-python Builder single-sign governance manifest | **DONE** |
 | Standalone verifier CLI | ❌ | `canongate verify cert.json` | **MISSING** |
 | Override requires reason text | ❌ | Warnings only, stored with finding | **MISSING** |
@@ -126,7 +126,7 @@ Think of it as: the plumbing and wiring of the house is done, but you only have 
 | Infrastructure | 4 | 0 | 3 | 7 |
 | **TOTAL** | **49** | **1** | **16** | **66** |
 
-**~75% complete by feature count (up from 52% and 38%).** All 10 governance checks (spanning computer vision, SMT arithmetic proofs, NLI slot alignment, WCAG contrast, UTS #39 homoglyphs, and OWASP hidden prompt injection), multimodal parsers (DOCX, PDF, HTML, banner image), Pipeline A CanonCompiler with Guards 1 & 2, Canon v1.1 impact simulator, and frontend highlights are fully wired, operational, and validated with **71 passing tests**.
+**~75% complete by feature count (up from 52% and 38%).** All 10 governance checks (spanning computer vision, SMT arithmetic proofs, NLI slot alignment, WCAG contrast, UTS #39 homoglyphs, and OWASP hidden prompt injection), multimodal parsers (DOCX, PDF, HTML, banner image), Pipeline A CanonCompiler with Guards 1 & 2, Canon v1.1 impact simulator, and frontend highlights are fully wired, operational, and validated with **72 passing tests** (including full end-to-end API route execution tests).
 
 ## Remaining Impact Opportunities
 
