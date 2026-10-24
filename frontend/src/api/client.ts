@@ -226,6 +226,38 @@ export interface HiddenTextEvidence {
   extracted_snippet: string;
 }
 
+export interface LogoGeometryEvidence {
+  kind: "logo_geometry";
+  logo_id: string;
+  expected_aspect_ratio: number;
+  detected_aspect_ratio: number;
+  aspect_distortion_pct: number;
+  max_aspect_distortion_pct: number;
+  clear_space_ratio_h: number;
+  clear_space_intrusion_pct: number;
+  orb_inlier_matches: number;
+}
+
+export interface VoiceReadabilityEvidence {
+  kind: "voice_readability";
+  flesch_kincaid_grade: number;
+  max_flesch_kincaid_grade: number;
+  passive_voice_pct: number;
+  max_passive_voice_pct: number;
+  max_sentence_words_observed: number;
+  max_sentence_words_allowed: number;
+  exemplar_similarity: number;
+}
+
+export interface TriggerObligationEvidence {
+  kind: "trigger_obligation";
+  obligation_id: string;
+  matched_trigger: string;
+  required_disclaimer_id: string;
+  required_disclaimer_text: string;
+  same_language_required: boolean;
+}
+
 export type EvidencePayload =
   | TermMatchEvidence
   | ColorDistanceEvidence
@@ -236,10 +268,13 @@ export type EvidencePayload =
   | AlgebraicProofEvidence
   | SlotDiffEvidence
   | C2paEvidence
-  | HiddenTextEvidence;
+  | HiddenTextEvidence
+  | LogoGeometryEvidence
+  | VoiceReadabilityEvidence
+  | TriggerObligationEvidence;
 
 export interface TracePayload {
-  tier: "deterministic" | "smt" | "nli" | "generative";
+  tier: "deterministic" | "smt" | "nli" | "generative" | number;
   ai_used?: boolean;
   external_call?: boolean;
   model_sha?: string | null;
@@ -305,6 +340,63 @@ export async function resolveFinding(
       body: JSON.stringify({ resolution, apply_suggestion: applySuggestion, reason }),
     }
   );
+}
+
+/* ── Tier 3 Surgical Rewriter & Inline Comments ────────────────────── */
+
+export interface SurgicalRewriteResponse {
+  row_id: number;
+  finding_id: string;
+  original_text: string;
+  rewritten_text: string;
+  edit_distance_ratio: number;
+  max_edit_distance_ratio: number;
+  reverified: boolean;
+  remaining_findings_count: number;
+  pii_masked_count: number;
+  masked_prompt_preview: string;
+  used_provider: string;
+  suggestion: SuggestionPayload;
+}
+
+export async function rewriteFindingSpan(
+  submissionId: number,
+  findingRowId: number
+): Promise<SurgicalRewriteResponse> {
+  return request<SurgicalRewriteResponse>(
+    `/submissions/${submissionId}/findings/${findingRowId}/rewrite`,
+    { method: "POST" }
+  );
+}
+
+export interface SubmissionCommentDto {
+  id: number;
+  submission_id: number;
+  finding_id?: number | null;
+  author_id: number;
+  author_name: string;
+  role: string;
+  body: string;
+  created_at: string;
+}
+
+export async function listSubmissionComments(
+  submissionId: number,
+  findingId?: number
+): Promise<SubmissionCommentDto[]> {
+  const qs = findingId !== undefined ? `?finding_id=${findingId}` : "";
+  return request<SubmissionCommentDto[]>(`/submissions/${submissionId}/comments${qs}`);
+}
+
+export async function addSubmissionComment(
+  submissionId: number,
+  body: string,
+  findingId?: number | null
+): Promise<SubmissionCommentDto> {
+  return request<SubmissionCommentDto>(`/submissions/${submissionId}/comments`, {
+    method: "POST",
+    body: JSON.stringify({ body, finding_id: findingId ?? null }),
+  });
 }
 
 /* ── Workflow ──────────────────────────────────────────────────────── */
@@ -385,6 +477,54 @@ export async function proposeCanonPr(
       threshold,
       min_flags: minFlags,
     }),
+  });
+}
+
+export async function applyCanonPr(
+  canonId: string,
+  overrideNotes: Record<string, string> = {},
+  threshold = 0.40,
+  minFlags = 3,
+  persist = false
+): Promise<CanonSummary> {
+  return request<CanonSummary>(`/canons/${canonId}/apply-pr`, {
+    method: "POST",
+    body: JSON.stringify({
+      override_notes: overrideNotes,
+      threshold,
+      min_flags: minFlags,
+      persist,
+    }),
+  });
+}
+
+export interface CalibrateCanonRulePayload {
+  rule_id: string;
+  severity?: number;
+  max_delta_e?: number;
+  max_sentence_words?: number;
+  max_passive_voice_pct?: number;
+  max_flesch_kincaid_grade?: number;
+  max_aspect_distortion_pct?: number;
+  clear_space_ratio_h?: number;
+  persist?: boolean;
+}
+
+export interface CalibrateCanonRuleResponse {
+  canon_id: string;
+  previous_version: string;
+  new_version: string;
+  new_hash: string;
+  yaml_preview: string;
+}
+
+export async function calibrateCanonRule(
+  canonId: string,
+  payload: CalibrateCanonRulePayload
+): Promise<CalibrateCanonRuleResponse> {
+  return request<CalibrateCanonRuleResponse>(`/canons/${canonId}/calibrate`, {
+    method: "POST",
+    body: JSON.stringify(payload),
   });
 }
 

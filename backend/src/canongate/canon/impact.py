@@ -1,8 +1,8 @@
-"""Closed-Loop Canon Linter, Friction -> Canon v1.1 PR Generator, and Impact Simulator.
+"""Closed-Loop Canon Linter, Friction -> Canon v1.1 PR Generator, Calibrator, and Impact Simulator.
 
 Delivers Named Improvement #1 and the remaining Canon System milestones:
 1. **`lint_canon(canon)`:** Detects internal contradictions within a `Canon`:
-   - Duplicate rule IDs across `terminology`, `palette`, and `facts`.
+   - Duplicate rule IDs across all rule collections.
    - Self-contradictory or circular `TermRule`s (e.g., Rule A's `preferred`
      replacement is banned by Rule B, or `pattern_text == preferred`).
    - Indistinguishable `ColorToken` swatches whose RGB distance is smaller than
@@ -10,9 +10,14 @@ Delivers Named Improvement #1 and the remaining Canon System milestones:
 2. **`propose_canon_revision(canon, friction_stats, override_notes)`:**
    When a rule's Empirical Bayes posterior friction exceeds `0.40` (with
    `total_flags >= 3`), auto-drafts a bumped `Canon` (`v1.0` -> `v1.1`) across
-   `TermRule`, `ColorToken`, AND `FactClaim`, producing a human-reviewable
-   unified YAML diff.
-3. **`simulate_canon_impact(old_canon, new_canon, bundles, check_fn)`:**
+   `TermRule`, `ColorToken`, `FactClaim`, `TriggerObligation`, `VoiceProfile`,
+   and `LogoToken`, producing a human-reviewable unified YAML diff.
+3. **`calibrate_canon_rule(canon, ...)`:**
+   Implements the Brand Manager's "Confirm & Calibrate" sliders for live rule
+   threshold tuning (`severity`, `max_delta_e`, `max_aspect_distortion_pct`,
+   `clear_space_ratio_h`, `max_flesch_kincaid_grade`, `max_passive_voice_pct`,
+   `max_sentence_words`).
+4. **`simulate_canon_impact(old_canon, new_canon, bundles, check_fn)`:**
    Re-evaluates historical `ContentAST` bundles against both `old_canon` and
    `new_canon` to quantify exact flag reduction before a Canon PR is merged.
 """
@@ -26,7 +31,14 @@ from dataclasses import dataclass
 import yaml
 
 from canongate.domain.ast import ContentAST
-from canongate.domain.canon import Canon, ColorToken, FactClaim, TermRule
+from canongate.domain.canon import (
+    Canon,
+    ColorToken,
+    FactClaim,
+    LogoToken,
+    TermRule,
+    VoiceProfile,
+)
 from canongate.domain.finding import Finding
 
 
@@ -135,7 +147,7 @@ def _canon_to_yaml(canon: Canon) -> str:
             f_item["substantiation_level"] = f.substantiation_level
         fact_list.append(f_item)
 
-    data = {
+    data: dict[str, object] = {
         "id": canon.id,
         "version": canon.version,
         "terminology": term_list,
@@ -150,6 +162,47 @@ def _canon_to_yaml(canon: Canon) -> str:
         ],
         "facts": fact_list,
     }
+    if canon.trigger_obligations:
+        data["trigger_obligations"] = [
+            {
+                "id": tr.id,
+                "trigger_pattern": tr.trigger_pattern,
+                "required_disclaimer_id": tr.required_disclaimer_id,
+                "required_disclaimer_text": tr.required_disclaimer_text,
+                "same_language": tr.same_language,
+                "same_font_family": tr.same_font_family,
+                "min_font_height_ratio": tr.min_font_height_ratio,
+                "severity": tr.severity,
+            }
+            for tr in canon.trigger_obligations
+        ]
+    if canon.voice_profile is not None:
+        vp = canon.voice_profile
+        data["voice_profile"] = {
+            "id": vp.id,
+            "min_sentence_words": vp.min_sentence_words,
+            "max_sentence_words": vp.max_sentence_words,
+            "max_passive_voice_pct": vp.max_passive_voice_pct,
+            "max_flesch_kincaid_grade": vp.max_flesch_kincaid_grade,
+            "approved_exemplars": list(vp.approved_exemplars),
+            "severity": vp.severity,
+        }
+    if canon.logos:
+        data["logos"] = [
+            {
+                "id": lg.id,
+                "name": lg.name,
+                "reference_path": lg.reference_path,
+                "aspect_ratio": lg.aspect_ratio,
+                "max_aspect_distortion_pct": lg.max_aspect_distortion_pct,
+                "clear_space_ratio_h": lg.clear_space_ratio_h,
+                "min_orb_matches": lg.min_orb_matches,
+                "severity": lg.severity,
+            }
+            for lg in canon.logos
+        ]
+    if canon.require_image_alt:
+        data["require_image_alt"] = True
     return yaml.safe_dump(data, sort_keys=False, allow_unicode=True)
 
 
@@ -247,11 +300,7 @@ def propose_canon_revision(
     threshold: float = 0.40,
     min_flags: int = 3,
 ) -> CanonRevisionProposal:
-    """Draft a Canon v1.1 revision for rules whose Empirical Bayes friction exceeds `threshold`.
-
-    `friction_counts` maps `rule_id -> (total_flags, overrides_and_disputes)`.
-    Handles `TermRule`, `ColorToken`, and `FactClaim` rules.
-    """
+    """Draft a Canon v1.1 revision for rules whose Empirical Bayes friction exceeds `threshold`."""
     notes = override_notes or {}
     revisions: list[RuleRevisionDiff] = []
 
@@ -383,6 +432,10 @@ def propose_canon_revision(
         terminology=tuple(new_terms),
         palette=tuple(new_palette),
         facts=tuple(new_facts),
+        trigger_obligations=canon.trigger_obligations,
+        voice_profile=canon.voice_profile,
+        logos=canon.logos,
+        require_image_alt=canon.require_image_alt,
     )
 
     old_yaml = _canon_to_yaml(canon).splitlines(keepends=True)
@@ -400,6 +453,130 @@ def propose_canon_revision(
         revised_canon=revised_canon,
         revisions=tuple(revisions),
         yaml_diff=diff_str,
+    )
+
+
+def calibrate_canon_rule(
+    canon: Canon,
+    *,
+    rule_id: str,
+    severity: int | None = None,
+    max_delta_e: float | None = None,
+    max_sentence_words: int | None = None,
+    max_passive_voice_pct: float | None = None,
+    max_flesch_kincaid_grade: float | None = None,
+    max_aspect_distortion_pct: float | None = None,
+    clear_space_ratio_h: float | None = None,
+) -> Canon:
+    """Return a calibrated `Canon` with bumped version after Brand Manager slider tuning."""
+    changed = False
+    new_terms: list[TermRule] = []
+    for t in canon.terminology:
+        if t.id == rule_id and severity is not None:
+            new_terms.append(
+                TermRule(
+                    id=t.id,
+                    pattern_text=t.pattern_text,
+                    preferred=t.preferred,
+                    severity=max(0, min(100, severity)),
+                    note=t.note,
+                    pos_constraint=t.pos_constraint,
+                )
+            )
+            changed = True
+        else:
+            new_terms.append(t)
+
+    new_palette: list[ColorToken] = []
+    for c in canon.palette:
+        if c.id == rule_id and max_delta_e is not None:
+            new_palette.append(
+                ColorToken(
+                    id=c.id,
+                    hex=c.hex,
+                    name=c.name,
+                    max_delta_e=max(0.5, round(max_delta_e, 2)),
+                )
+            )
+            changed = True
+        else:
+            new_palette.append(c)
+
+    new_vp = canon.voice_profile
+    if (
+        new_vp is not None
+        and (new_vp.id == rule_id or rule_id == "voice-profile")
+        and any(
+            v is not None
+            for v in (
+                severity,
+                max_sentence_words,
+                max_passive_voice_pct,
+                max_flesch_kincaid_grade,
+            )
+        )
+    ):
+        new_vp = VoiceProfile(
+            id=new_vp.id,
+            min_sentence_words=new_vp.min_sentence_words,
+            max_sentence_words=(
+                max_sentence_words if max_sentence_words is not None else new_vp.max_sentence_words
+            ),
+            max_passive_voice_pct=(
+                max_passive_voice_pct
+                if max_passive_voice_pct is not None
+                else new_vp.max_passive_voice_pct
+            ),
+            max_flesch_kincaid_grade=(
+                max_flesch_kincaid_grade
+                if max_flesch_kincaid_grade is not None
+                else new_vp.max_flesch_kincaid_grade
+            ),
+            approved_exemplars=new_vp.approved_exemplars,
+            severity=(max(0, min(100, severity)) if severity is not None else new_vp.severity),
+        )
+        changed = True
+
+    new_logos: list[LogoToken] = []
+    for lg in canon.logos:
+        if lg.id == rule_id and any(
+            v is not None for v in (severity, max_aspect_distortion_pct, clear_space_ratio_h)
+        ):
+            new_logos.append(
+                LogoToken(
+                    id=lg.id,
+                    name=lg.name,
+                    reference_path=lg.reference_path,
+                    aspect_ratio=lg.aspect_ratio,
+                    max_aspect_distortion_pct=(
+                        max_aspect_distortion_pct
+                        if max_aspect_distortion_pct is not None
+                        else lg.max_aspect_distortion_pct
+                    ),
+                    clear_space_ratio_h=(
+                        clear_space_ratio_h
+                        if clear_space_ratio_h is not None
+                        else lg.clear_space_ratio_h
+                    ),
+                    min_orb_matches=lg.min_orb_matches,
+                    severity=(max(0, min(100, severity)) if severity is not None else lg.severity),
+                )
+            )
+            changed = True
+        else:
+            new_logos.append(lg)
+
+    new_ver = _bump_version(canon.version) if changed else canon.version
+    return Canon(
+        id=canon.id,
+        version=new_ver,
+        terminology=tuple(new_terms),
+        palette=tuple(new_palette),
+        facts=canon.facts,
+        trigger_obligations=canon.trigger_obligations,
+        voice_profile=new_vp,
+        logos=tuple(new_logos),
+        require_image_alt=canon.require_image_alt,
     )
 
 

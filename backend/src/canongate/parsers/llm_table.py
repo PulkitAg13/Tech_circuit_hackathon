@@ -10,15 +10,12 @@ they have available while defaulting seamlessly to the free Google Gemini API ke
    `"format": "json"`, default model `qwen2.5:7b`).
 4. `none` / offline fallback (deterministic hierarchical header & rowspan solver).
 
-Safety & Hallucination Prevention (Guard 1):
-Every row proposition produced by an LLM is audited by `verify_and_repair_llm_row()`
-before entering the `ContentAST`:
-- **Zero Hallucinated Numbers:** If the LLM invents any number, percentage, currency
-  amount, or date not present in the source row + headers + footnotes, the LLM output
-  for that row is rejected in favor of the deterministic linearization.
-- **100% Value-Anchor & Qualifier Preservation:** If the LLM drops any numeric anchor
-  or footnote qualifier from the source row, Guard 1 automatically appends the missing
-  cell/footnote clause so `AnchorRecall == 1.0` is strictly preserved.
+Safety, Privacy & Hallucination Prevention (Guard 1 + DPDP PII Scrubbing):
+- In Cloud Mode (`gemini` / `openai`), `default_pii_scrubber` masks all PII (emails,
+  Indian phone numbers, PAN/Aadhaar IDs, and project codenames) before the HTTP
+  request leaves the container and restores placeholders locally afterwards.
+- Every row proposition produced by an LLM is audited by `verify_and_repair_llm_row()`
+  before entering the `ContentAST`.
 """
 
 from __future__ import annotations
@@ -32,6 +29,8 @@ import urllib.request
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from typing import Any, Literal
+
+from canongate.domain.pii import default_pii_scrubber
 
 logger = logging.getLogger(__name__)
 
@@ -248,17 +247,28 @@ class MultiProviderJsonLLM:
         return self.config.provider != "none"
 
     def complete_json(self, *, system_prompt: str, user_prompt: str) -> dict[str, Any] | None:
-        """Execute a structured JSON completion against the configured provider."""
+        """Execute a structured JSON completion, scrubbing PII for cloud providers."""
         if not self.is_enabled:
             return None
 
+        is_cloud = self.config.provider in ("gemini", "openai")
+        scrubbed = default_pii_scrubber.scrub(user_prompt) if is_cloud else None
+        effective_prompt = scrubbed.masked_text if scrubbed is not None else user_prompt
+
         try:
+            res: dict[str, Any] | None = None
             if self.config.provider == "gemini":
-                return self._call_gemini(system_prompt, user_prompt)
-            if self.config.provider == "openai":
-                return self._call_openai(system_prompt, user_prompt)
-            if self.config.provider == "ollama":
-                return self._call_ollama(system_prompt, user_prompt)
+                res = self._call_gemini(system_prompt, effective_prompt)
+            elif self.config.provider == "openai":
+                res = self._call_openai(system_prompt, effective_prompt)
+            elif self.config.provider == "ollama":
+                res = self._call_ollama(system_prompt, effective_prompt)
+
+            if res is not None and scrubbed is not None and scrubbed.pii_count > 0:
+                restored_raw = scrubbed.restore(json.dumps(res, ensure_ascii=False))
+                parsed_restored = json.loads(restored_raw)
+                return parsed_restored if isinstance(parsed_restored, dict) else res
+            return res
         except Exception as exc:
             logger.warning(
                 "LLM provider %s (%s) call failed; falling back to deterministic parser: %s",
@@ -338,14 +348,7 @@ class MultiProviderJsonLLM:
 
 
 def is_complex_table(raw_grid: Sequence[Sequence[object]]) -> bool:
-    """Return True when a 2D table grid exhibits structural complexity warranting de-normalization.
-
-    Triggers on:
-    1. Multi-level headers (Row 0 has empty/spanned cells and Row 1 is an all-text sub-header).
-    2. Vertical `rowspan` category stubs (Column 0 empty while later columns have values).
-    3. Ragged/jagged row lengths before padding.
-    4. Cross-tab matrix (> 3 columns with conditional markers or footnotes).
-    """
+    """Return True when a 2D table grid has structural complexity needing de-normalization."""
     non_empty_rows = [
         [str(c or "").strip() for c in r] for r in raw_grid if any(str(c or "").strip() for c in r)
     ]
@@ -357,7 +360,6 @@ def is_complex_table(raw_grid: Sequence[Sequence[object]]) -> bool:
         return True
 
     row0 = non_empty_rows[0]
-    # Horizontal spans in header row (empty cell or adjacent duplicate cell)
     has_spanned_header = any(c == "" for c in row0) or any(
         row0[i] and row0[i] == row0[i - 1] for i in range(1, len(row0))
     )
@@ -366,7 +368,6 @@ def is_complex_table(raw_grid: Sequence[Sequence[object]]) -> bool:
         if not any(extract_table_anchors(c) for c in row1):
             return True
 
-    # Vertical rowspan in stub column 0
     return any(len(r) >= 2 and r[0] == "" and any(r[1:]) for r in non_empty_rows[1:])
 
 
@@ -387,7 +388,6 @@ def verify_and_repair_llm_row(
     allowed_numbers = _extract_numeric_scalars(source_context)
     llm_numbers = _extract_numeric_scalars(cleaned_llm)
 
-    # 1. Zero-tolerance hallucination check: did the LLM invent a number not in the source row?
     invented_numbers = llm_numbers - allowed_numbers
     if invented_numbers:
         logger.warning(
@@ -397,7 +397,6 @@ def verify_and_repair_llm_row(
         )
         return fallback_deterministic_text
 
-    # 2. Value-anchor recall check: ensure every number/currency/date in row_cells is preserved
     row_only_text = " | ".join([c for c in row_cells if c])
     required_anchors = extract_table_anchors(row_only_text)
     llm_norm = cleaned_llm.lower()
@@ -415,7 +414,6 @@ def verify_and_repair_llm_row(
             if pair_str not in missing_pairs:
                 missing_pairs.append(pair_str)
 
-    # Check if any required anchor is still missing even after cell check
     for anchor in required_anchors:
         if anchor.lower() not in llm_norm and anchor.replace(",", "") not in llm_norm:
             clause = f"Value: {anchor}"
@@ -426,7 +424,6 @@ def verify_and_repair_llm_row(
     if missing_pairs:
         repaired = f"{repaired} | " + " | ".join(missing_pairs)
 
-    # 3. Ensure applicable footnotes are preserved
     if applicable_footnotes:
         missing_fns = [fn for fn in applicable_footnotes if fn.lower() not in repaired.lower()]
         if missing_fns:

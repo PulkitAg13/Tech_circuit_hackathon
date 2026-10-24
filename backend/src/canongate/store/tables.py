@@ -1,10 +1,12 @@
-"""SQLAlchemy table definitions for the walking skeleton.
+"""SQLAlchemy table definitions for CanonGate.
 
 Tables:
 - submissions: content bundles submitted for review
+- submission_versions: immutable revision history for each submission
 - findings: findings produced by checks (linked to submissions)
+- submission_comments: inline comment threads on submissions and findings
 - workflow_events: hash-chained audit log
-- users: simple user table for auth
+- users: user table for JWT role-based auth
 """
 
 from __future__ import annotations
@@ -55,6 +57,9 @@ class SubmissionRow(Base):
     versions: Mapped[list[SubmissionVersionRow]] = relationship(
         back_populates="submission", cascade="all, delete-orphan"
     )
+    comments: Mapped[list[SubmissionCommentRow]] = relationship(
+        back_populates="submission", cascade="all, delete-orphan"
+    )
 
 
 class SubmissionVersionRow(Base):
@@ -95,6 +100,25 @@ class FindingRow(Base):
     resolved_by: Mapped[int | None] = mapped_column(Integer, ForeignKey("users.id"), nullable=True)
 
     submission: Mapped[SubmissionRow] = relationship(back_populates="findings")
+
+
+class SubmissionCommentRow(Base):
+    __tablename__ = "submission_comments"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    submission_id: Mapped[int] = mapped_column(
+        Integer, ForeignKey("submissions.id"), nullable=False
+    )
+    finding_id: Mapped[int | None] = mapped_column(
+        Integer, ForeignKey("findings.id"), nullable=True
+    )
+    author_id: Mapped[int] = mapped_column(Integer, ForeignKey("users.id"), nullable=False)
+    author_name: Mapped[str] = mapped_column(String(128), default="")
+    role: Mapped[str] = mapped_column(String(32), default="creator")
+    body: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[dt.datetime] = mapped_column(DateTime, server_default=func.now())
+
+    submission: Mapped[SubmissionRow] = relationship(back_populates="comments")
 
 
 class WorkflowEventRow(Base):

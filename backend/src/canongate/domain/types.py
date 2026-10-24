@@ -50,6 +50,12 @@ try:
                 return super().model_dump_json(**kwargs)  # type: ignore[misc]
             return self.json(**kwargs)
 
+        @classmethod
+        def model_validate_json(cls, json_data: str | bytes, **kwargs: Any) -> Any:
+            if hasattr(super(), "model_validate_json"):
+                return super().model_validate_json(json_data, **kwargs)  # type: ignore[misc]
+            return cls.parse_raw(json_data, **kwargs)
+
 except ImportError:
 
     class FrozenModel(BaseModel):  # type: ignore[no-redef]
@@ -69,6 +75,10 @@ except ImportError:
 
         def model_dump_json(self, **kwargs: Any) -> str:
             return self.json(**kwargs)
+
+        @classmethod
+        def model_validate_json(cls, json_data: str | bytes, **kwargs: Any) -> Any:
+            return cls.parse_raw(json_data, **kwargs)
 
 
 def content_hash(data: bytes) -> str:

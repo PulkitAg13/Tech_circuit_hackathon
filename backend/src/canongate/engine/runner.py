@@ -158,21 +158,26 @@ async def run_checks(ast: ContentAST, canon: Canon) -> AsyncIterator[Finding]:
             _cache_put(key, findings)
         return findings
 
-    # Build task list: each (check, node) pair + cross-node bundle checks when len(ast) > 1
+    # Build task list: each (check, node) pair + cross-node bundle checks
     tasks: list[asyncio.Task[list[Finding]]] = []
     for node in ast:
         for check in checks:
+            if getattr(check, "prefer_bundle", False):
+                continue
             if check.accepts(node):
                 task = asyncio.create_task(_run_one(check, node))
                 tasks.append(task)
 
-    if len(ast) > 1:
-        for check in checks:
-            if (
+    for check in checks:
+        should_run_bundle = (getattr(check, "prefer_bundle", False) and len(ast) >= 1) or (
+            len(ast) > 1
+            and (
                 type(check).run_bundle is not Check.run_bundle
                 or type(check).run_bundle_async is not Check.run_bundle_async
-            ):
-                tasks.append(asyncio.create_task(_run_bundle_one(check)))
+            )
+        )
+        if should_run_bundle:
+            tasks.append(asyncio.create_task(_run_bundle_one(check)))
 
     # Stream results as they complete (deduplicating by finding.id)
     seen_ids: set[str] = set()

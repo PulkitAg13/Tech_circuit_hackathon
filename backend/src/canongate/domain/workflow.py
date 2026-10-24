@@ -128,14 +128,16 @@ def validate_resolution(
 ) -> None:
     """Check whether `role` may apply `resolution` to a finding of `severity`.
 
-    Rules:
+    Rules (per Round 1 Plan §2 Role 1, §3.1 Fig. 2 & §6):
     - "accepted": any role (creator accepts the suggestion).
     - "dismissed": reviewer/admin only, warnings only (severity < 50).
-    - "overridden": reviewer/admin only, warnings only.
+    - "overridden": warnings only (severity < 50). Creators may deliberately
+      override a Warning when a recorded justification reason (>= 3 chars) is
+      provided; reviewers and admins may also override Warnings.
     - Blockers (severity >= 50) can only be "accepted".
     - Cognitive forcing function: when `require_reason=True` or when `reason` is
       explicitly provided as a string, `dismissed` and `overridden` require a
-      non-empty justification reason.
+      non-empty justification reason (>= 3 chars).
 
     Raises ResolutionError if the combination is disallowed.
     """
@@ -145,16 +147,22 @@ def validate_resolution(
     if resolution == "accepted":
         return  # anyone can accept a suggestion
 
-    # dismissed / overridden require reviewer or admin
-    if role not in (Role.REVIEWER, Role.ADMIN):
-        raise ResolutionError(
-            f"Role {role} cannot {resolution} a finding — only reviewers and admins can"
-        )
-
     if severity >= 50:
         raise ResolutionError(
             f"Cannot {resolution} a blocker (severity={severity}). "
             "Blockers must be accepted (fix applied) or the content must be changed."
+        )
+
+    if resolution == "dismissed" and role not in (Role.REVIEWER, Role.ADMIN):
+        raise ResolutionError(
+            f"Role {role} cannot {resolution} a finding — only reviewers and admins can"
+        )
+
+    # Creator Deliberate Override on a Warning requires a recorded justification reason
+    if resolution == "overridden" and role == Role.CREATOR and len((reason or "").strip()) < 3:
+        raise ResolutionError(
+            "Role creator cannot override a warning without a recorded justification reason "
+            "(at least 3 characters) — only reviewers and admins can"
         )
 
     if (require_reason or reason is not None) and len((reason or "").strip()) < 3:

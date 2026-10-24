@@ -1,4 +1,4 @@
-"""Tier 1 Deterministic Check: W3C WCAG 2.1 AA/AAA Relative Luminance Contrast.
+r"""Tier 1 Deterministic Check: W3C WCAG 2.1 AA/AAA Relative Luminance Contrast & Alt-Text.
 
 Evaluates:
 1. CSS / inline foreground-on-background hex pairs in `TextNode`s (e.g.,
@@ -8,6 +8,9 @@ Evaluates:
    foreground/background pixel segmentation.
 3. Computes a hue-preserving compliant `suggested_fg_hex` in CIE L*a*b* space
    by binary-searching lightness $L^*$ while holding $(a^*, b^*)$ constant.
+4. WCAG 2.1 SC 1.1.1 Non-text Content (`wcag-21-aa-alt-text`): flags `ImageNode`s
+   from HTML/Markdown documents or when `canon.require_image_alt=True` if `alt`
+   text is missing, empty (`alt=""`), or a filename placeholder (`image`, `img_01.png`, etc.).
 """
 
 from __future__ import annotations
@@ -27,6 +30,7 @@ from canongate.checks._vision import (
 from canongate.domain.ast import ImageNode, Node, NodeKind, TextNode
 from canongate.domain.canon import Canon, Rule
 from canongate.domain.finding import (
+    BBox,
     ContrastEvidence,
     Finding,
     Replace,
@@ -42,18 +46,23 @@ _CSS_FG_BG_RE = re.compile(
     r"(?:background-color|background)\s*[:=]\s*['\"]?(#[0-9A-Fa-f]{3,6})\b",
     re.IGNORECASE,
 )
+_PLACEHOLDER_ALT_RE = re.compile(
+    r"^(?:image|img|photo|picture|graphic|untitled|dsc_?\d+|img_?\d+|"
+    r"\S+\.(?:png|jpe?g|webp|gif|svg))$",
+    re.IGNORECASE,
+)
 
 
 class AccessibilityContrastCheck(Check):
     check_id: ClassVar[str] = "accessibility.contrast"
-    check_version: ClassVar[str] = "1.0"
+    check_version: ClassVar[str] = "1.1"
     node_kinds: ClassVar[frozenset[NodeKind]] = frozenset({NodeKind.TEXT, NodeKind.IMAGE})
 
     def run(self, node: Node, canon: Canon) -> list[Finding]:
         if isinstance(node, TextNode):
             return self._check_text_node(node)
         if isinstance(node, ImageNode):
-            return self._check_image_node(node)
+            return self._check_image_node(node, canon)
         return []
 
     def _check_text_node(self, node: TextNode) -> list[Finding]:
@@ -107,21 +116,68 @@ class AccessibilityContrastCheck(Check):
                 )
         return findings
 
-    def _check_image_node(self, node: ImageNode) -> list[Finding]:
+    def _check_image_node(self, node: ImageNode, canon: Canon) -> list[Finding]:
+        findings: list[Finding] = []
+
+        # WCAG 2.1 SC 1.1.1 Non-text Content (alt-text) audit for HTML/DOM images,
+        # explicit empty/placeholder alt attributes, or when canon.require_image_alt=True.
+        alt_clean = (node.alt or "").strip()
+        should_audit_alt = (
+            canon.require_image_alt
+            or node.alt == ""
+            or (node.alt is None and not node.asset_path and bool(node.path))
+            or (bool(alt_clean) and _PLACEHOLDER_ALT_RE.match(alt_clean) is not None)
+        )
+        if should_audit_alt and (not alt_clean or _PLACEHOLDER_ALT_RE.match(alt_clean)):
+            alt_rule = Rule(
+                rule_id="wcag-21-aa-alt-text",
+                rule_type="accessibility",
+                source_text=(
+                    "WCAG 2.1 SC 1.1.1 Non-text Content: all non-text visual assets "
+                    "require descriptive alternative text (alt attribute)."
+                ),
+            )
+            findings.append(
+                self.finding(
+                    node=node,
+                    locator=BBox(
+                        x=0,
+                        y=0,
+                        w=max(node.width, 1),
+                        h=max(node.height, 1),
+                    ),
+                    severity=55,
+                    message=(
+                        "WCAG 2.1 SC 1.1.1 failure: image is missing descriptive alt text "
+                        f"(found {node.alt!r}). Provide concise alternative text describing "
+                        "the visual claim and key offer details."
+                    ),
+                    rule_ref=alt_rule,
+                    evidence=ContrastEvidence(
+                        fg_hex="#000000",
+                        bg_hex="#FFFFFF",
+                        contrast_ratio=1.0,
+                        required_ratio=4.5,
+                        wcag_level="AA",
+                        suggested_fg_hex="#000000",
+                    ),
+                    trace=Trace(tier=Tier.DETERMINISTIC),
+                )
+            )
+
         rgb_img = load_rgb_image(node.asset_path)
         if rgb_img is None:
-            return []
+            return findings
 
         h, w, _ = rgb_img.shape
         if h < 32 or w < 32:
-            return []
+            return findings
 
         rule_ref = Rule(
             rule_id="wcag-21-aa-contrast",
             rule_type="accessibility",
             source_text="WCAG 2.1 SC 1.4.3 Contrast (Minimum): normal text requires >= 4.5:1",
         )
-        findings: list[Finding] = []
         for box in detect_text_band_boxes(rgb_img):
             crop = rgb_img[box.y : box.y + box.h, box.x : box.x + box.w]
             if crop.size == 0:

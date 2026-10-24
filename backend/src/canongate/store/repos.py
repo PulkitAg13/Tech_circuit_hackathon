@@ -12,6 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from canongate.domain.finding import Finding
 from canongate.store.tables import (
     FindingRow,
+    SubmissionCommentRow,
     SubmissionRow,
     SubmissionVersionRow,
     UserRow,
@@ -133,6 +134,48 @@ async def list_submission_versions(
         .where(SubmissionVersionRow.submission_id == submission_id)
         .order_by(SubmissionVersionRow.version_number.asc())
     )
+    return list(result.scalars().all())
+
+
+# ── Inline Comment Threads ───────────────────────────────────────────
+
+
+async def create_comment(
+    session: AsyncSession,
+    *,
+    submission_id: int,
+    finding_id: int | None,
+    author_id: int,
+    author_name: str,
+    role: str,
+    body: str,
+) -> SubmissionCommentRow:
+    """Persist a new inline comment on a submission or specific finding card."""
+    comment = SubmissionCommentRow(
+        submission_id=submission_id,
+        finding_id=finding_id,
+        author_id=author_id,
+        author_name=author_name,
+        role=role,
+        body=body,
+    )
+    session.add(comment)
+    await session.flush()
+    return comment
+
+
+async def list_comments_for_submission(
+    session: AsyncSession,
+    submission_id: int,
+    *,
+    finding_id: int | None = None,
+) -> list[SubmissionCommentRow]:
+    """Return all inline comments for `submission_id` (optionally filtered by `finding_id`)."""
+    stmt = select(SubmissionCommentRow).where(SubmissionCommentRow.submission_id == submission_id)
+    if finding_id is not None:
+        stmt = stmt.where(SubmissionCommentRow.finding_id == finding_id)
+    stmt = stmt.order_by(SubmissionCommentRow.id.asc())
+    result = await session.execute(stmt)
     return list(result.scalars().all())
 
 

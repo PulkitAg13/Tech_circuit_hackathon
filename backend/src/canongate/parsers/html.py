@@ -117,7 +117,6 @@ def parse_html(
         if not isinstance(elem, Tag):
             continue
         if _is_element_hidden(elem):
-            # Only emit leaf-most hidden containers to avoid parent/child duplication
             has_hidden_child = any(
                 isinstance(c, Tag) and _is_element_hidden(c) for c in elem.find_all(True)
             )
@@ -136,11 +135,11 @@ def parse_html(
         table_idx += 1
         tbl.decompose()
 
-    # 3. Extract images (with alt-text preservation)
+    # 3. Extract images (preserving empty string when alt attribute is missing in HTML DOM)
     for img in soup.find_all("img"):
         src = str(img.get("src", "")).strip()
         alt_val = img.get("alt")
-        alt_str = str(alt_val).strip() if alt_val is not None else None
+        alt_str = str(alt_val).strip() if alt_val is not None else ""
 
         if base_dir is not None and src and not src.startswith(("http://", "https://", "data:")):
             candidate = (base_dir / src).resolve()
@@ -172,7 +171,6 @@ def parse_html(
 
     # 4. Extract semantic text blocks in document order
     for blk in soup.find_all(_TEXT_BLOCK_TAGS):
-        # Skip if nested inside another semantic text block
         if any(p.name in _TEXT_BLOCK_TAGS for p in blk.parents if isinstance(p, Tag)):
             continue
         txt = _WS_RE.sub(" ", blk.get_text(" ", strip=True)).strip()

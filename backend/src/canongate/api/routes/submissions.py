@@ -1,6 +1,7 @@
 """Submission routes: create, list, get findings, workflow actions, SSE stream,
 banner asset serving, Conformal Risk Control (alpha), signed certificates,
-immutable version history, and deterministic replay manifests.
+immutable version history, inline comment threads, Tier 3 constrained surgical
+rewriting, and deterministic replay manifests.
 """
 
 from __future__ import annotations
@@ -35,7 +36,8 @@ from canongate.domain.workflow import (
 )
 from canongate.engine.check import Check
 from canongate.engine.conformal import default_calibrator
-from canongate.engine.runner import run_checks
+from canongate.engine.rewriter import default_constrained_rewriter
+from canongate.engine.runner import run_checks, run_checks_collect
 from canongate.ledger.c2pa_outbound import build_governance_manifest, sign_approved_asset
 from canongate.ledger.certificate import GovernanceCertificate
 from canongate.ledger.chain import GENESIS_HASH, compute_event_hash
@@ -136,6 +138,37 @@ class SubmissionVersionResponse(_ApiDto):
     created_by: int
     change_note: str = ""
     created_at: str
+
+
+class CreateCommentRequest(_ApiDto):
+    finding_id: int | None = None
+    body: str
+
+
+class SubmissionCommentResponse(_ApiDto):
+    id: int
+    submission_id: int
+    finding_id: int | None = None
+    author_id: int
+    author_name: str
+    role: str
+    body: str
+    created_at: str
+
+
+class SurgicalRewriteResponse(_ApiDto):
+    row_id: int
+    finding_id: str
+    original_text: str
+    rewritten_text: str
+    edit_distance_ratio: float
+    max_edit_distance_ratio: float
+    reverified: bool
+    remaining_findings_count: int
+    pii_masked_count: int
+    masked_prompt_preview: str
+    used_provider: str
+    suggestion: dict[str, Any]
 
 
 def _ingest_bundle_attachments(
@@ -365,6 +398,147 @@ async def get_findings(
     ]
 
 
+@router.post(
+    "/{submission_id}/findings/{finding_row_id}/rewrite",
+    response_model=SurgicalRewriteResponse,
+)
+async def rewrite_finding_span(
+    submission_id: int,
+    finding_row_id: int,
+    session: SessionDep,
+    user: CurrentUser,
+) -> SurgicalRewriteResponse:
+    """Invoke Tier 3 Constrained Rewriter (<=35% edit, PII scrub, Tier 1+2 re-verification)."""
+    sub = await repos.get_submission(session, submission_id)
+    if not sub:
+        raise HTTPException(status_code=404, detail="Submission not found")
+
+    row = await repos.get_finding_by_row_id(session, finding_row_id)
+    if not row or row.submission_id != submission_id:
+        raise HTTPException(status_code=404, detail="Finding not found")
+
+    canon = get_canon(sub.canon_id)
+    ast = _parse_submission_ast(sub.raw_content)
+    target_node = next(
+        (
+            n
+            for n in ast.of_kind(NodeKind.TEXT)
+            if isinstance(n, TextNode) and str(n.id) == str(row.node_id)
+        ),
+        None,
+    )
+    if target_node is None:
+        text_nodes = [n for n in ast.of_kind(NodeKind.TEXT) if isinstance(n, TextNode)]
+        if not text_nodes:
+            raise HTTPException(status_code=400, detail="Finding is not attached to a text node")
+        target_node = text_nodes[0]
+
+    domain_finding = Finding.model_validate_json(row.payload_json)
+    result = await default_constrained_rewriter.rewrite(
+        target_node,
+        domain_finding,
+        canon,
+        verify_fn=run_checks_collect,
+    )
+
+    payload_dict = json.loads(row.payload_json)
+    sug_dict = json.loads(result.suggestion.model_dump_json())
+    payload_dict["suggestion"] = sug_dict
+    if isinstance(payload_dict.get("trace"), dict):
+        payload_dict["trace"]["tier"] = 3
+        payload_dict["trace"]["rewriter_provider"] = result.used_provider
+    await repos.update_finding_node_and_payload(
+        session,
+        row.id,
+        node_id=str(row.node_id),
+        payload_json=json.dumps(payload_dict),
+    )
+
+    return SurgicalRewriteResponse(
+        row_id=row.id,
+        finding_id=row.finding_id,
+        original_text=result.original_text,
+        rewritten_text=result.rewritten_text,
+        edit_distance_ratio=result.edit_distance_ratio,
+        max_edit_distance_ratio=result.max_edit_distance_ratio,
+        reverified=result.reverified,
+        remaining_findings_count=result.remaining_findings_count,
+        pii_masked_count=result.pii_masked_count,
+        masked_prompt_preview=result.masked_prompt_preview,
+        used_provider=result.used_provider,
+        suggestion=sug_dict,
+    )
+
+
+@router.get(
+    "/{submission_id}/comments",
+    response_model=list[SubmissionCommentResponse],
+)
+async def list_submission_comments(
+    submission_id: int,
+    session: SessionDep,
+    user: CurrentUser,
+    finding_id: int | None = None,
+) -> list[SubmissionCommentResponse]:
+    """List inline comment threads for a submission (optionally filtered by finding_id)."""
+    sub = await repos.get_submission(session, submission_id)
+    if not sub:
+        raise HTTPException(status_code=404, detail="Submission not found")
+    rows = await repos.list_comments_for_submission(session, submission_id, finding_id=finding_id)
+    return [
+        SubmissionCommentResponse(
+            id=r.id,
+            submission_id=r.submission_id,
+            finding_id=r.finding_id,
+            author_id=r.author_id,
+            author_name=r.author_name or f"user_{r.author_id}",
+            role=r.role,
+            body=r.body,
+            created_at=str(r.created_at),
+        )
+        for r in rows
+    ]
+
+
+@router.post(
+    "/{submission_id}/comments",
+    response_model=SubmissionCommentResponse,
+    status_code=201,
+)
+async def add_submission_comment(
+    submission_id: int,
+    req: CreateCommentRequest,
+    session: SessionDep,
+    user: CurrentUser,
+) -> SubmissionCommentResponse:
+    """Create an inline comment on a submission or a specific finding row."""
+    sub = await repos.get_submission(session, submission_id)
+    if not sub:
+        raise HTTPException(status_code=404, detail="Submission not found")
+    body = req.body.strip()
+    if not body:
+        raise HTTPException(status_code=400, detail="Comment body cannot be empty")
+    row = await repos.create_comment(
+        session,
+        submission_id=submission_id,
+        finding_id=req.finding_id,
+        author_id=user.id,
+        author_name=getattr(user, "display_name", "") or getattr(user, "username", "user"),
+        role=str(user.role),
+        body=body,
+    )
+    return SubmissionCommentResponse(
+        id=row.id,
+        submission_id=row.submission_id,
+        finding_id=row.finding_id,
+        author_id=row.author_id,
+        author_name=row.author_name,
+        role=row.role,
+        body=row.body,
+        created_at=str(row.created_at),
+    )
+
+
 @router.patch("/{submission_id}/findings/{finding_row_id}", response_model=FindingResponse)
 async def resolve_finding(
     submission_id: int,
@@ -490,7 +664,7 @@ async def workflow_action(
     if refreshed_sub is not None:
         sub = refreshed_sub
 
-    # Outbound C2PA Asset Signing on approval/publishing
+    # Outbound C2PA Asset Signing on approval/publishing using real ECDSA P-256 credentials
     if new_status in (Status.APPROVED, Status.PUBLISHED):
         parsed_ast = _parse_submission_ast(sub.raw_content)
         img_nodes = list(parsed_ast.of_kind(NodeKind.IMAGE))
@@ -520,10 +694,6 @@ async def workflow_action(
                                 "image/png" if src_p.suffix.lower() == ".png" else "image/jpeg"
                             ),
                             manifest_def=manifest,
-                            sign_callback=lambda data: b"canongate-c2pa-signature",
-                            cert_chain_pem=(
-                                "-----BEGIN CERTIFICATE-----\n...\n-----END CERTIFICATE-----"
-                            ),
                         )
                     except Exception:
                         pass
@@ -748,7 +918,7 @@ async def _apply_accepted_suggestion(
             continue
         s = span.get("start")
         e = span.get("end")
-        if isinstance(s, int) and isinstance(e, int) and 0 <= s < e <= len(old_text):
+        if isinstance(s, int) and isinstance(e, int) and 0 <= s <= e <= len(old_text):
             valid_edits.append((s, e, rep_str))
 
     if not valid_edits:

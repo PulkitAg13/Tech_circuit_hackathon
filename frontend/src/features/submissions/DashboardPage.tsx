@@ -9,6 +9,8 @@ import {
   getCanonFriction,
   getCanonLint,
   proposeCanonPr,
+  applyCanonPr,
+  calibrateCanonRule,
   type CanonRevisionPrResponse,
   compileCanon,
   type CompileCanonResponse,
@@ -72,6 +74,12 @@ export function DashboardPage() {
   const [compileText, setCompileText] = useState("");
   const [compileResult, setCompileResult] = useState<CompileCanonResponse | null>(null);
 
+  // Confirm & Calibrate Slider state (Plan §2 Role 2 & §3.3 Guard 3)
+  const [calRuleId, setCalRuleId] = useState("cheap");
+  const [calSeverity, setCalSeverity] = useState<number>(60);
+  const [calDeltaE, setCalDeltaE] = useState<number>(3.0);
+  const [calStatusMsg, setCalStatusMsg] = useState("");
+
   useEffect(() => {
     if (canons.length > 0 && !canonId) {
       setCanonId(canons[0].id);
@@ -119,6 +127,38 @@ export function DashboardPage() {
     },
   });
 
+  const applyPrMutation = useMutation({
+    mutationFn: (cid: string) => applyCanonPr(cid),
+    onSuccess: (summary) => {
+      setCalStatusMsg(`Activated ${summary.id} v${summary.version} (${summary.hash.slice(0, 10)}…)`);
+      queryClient.invalidateQueries({ queryKey: ["canons"] });
+      queryClient.invalidateQueries({ queryKey: ["canonFriction", selectedCanonId] });
+      queryClient.invalidateQueries({ queryKey: ["canonLint", selectedCanonId] });
+    },
+    onError: (err: any) => {
+      setError(err.message || "Failed to apply Canon v1.1 PR");
+    },
+  });
+
+  const calibrateMutation = useMutation({
+    mutationFn: () =>
+      calibrateCanonRule(selectedCanonId, {
+        rule_id: calRuleId,
+        severity: calSeverity,
+        max_delta_e: calDeltaE,
+      }),
+    onSuccess: (res) => {
+      setCalStatusMsg(
+        `Calibrated '${calRuleId}' in ${res.canon_id}: v${res.previous_version} → v${res.new_version}`
+      );
+      queryClient.invalidateQueries({ queryKey: ["canons"] });
+      queryClient.invalidateQueries({ queryKey: ["canonLint", selectedCanonId] });
+    },
+    onError: (err: any) => {
+      setError(err.message || "Failed to calibrate rule");
+    },
+  });
+
   const compileMutation = useMutation({
     mutationFn: (vars: { compileId: string; compileText: string }) =>
       compileCanon(vars.compileId, vars.compileText, "1.0", [], false),
@@ -155,6 +195,7 @@ export function DashboardPage() {
   function loadCanonGovernance(cid: string) {
     setSelectedCanonId(cid);
     setPrProposal(null);
+    setCalStatusMsg("");
   }
 
   function handleProposePr() {
@@ -201,6 +242,11 @@ export function DashboardPage() {
 
       <main className="dashboard-main">
         {error && <p className="error-msg">{error}</p>}
+        {calStatusMsg && (
+          <div className="evidence-box" style={{ marginBottom: "1rem", borderColor: "#22c55e" }}>
+            ✓ {calStatusMsg}
+          </div>
+        )}
 
         {activeTab === "submissions" && (
           <>
@@ -341,6 +387,51 @@ export function DashboardPage() {
               </div>
             )}
 
+            {/* Brand Manager Confirm & Calibrate Sliders (Plan §2 Role 2 & §3.3 Guard 3) */}
+            <div className="evidence-box evidence-box-block" style={{ marginBottom: "1rem" }}>
+              <h4>🎛️ Brand Manager Confirm & Calibrate Sliders</h4>
+              <div className="actions-bar" style={{ marginTop: "0.5rem" }}>
+                <label>
+                  Rule / Token ID:{" "}
+                  <input
+                    type="text"
+                    value={calRuleId}
+                    onChange={(e) => setCalRuleId(e.target.value)}
+                    style={{ width: "140px", marginLeft: "0.4rem" }}
+                  />
+                </label>
+                <label>
+                  Severity S = <strong>{calSeverity}</strong> ({calSeverity >= 50 ? "BLOCKER" : "WARNING"}){" "}
+                  <input
+                    type="range"
+                    min={10}
+                    max={95}
+                    step={5}
+                    value={calSeverity}
+                    onChange={(e) => setCalSeverity(Number(e.target.value))}
+                  />
+                </label>
+                <label>
+                  Max ΔE₀₀ = <strong>{calDeltaE.toFixed(1)}</strong>{" "}
+                  <input
+                    type="range"
+                    min={1.0}
+                    max={8.0}
+                    step={0.5}
+                    value={calDeltaE}
+                    onChange={(e) => setCalDeltaE(parseFloat(e.target.value))}
+                  />
+                </label>
+                <button
+                  type="button"
+                  className="btn-sm btn-accent"
+                  onClick={() => calibrateMutation.mutate()}
+                >
+                  Confirm & Calibrate Rule
+                </button>
+              </div>
+            </div>
+
             {frictionData && (
               <div className="evidence-box evidence-box-block" style={{ marginBottom: "1rem" }}>
                 <div className="evidence-header-row">
@@ -395,10 +486,20 @@ export function DashboardPage() {
 
             {prProposal && (
               <div className="evidence-box evidence-box-block" style={{ marginBottom: "1rem" }}>
-                <h3>
-                  Proposed Canon PR: {prProposal.canon_id} v{prProposal.base_version} → v
-                  {prProposal.proposed_version}
-                </h3>
+                <div className="evidence-header-row">
+                  <h3>
+                    Proposed Canon PR: {prProposal.canon_id} v{prProposal.base_version} → v
+                    {prProposal.proposed_version}
+                  </h3>
+                  <button
+                    type="button"
+                    className="btn-success"
+                    onClick={() => applyPrMutation.mutate(selectedCanonId)}
+                    disabled={applyPrMutation.isPending}
+                  >
+                    ✓ Merge & Activate Canon v{prProposal.proposed_version} PR
+                  </button>
+                </div>
                 <p>
                   <strong>Historical Impact Backtest ({prProposal.bundles_evaluated} bundles):</strong>{" "}
                   Findings {prProposal.before_findings} → {prProposal.after_findings} | Blockers{" "}

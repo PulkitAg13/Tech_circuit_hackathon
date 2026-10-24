@@ -1,4 +1,4 @@
-"""Canon management, Pipeline A compilation, linting, friction telemetry, and v1.1 PR routes."""
+"""Canon management, Pipeline A compilation, linting, friction, calibration & v1.1 PR routes."""
 
 from __future__ import annotations
 
@@ -10,10 +10,15 @@ import numpy as np
 from fastapi import APIRouter
 from pydantic import BaseModel
 
-from canongate.api.deps import SessionDep, get_canon, list_canon_ids
+from canongate.api.deps import SessionDep, get_canon, list_canon_ids, register_canon
 from canongate.api.routes.submissions import _parse_submission_ast
 from canongate.canon.compiler import compile_canon
-from canongate.canon.impact import _canon_to_yaml, lint_canon, propose_canon_revision
+from canongate.canon.impact import (
+    _canon_to_yaml,
+    calibrate_canon_rule,
+    lint_canon,
+    propose_canon_revision,
+)
 from canongate.domain.canon import Canon
 from canongate.engine.runner import run_checks_collect
 from canongate.ledger.friction import compute_rule_friction, krippendorff_alpha
@@ -30,6 +35,9 @@ class CanonSummary(BaseModel):
     term_count: int
     color_count: int
     fact_count: int
+    trigger_count: int = 0
+    logo_count: int = 0
+    has_voice_profile: bool = False
 
 
 class CanonLintIssueDto(BaseModel):
@@ -77,6 +85,7 @@ class CanonRevisionPrRequest(BaseModel):
     override_notes: dict[str, str] = {}
     threshold: float = 0.40
     min_flags: int = 3
+    persist: bool = False
 
 
 class CanonRevisionPrResponse(BaseModel):
@@ -93,6 +102,26 @@ class CanonRevisionPrResponse(BaseModel):
     after_blockers: int
     reduction_ratio: float
     resolved_rule_ids: list[str]
+
+
+class CalibrateCanonRuleRequest(BaseModel):
+    rule_id: str
+    severity: int | None = None
+    max_delta_e: float | None = None
+    max_sentence_words: int | None = None
+    max_passive_voice_pct: float | None = None
+    max_flesch_kincaid_grade: float | None = None
+    max_aspect_distortion_pct: float | None = None
+    clear_space_ratio_h: float | None = None
+    persist: bool = False
+
+
+class CalibrateCanonRuleResponse(BaseModel):
+    canon_id: str
+    previous_version: str
+    new_version: str
+    new_hash: str
+    yaml_preview: str
 
 
 class CompileCanonAttachmentDto(BaseModel):
@@ -132,22 +161,23 @@ class CompileCanonResponse(BaseModel):
     provenance: list[GroundedRuleProvenanceDto]
 
 
+def _to_summary(canon: Canon) -> CanonSummary:
+    return CanonSummary(
+        id=canon.id,
+        version=canon.version,
+        hash=canon.hash,
+        term_count=len(canon.terminology),
+        color_count=len(canon.palette),
+        fact_count=len(canon.facts),
+        trigger_count=len(canon.trigger_obligations),
+        logo_count=len(canon.logos),
+        has_voice_profile=canon.voice_profile is not None,
+    )
+
+
 @router.get("", response_model=list[CanonSummary])
 async def list_canons() -> list[CanonSummary]:
-    summaries = []
-    for cid in list_canon_ids():
-        canon = get_canon(cid)
-        summaries.append(
-            CanonSummary(
-                id=canon.id,
-                version=canon.version,
-                hash=canon.hash,
-                term_count=len(canon.terminology),
-                color_count=len(canon.palette),
-                fact_count=len(canon.facts),
-            )
-        )
-    return summaries
+    return [_to_summary(get_canon(cid)) for cid in list_canon_ids()]
 
 
 @router.post("/compile", response_model=CompileCanonResponse, status_code=201)
@@ -169,11 +199,7 @@ async def compile_brand_canon(req: CompileCanonRequest) -> CompileCanonResponse:
         version=req.version.strip() or "1.0",
     )
 
-    import sys as _sys
-
-    deps_mod = _sys.modules.get("canongate.api.deps")
-    if deps_mod is not None and hasattr(deps_mod, "register_canon"):
-        deps_mod.register_canon(canon, persist_yaml=req.persist)
+    register_canon(canon, persist_yaml=req.persist)
 
     prov_dtos = [
         GroundedRuleProvenanceDto(
@@ -207,15 +233,7 @@ async def compile_brand_canon(req: CompileCanonRequest) -> CompileCanonResponse:
 
 @router.get("/{canon_id}", response_model=CanonSummary)
 async def get_canon_detail(canon_id: str) -> CanonSummary:
-    canon = get_canon(canon_id)
-    return CanonSummary(
-        id=canon.id,
-        version=canon.version,
-        hash=canon.hash,
-        term_count=len(canon.terminology),
-        color_count=len(canon.palette),
-        fact_count=len(canon.facts),
-    )
+    return _to_summary(get_canon(canon_id))
 
 
 @router.get("/{canon_id}/lint", response_model=CanonLintResponse)
@@ -423,4 +441,57 @@ async def propose_canon_pr(
         after_blockers=after_blockers,
         reduction_ratio=reduction_ratio,
         resolved_rule_ids=resolved_ids,
+    )
+
+
+@router.post("/{canon_id}/apply-pr", response_model=CanonSummary)
+async def apply_canon_pr(
+    canon_id: str,
+    session: SessionDep,
+    req: CanonRevisionPrRequest | None = None,
+) -> CanonSummary:
+    """Merge and activate the proposed Canon v1.1 revision in the live Canon registry."""
+    params = req or CanonRevisionPrRequest()
+    canon = get_canon(canon_id)
+    findings = await repos.get_findings_for_canon(session, canon_id)
+    rule_stats, _ = _aggregate_canon_friction(findings)
+    friction_counts = {
+        rule_id: (stats["total"], stats["disputed"]) for rule_id, stats in rule_stats.items()
+    }
+    proposal = propose_canon_revision(
+        canon,
+        friction_counts,
+        override_notes=params.override_notes,
+        threshold=params.threshold,
+        min_flags=params.min_flags,
+    )
+    register_canon(proposal.revised_canon, persist_yaml=params.persist)
+    return _to_summary(proposal.revised_canon)
+
+
+@router.post("/{canon_id}/calibrate", response_model=CalibrateCanonRuleResponse)
+async def calibrate_canon_endpoint(
+    canon_id: str,
+    req: CalibrateCanonRuleRequest,
+) -> CalibrateCanonRuleResponse:
+    """Brand Manager Confirm & Calibrate slider endpoint to tune rule thresholds live."""
+    canon = get_canon(canon_id)
+    updated = calibrate_canon_rule(
+        canon,
+        rule_id=req.rule_id,
+        severity=req.severity,
+        max_delta_e=req.max_delta_e,
+        max_sentence_words=req.max_sentence_words,
+        max_passive_voice_pct=req.max_passive_voice_pct,
+        max_flesch_kincaid_grade=req.max_flesch_kincaid_grade,
+        max_aspect_distortion_pct=req.max_aspect_distortion_pct,
+        clear_space_ratio_h=req.clear_space_ratio_h,
+    )
+    register_canon(updated, persist_yaml=req.persist)
+    return CalibrateCanonRuleResponse(
+        canon_id=updated.id,
+        previous_version=canon.version,
+        new_version=updated.version,
+        new_hash=updated.hash,
+        yaml_preview=_canon_to_yaml(updated),
     )

@@ -148,9 +148,11 @@ def sign_approved_asset(
     # Replace missing or placeholder PEM/callback with real X.509 ECDSA P-256 credentials
     if sign_callback is None or _is_dummy_pem(cert_chain_pem):
         real_cb, real_pem, _ = generate_ephemeral_es256_credentials()
-        if sign_callback is None or _is_dummy_pem(cert_chain_pem):
-            sign_callback = sign_callback or real_cb
-            cert_chain_pem = real_pem if _is_dummy_pem(cert_chain_pem) else cert_chain_pem
+        if _is_dummy_pem(cert_chain_pem):
+            sign_callback = real_cb
+            cert_chain_pem = real_pem
+        elif sign_callback is None:
+            sign_callback = real_cb
 
     if c2pa_module is None:
         try:

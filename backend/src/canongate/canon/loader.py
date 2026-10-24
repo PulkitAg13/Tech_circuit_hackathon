@@ -1,7 +1,9 @@
-"""Canon loader: YAML → Canon model.
+"""Canon loader: YAML / JSON → Canon model.
 
-The YAML format is the human-authored brand book. Later, Pipeline A
-compiles PDFs/DOCXs into the same YAML.
+The YAML format is the human-authored brand book. Pipeline A also
+compiles PDFs/DOCXs into the same structured Canon schema across all
+five governance domains (terminology, palette, facts, trigger_obligations,
+voice_profile, and logos).
 """
 
 from __future__ import annotations
@@ -11,29 +13,19 @@ from pathlib import Path
 
 import yaml
 
-from canongate.domain.canon import Canon, ColorToken, FactClaim, TermRule
+from canongate.domain.canon import (
+    Canon,
+    ColorToken,
+    FactClaim,
+    LogoToken,
+    TermRule,
+    TriggerObligation,
+    VoiceProfile,
+)
 
 
 def load_canon(path: Path) -> Canon:
-    """Load a Canon from a YAML file.
-
-    Expected YAML structure:
-        id: my-brand
-        version: "1.0"
-        terminology:
-          - id: cheap
-            pattern_text: cheap
-            preferred: affordable
-            severity: 60
-        palette:
-          - id: primary
-            hex: "#1A73E8"
-            name: Primary Blue
-            max_delta_e: 3.0
-        facts:
-          - id: founding_year
-            text: "Founded in 2024"
-    """
+    """Load a Canon from a YAML or JSON file."""
     raw = path.read_text(encoding="utf-8")
 
     if path.suffix in {".yaml", ".yml"}:
@@ -46,6 +38,12 @@ def load_canon(path: Path) -> Canon:
     terminology = tuple(TermRule(**t) for t in data.get("terminology", []))
     palette = tuple(ColorToken(**c) for c in data.get("palette", []))
     facts = tuple(FactClaim(**f) for f in data.get("facts", []))
+    trigger_obligations = tuple(
+        TriggerObligation(**tr) for tr in data.get("trigger_obligations", [])
+    )
+    voice_raw = data.get("voice_profile")
+    voice_profile = VoiceProfile(**voice_raw) if isinstance(voice_raw, dict) else None
+    logos = tuple(LogoToken(**lg) for lg in data.get("logos", []))
 
     return Canon(
         id=data["id"],
@@ -53,4 +51,8 @@ def load_canon(path: Path) -> Canon:
         terminology=terminology,
         palette=palette,
         facts=facts,
+        trigger_obligations=trigger_obligations,
+        voice_profile=voice_profile,
+        logos=logos,
+        require_image_alt=bool(data.get("require_image_alt", False)),
     )

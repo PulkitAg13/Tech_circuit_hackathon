@@ -11,6 +11,9 @@ import {
   getFindings,
   scanSubmission,
   resolveFinding,
+  rewriteFindingSpan,
+  listSubmissionComments,
+  addSubmissionComment,
   workflowAction,
   getAuditTrail,
   getGovernanceCertificate,
@@ -19,6 +22,7 @@ import {
   type FindingResponse,
   type EvidencePayload,
   type ImageNodeMetaDto,
+  type SubmissionCommentDto,
 } from "../../api/client";
 import { useAuth } from "../auth/AuthContext";
 import { createProseMirrorFindingsPlugin } from "./FindingHighlightsExtension";
@@ -104,7 +108,7 @@ export function BannerBBoxOverlay({
       <div className="section-header">
         <h2>🖼️ Visual Creative Inspection (BBox Governance Overlay)</h2>
         <span className="editor-subtext">
-          Click any bounding box on the banner to inspect its CIEDE2000, WCAG 2.1, ASCI 26px, or Saliency evidence
+          Click any bounding box on the banner to inspect its CIEDE2000, WCAG 2.1, ORB Logo, ASCI 26px, or Saliency evidence
         </span>
       </div>
       <div className="banner-grid">
@@ -189,7 +193,15 @@ export function BannerBBoxOverlay({
   );
 }
 
-export function EvidenceView({ evidence }: { evidence?: EvidencePayload }) {
+export function EvidenceView({
+  evidence,
+  slotDiffExpanded = true,
+  onToggleSlotDiff,
+}: {
+  evidence?: EvidencePayload;
+  slotDiffExpanded?: boolean;
+  onToggleSlotDiff?: () => void;
+}) {
   if (!evidence) return null;
 
   switch (evidence.kind) {
@@ -267,8 +279,20 @@ export function EvidenceView({ evidence }: { evidence?: EvidencePayload }) {
             <span className="ev-metric">
               Entailment P = <strong>{(evidence.entailment_prob * 100).toFixed(0)}%</strong>
             </span>
+            {onToggleSlotDiff && (
+              <button
+                type="button"
+                className="btn-sm btn-ghost"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onToggleSlotDiff();
+                }}
+              >
+                {slotDiffExpanded ? "▴ Collapse SlotDiff" : "▾ Expand SlotDiff to Unlock Actions"}
+              </button>
+            )}
           </div>
-          {evidence.slots && evidence.slots.length > 0 && (
+          {slotDiffExpanded && evidence.slots && evidence.slots.length > 0 && (
             <table className="slot-diff-table">
               <thead>
                 <tr>
@@ -389,6 +413,41 @@ export function EvidenceView({ evidence }: { evidence?: EvidencePayload }) {
         </div>
       );
 
+    case "logo_geometry":
+      return (
+        <div className="evidence-box">
+          <span className="evidence-kind-tag">OpenCV ORB Logo ({evidence.logo_id})</span>
+          <span className="ev-metric">
+            AR distortion <strong>{evidence.aspect_distortion_pct.toFixed(1)}%</strong> (max{" "}
+            {evidence.max_aspect_distortion_pct.toFixed(1)}%) · Clear-space ({evidence.clear_space_ratio_h.toFixed(2)}H) intrusion{" "}
+            <strong>{evidence.clear_space_intrusion_pct.toFixed(1)}%</strong>
+          </span>
+        </div>
+      );
+
+    case "voice_readability":
+      return (
+        <div className="evidence-box">
+          <span className="evidence-kind-tag">Voice & Readability</span>
+          <span className="ev-metric">
+            FK Grade <strong>{evidence.flesch_kincaid_grade.toFixed(1)}</strong> (max{" "}
+            {evidence.max_flesch_kincaid_grade.toFixed(1)}) · Passive{" "}
+            <strong>{evidence.passive_voice_pct.toFixed(0)}%</strong> · Max sentence{" "}
+            <strong>{evidence.max_sentence_words_observed}w</strong>
+          </span>
+        </div>
+      );
+
+    case "trigger_obligation":
+      return (
+        <div className="evidence-box">
+          <span className="evidence-kind-tag">Trigger Obligation ({evidence.obligation_id})</span>
+          <span className="ev-del">{evidence.matched_trigger}</span>
+          <span className="ev-arrow">requires</span>
+          <span className="ev-ins">{evidence.required_disclaimer_text}</span>
+        </div>
+      );
+
     default:
       return null;
   }
@@ -397,6 +456,7 @@ export function EvidenceView({ evidence }: { evidence?: EvidencePayload }) {
 const EMPTY_FINDINGS: FindingResponse[] = [];
 const EMPTY_AUDIT: any[] = [];
 const EMPTY_VERSIONS: any[] = [];
+const EMPTY_COMMENTS: SubmissionCommentDto[] = [];
 
 export function SubmissionDetailPage() {
   const { id } = useParams<{ id: string }>();
@@ -416,6 +476,12 @@ export function SubmissionDetailPage() {
   const { data: serverFindings = EMPTY_FINDINGS } = useQuery({
     queryKey: ["findings", subId],
     queryFn: () => getFindings(subId),
+    enabled: !Number.isNaN(subId),
+  });
+
+  const { data: comments = EMPTY_COMMENTS } = useQuery({
+    queryKey: ["comments", subId],
+    queryFn: () => listSubmissionComments(subId),
     enabled: !Number.isNaN(subId),
   });
 
@@ -444,6 +510,16 @@ export function SubmissionDetailPage() {
 
   const [error, setError] = useState("");
   const [selectedRowId, setSelectedRowId] = useState<number | null>(null);
+
+  // Legal Reviewer Claim-Only / Unresolved Blockers & Overrides filter (Plan §2 Role 3)
+  const [reviewerFilterOnly, setReviewerFilterOnly] = useState(false);
+
+  // Cognitive forcing function: Blocker SlotDiff cards start collapsed and lock "Accept & Apply Fix"
+  const [expandedSlotDiffIds, setExpandedSlotDiffIds] = useState<Record<number, boolean>>({});
+
+  // Inline comment thread state
+  const [activeCommentRowId, setActiveCommentRowId] = useState<number | null>(null);
+  const [commentDraft, setCommentDraft] = useState("");
 
   // Cognitive forcing function state: track pending Override/Dismiss justification reason
   const [pendingReasonRowId, setPendingReasonRowId] = useState<number | null>(null);
@@ -527,6 +603,28 @@ export function SubmissionDetailPage() {
     },
   });
 
+  const rewriteMutation = useMutation({
+    mutationFn: (rowId: number) => rewriteFindingSpan(subId, rowId),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["findings", subId] });
+    },
+    onError: (err: any) => {
+      setError(err.message || "Tier 3 surgical rewrite failed");
+    },
+  });
+
+  const commentMutation = useMutation({
+    mutationFn: (vars: { body: string; findingId?: number | null }) =>
+      addSubmissionComment(subId, vars.body, vars.findingId),
+    onSuccess: () => {
+      setCommentDraft("");
+      queryClient.invalidateQueries({ queryKey: ["comments", subId] });
+    },
+    onError: (err: any) => {
+      setError(err.message || "Failed to post comment");
+    },
+  });
+
   async function handleScan() {
     setScanning(true);
     setScanCount(0);
@@ -577,6 +675,10 @@ export function SubmissionDetailPage() {
     setReasonDraft("");
   }
 
+  function toggleSlotDiff(rowId: number) {
+    setExpandedSlotDiffIds((prev) => ({ ...prev, [rowId]: !prev[rowId] }));
+  }
+
   function loadAudit() {
     setShowAudit(true);
   }
@@ -610,6 +712,15 @@ export function SubmissionDetailPage() {
   const blockerCount = findings.filter((f) => f.severity >= 50 && f.resolution === "open").length;
   const warningCount = findings.filter((f) => f.severity > 0 && f.severity < 50 && f.resolution === "open").length;
   const resolvedCount = findings.filter((f) => f.resolution !== "open").length;
+
+  const displayedFindings = reviewerFilterOnly
+    ? findings.filter(
+        (f) =>
+          (f.severity >= 50 && f.resolution === "open") ||
+          f.resolution === "overridden" ||
+          f.payload?.evidence?.kind === "slot_diff"
+      )
+    : findings;
 
   return (
     <div className="detail-page">
@@ -670,9 +781,17 @@ export function SubmissionDetailPage() {
             max={0.25}
             step={0.01}
             value={alpha}
-            onChange={(e) => setAlpha( parseFloat(e.target.value) )}
+            onChange={(e) => setAlpha(parseFloat(e.target.value))}
           />
         </div>
+
+        <button
+          className={reviewerFilterOnly ? "btn-accent" : "btn-ghost"}
+          onClick={() => setReviewerFilterOnly((v) => !v)}
+          title="Authorised Legal Reviewer view: filter to unresolved Blockers, SlotDiff claims, and Creator Overrides"
+        >
+          ⚖️ {reviewerFilterOnly ? "Showing Claims & Blockers Only" : "Claim-Only / Blocker Filter"}
+        </button>
 
         {submission.status === "draft" && (
           <button className="btn-accent" onClick={() => handleWorkflow("submit")}>
@@ -735,14 +854,19 @@ export function SubmissionDetailPage() {
 
       {/* Findings list */}
       <section className="findings-section">
-        <h2>Findings ({findings.length})</h2>
-        {findings.length === 0 && !scanning && (
-          <p className="empty-state">No findings. Run a scan to check this content.</p>
+        <h2>Findings ({displayedFindings.length})</h2>
+        {displayedFindings.length === 0 && !scanning && (
+          <p className="empty-state">No findings match the current filter. Run a scan to check this content.</p>
         )}
         <div className="findings-list">
-          {findings.map((f) => {
+          {displayedFindings.map((f) => {
             const verdict = f.severity >= 50 ? 2 : f.severity > 0 ? 1 : 0;
+            const isBlocker = f.severity >= 50;
             const trace = f.payload?.trace;
+            const hasSlotDiff = f.payload?.evidence?.kind === "slot_diff";
+            const isSlotDiffExpanded = !isBlocker || !hasSlotDiff || !!expandedSlotDiffIds[f.row_id];
+            const cardComments = comments.filter((c) => c.finding_id === f.row_id);
+
             return (
               <div
                 key={f.row_id}
@@ -770,23 +894,29 @@ export function SubmissionDetailPage() {
                   {trace && (
                     <span
                       className="tier-badge"
-                      title={`Tier: ${trace.tier}${trace.model_sha ? ` | SHA: ${trace.model_sha}` : ""}`}
+                      title={`Context Trace — Tier: ${trace.tier}${trace.model_sha ? ` | SHA: ${trace.model_sha}` : ""}`}
                     >
-                      {trace.tier === "deterministic"
-                        ? "⚙️"
+                      {trace.tier === "deterministic" || trace.tier === 1
+                        ? "⚙️ CONTEXT TRACE: TIER 1 (ZERO AI)"
                         : trace.tier === "smt"
-                          ? "🧮"
-                          : "🤖"}{" "}
-                      {trace.tier}
+                          ? "🧮 CONTEXT TRACE: TIER 1.5 (Z3 SMT)"
+                          : trace.tier === 3 || trace.tier === "generative"
+                            ? "✨ CONTEXT TRACE: TIER 3 (REWRITER)"
+                            : "🤖 CONTEXT TRACE: TIER 2 (LOCAL NLI)"}{" "}
                       {typeof trace.latency_ms === "number"
-                        ? ` · ${trace.latency_ms.toFixed(1)}ms`
+                        ? `· ${trace.latency_ms.toFixed(1)}ms`
                         : ""}
-                      {trace.model_sha ? ` · ${trace.model_sha.slice(0, 7)}` : ""}
                     </span>
                   )}
                 </div>
                 <p className="finding-message">{f.message}</p>
-                <EvidenceView evidence={f.payload?.evidence} />
+                <EvidenceView
+                  evidence={f.payload?.evidence}
+                  slotDiffExpanded={isSlotDiffExpanded}
+                  onToggleSlotDiff={
+                    isBlocker && hasSlotDiff ? () => toggleSlotDiff(f.row_id) : undefined
+                  }
+                />
                 {f.payload?.suggestion && (
                   <div className="suggestion">
                     💡 {f.payload.suggestion.label}
@@ -831,23 +961,57 @@ export function SubmissionDetailPage() {
                       <>
                         <button
                           className="btn-sm btn-success"
+                          disabled={!isSlotDiffExpanded}
+                          title={
+                            !isSlotDiffExpanded
+                              ? "Apply fix · locked until SlotDiff is expanded (Buçinca et al., CSCW 2021)"
+                              : undefined
+                          }
                           onClick={() => handleResolve(f.row_id, "accepted")}
                         >
-                          {f.payload?.suggestion?.replacements?.length
-                            ? "Accept & Apply Fix"
-                            : "Accept"}
+                          {!isSlotDiffExpanded
+                            ? "🔒 Apply Fix · Locked Until SlotDiff Expanded"
+                            : f.payload?.suggestion?.replacements?.length
+                              ? "Accept & Apply Fix"
+                              : "Accept"}
                         </button>
+
                         <button
                           className="btn-sm btn-ghost"
-                          onClick={() => startReasonPrompt(f.row_id, "dismissed")}
+                          onClick={() => rewriteMutation.mutate(f.row_id)}
+                          disabled={rewriteMutation.isPending}
+                          title="Tier 3 Constrained Rewriter (<=35% edit distance, Presidio PII scrub, Tier 1+2 re-verified)"
                         >
-                          Dismiss
+                          ✨ Tier 3 Rewrite
                         </button>
+
+                        {(role === "reviewer" || role === "admin") && (
+                          <button
+                            className="btn-sm btn-ghost"
+                            onClick={() => startReasonPrompt(f.row_id, "dismissed")}
+                          >
+                            Dismiss
+                          </button>
+                        )}
+
+                        {(!isBlocker || role === "reviewer" || role === "admin") && (
+                          <button
+                            className="btn-sm btn-warning"
+                            onClick={() => startReasonPrompt(f.row_id, "overridden")}
+                          >
+                            {isBlocker ? "Reviewer Override" : "Deliberate Override"}
+                          </button>
+                        )}
+
                         <button
-                          className="btn-sm btn-warning"
-                          onClick={() => startReasonPrompt(f.row_id, "overridden")}
+                          className="btn-sm btn-ghost"
+                          onClick={() =>
+                            setActiveCommentRowId(
+                              activeCommentRowId === f.row_id ? null : f.row_id
+                            )
+                          }
                         >
-                          Override
+                          💬 Comment ({cardComments.length})
                         </button>
                       </>
                     )
@@ -862,6 +1026,45 @@ export function SubmissionDetailPage() {
                     </div>
                   )}
                 </div>
+
+                {/* Inline Comment Thread for this Finding */}
+                {(activeCommentRowId === f.row_id || cardComments.length > 0) && (
+                  <div
+                    className="finding-comments-box"
+                    onClick={(e) => e.stopPropagation()}
+                    style={{ marginTop: "0.6rem", paddingTop: "0.5rem", borderTop: "1px solid rgba(255,255,255,0.08)" }}
+                  >
+                    {cardComments.map((c) => (
+                      <div key={c.id} className="comment-item" style={{ fontSize: "0.85rem", marginBottom: "0.3rem" }}>
+                        <strong>{c.author_name}</strong>{" "}
+                        <span className="role-chip">{c.role}</span>: {c.body}
+                      </div>
+                    ))}
+                    {activeCommentRowId === f.row_id && (
+                      <div className="reason-forcing-box" style={{ marginTop: "0.4rem" }}>
+                        <input
+                          type="text"
+                          className="reason-input"
+                          placeholder="Add an inline comment on this finding..."
+                          value={commentDraft}
+                          onChange={(e) => setCommentDraft(e.target.value)}
+                        />
+                        <button
+                          className="btn-sm btn-primary"
+                          disabled={!commentDraft.trim()}
+                          onClick={() =>
+                            commentMutation.mutate({
+                              body: commentDraft.trim(),
+                              findingId: f.row_id,
+                            })
+                          }
+                        >
+                          Post
+                        </button>
+                      </div>
+                    )}
+                  </div>
+                )}
               </div>
             );
           })}

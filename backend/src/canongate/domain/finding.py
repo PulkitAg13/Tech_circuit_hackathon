@@ -219,6 +219,44 @@ class HiddenTextEvidence(FrozenModel, frozen=True):
     extracted_snippet: str
 
 
+class LogoGeometryEvidence(FrozenModel, frozen=True):
+    """Evidence: OpenCV ORB logo aspect distortion (<= 2%) or 0.5H clear-space intrusion."""
+
+    kind: Literal["logo_geometry"] = "logo_geometry"
+    logo_id: str
+    expected_aspect_ratio: float
+    detected_aspect_ratio: float
+    aspect_distortion_pct: float
+    max_aspect_distortion_pct: float
+    clear_space_ratio_h: float
+    clear_space_intrusion_pct: float
+    orb_inlier_matches: int = 0
+
+
+class VoiceReadabilityEvidence(FrozenModel, frozen=True):
+    """Evidence: VoiceProfile sentence-length, passive-voice %, and Flesch-Kincaid bounds."""
+
+    kind: Literal["voice_readability"] = "voice_readability"
+    flesch_kincaid_grade: float
+    max_flesch_kincaid_grade: float
+    passive_voice_pct: float
+    max_passive_voice_pct: float
+    max_sentence_words_observed: int
+    max_sentence_words_allowed: int
+    exemplar_similarity: float = 1.0
+
+
+class TriggerObligationEvidence(FrozenModel, frozen=True):
+    """Evidence: missing or language-mismatched trigger disclaimer / creator disclosure."""
+
+    kind: Literal["trigger_obligation"] = "trigger_obligation"
+    obligation_id: str
+    matched_trigger: str
+    required_disclaimer_id: str
+    required_disclaimer_text: str
+    same_language_required: bool = True
+
+
 Evidence = Annotated[
     TermMatch
     | ColorDistance
@@ -229,7 +267,10 @@ Evidence = Annotated[
     | AlgebraicProofEvidence
     | SlotDiffEvidence
     | C2paEvidence
-    | HiddenTextEvidence,
+    | HiddenTextEvidence
+    | LogoGeometryEvidence
+    | VoiceReadabilityEvidence
+    | TriggerObligationEvidence,
     Field(discriminator="kind"),
 ]
 

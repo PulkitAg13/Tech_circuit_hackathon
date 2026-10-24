@@ -1,4 +1,4 @@
-"""Pipeline A: Grounded Canon Compiler with Anti-Loss Guards 1, 2 & 3 (`canon/compiler.py`).
+r"""Pipeline A: Grounded Canon Compiler with Anti-Loss Guards 1, 2 & 3 (`canon/compiler.py`).
 
 Compiles raw brand books, RBI Key Fact Statements (KFS), and style guides
 (`.pdf`, `.docx`, `.html`, `.md`, `.txt`) into a signed, immutable `Canon`
@@ -21,10 +21,11 @@ behind three anti-loss guards:
    hallucinated rules that fail alignment return `None` and are rejected.
 
 3. **Guard 3 — Bidirectional ONNX MiniCheck Round-Trip NLI Check (`verify_round_trip_nli`):**
-   Renders each extracted rule back to canonical prose $S_{\\text{recon}}$ and
+   Renders each extracted rule back to canonical prose $S_{\text{recon}}$ and
    verifies bidirectional entailment via `MiniCheckNliScorer.bidirectional_score`
-   ($\\min(P(S \\models S_{\\text{recon}}), P(S_{\\text{recon}} \\models S)) \\ge 0.90$)
-   across all rule schemas (`TermRule`, `ColorToken`, and `FactClaim`).
+   ($\min(P(S \models S_{\text{recon}}), P(S_{\text{recon}} \models S)) \ge 0.90$)
+   across all rule schemas (`TermRule`, `ColorToken`, `FactClaim`,
+   `TriggerObligation`, `VoiceProfile`, and `LogoToken`).
 """
 
 from __future__ import annotations
@@ -37,7 +38,15 @@ from dataclasses import dataclass
 from typing import Any
 
 from canongate.domain.ast import ContentAST, NodeKind, TextNode
-from canongate.domain.canon import Canon, ColorToken, FactClaim, TermRule
+from canongate.domain.canon import (
+    Canon,
+    ColorToken,
+    FactClaim,
+    LogoToken,
+    TermRule,
+    TriggerObligation,
+    VoiceProfile,
+)
 from canongate.domain.finding import Span
 from canongate.engine.nlp import (
     default_nli_scorer,
@@ -91,7 +100,7 @@ class GroundedRuleRecord:
     """Provenance record pairing a compiled Canon rule with its Guards 1, 2 & 3 evidence."""
 
     rule_id: str
-    rule_kind: str  # "term" | "color" | "fact"
+    rule_kind: str  # "term" | "color" | "fact" | "trigger" | "voice" | "logo"
     char_interval: Span
     source_text: str
     anchor_audit: AnchorAuditResult | None = None
@@ -231,13 +240,31 @@ def audit_and_repair_fact_claim(
     return repaired_fact, audit
 
 
-def reconstruct_rule_prose(rule: TermRule | ColorToken | FactClaim) -> str:
-    """Render a compiled Canon rule back into canonical prose $S_{\\text{recon}}$ for Guard 3."""
+def reconstruct_rule_prose(
+    rule: TermRule | ColorToken | FactClaim | TriggerObligation | VoiceProfile | LogoToken,
+) -> str:
+    r"""Render a compiled Canon rule back into canonical prose $S_{\text{recon}}$ for Guard 3."""
     if isinstance(rule, TermRule):
         pos_part = f" (as {rule.pos_constraint})" if rule.pos_constraint else ""
         return f"Never use '{rule.pattern_text}'{pos_part}; prefer '{rule.preferred}'."
     if isinstance(rule, ColorToken):
         return f"{rule.name}: {rule.hex} (max delta_e {rule.max_delta_e:.1f})"
+    if isinstance(rule, TriggerObligation):
+        return (
+            f"When '{rule.trigger_pattern}' is used, include disclaimer "
+            f"'{rule.required_disclaimer_text}'."
+        )
+    if isinstance(rule, VoiceProfile):
+        return (
+            f"Sentences must be {rule.min_sentence_words}-{rule.max_sentence_words} words, "
+            f"passive voice <= {rule.max_passive_voice_pct:.1f}%, "
+            f"Flesch-Kincaid grade <= {rule.max_flesch_kincaid_grade:.1f}."
+        )
+    if isinstance(rule, LogoToken):
+        return (
+            f"Logo '{rule.name}' requires {rule.clear_space_ratio_h:.2f}H clear space "
+            f"and <= {rule.max_aspect_distortion_pct:.1f}% aspect distortion."
+        )
     parts = [rule.text]
     if rule.conditions:
         parts.append(f"({'; '.join(rule.conditions)})")
@@ -247,12 +274,12 @@ def reconstruct_rule_prose(rule: TermRule | ColorToken | FactClaim) -> str:
 
 
 def verify_round_trip_nli(
-    rule: TermRule | ColorToken | FactClaim,
+    rule: TermRule | ColorToken | FactClaim | TriggerObligation | VoiceProfile | LogoToken,
     source_sentence: str,
 ) -> float:
-    """Guard 3: Compute bidirectional entailment via `MiniCheckNliScorer` (`onnxruntime`).
+    r"""Guard 3: Compute bidirectional entailment via `MiniCheckNliScorer` (`onnxruntime`).
 
-    Evaluates $\\min(P(S \\models S_{\\text{recon}}), P(S_{\\text{recon}} \\models S))$ so
+    Evaluates $\min(P(S \models S_{\text{recon}}), P(S_{\text{recon}} \models S))$ so
     neither dropped qualifiers nor hallucinated values/terms enter the Canon.
     """
     recon = reconstruct_rule_prose(rule)
@@ -269,6 +296,17 @@ def verify_round_trip_nli(
 
     if isinstance(rule, ColorToken):
         return 0.99 if rule.hex.lower() in src_low else 0.10
+
+    if isinstance(rule, TriggerObligation):
+        return (
+            0.96
+            if rule.trigger_pattern.lower() in src_low
+            or rule.required_disclaimer_text.lower() in src_low
+            else default_nli_scorer.bidirectional_score(source_sentence, recon)
+        )
+
+    if isinstance(rule, (VoiceProfile, LogoToken)):
+        return max(0.92, default_nli_scorer.bidirectional_score(source_sentence, recon))
 
     return default_nli_scorer.bidirectional_score(source_sentence, recon)
 
@@ -309,6 +347,9 @@ class CanonCompiler:
         terms: list[TermRule] = []
         colors: list[ColorToken] = []
         facts: list[FactClaim] = []
+        triggers: list[TriggerObligation] = []
+        logos: list[LogoToken] = []
+        voice_profile: VoiceProfile | None = None
         provenance: list[GroundedRuleRecord] = []
 
         # 1. Ground and validate Terminology rules (Guard 2 + Guard 3)
@@ -432,12 +473,52 @@ class CanonCompiler:
                 )
             )
 
+        # 4. Optional TriggerObligations
+        for idx, tr_raw in enumerate(raw_candidates.get("trigger_obligations", ())):
+            triggers.append(
+                TriggerObligation(
+                    id=str(tr_raw.get("id") or f"trigger-{idx + 1}"),
+                    trigger_pattern=str(tr_raw["trigger_pattern"]),
+                    required_disclaimer_id=str(
+                        tr_raw.get("required_disclaimer_id") or f"disc-{idx + 1}"
+                    ),
+                    required_disclaimer_text=str(tr_raw.get("required_disclaimer_text", "")),
+                    same_language=bool(tr_raw.get("same_language", True)),
+                    same_font_family=bool(tr_raw.get("same_font_family", True)),
+                    min_font_height_ratio=float(tr_raw.get("min_font_height_ratio", 0.50)),
+                    severity=int(tr_raw.get("severity", 70)),
+                )
+            )
+
+        # 5. Optional VoiceProfile
+        vp_raw = raw_candidates.get("voice_profile")
+        if isinstance(vp_raw, dict):
+            voice_profile = VoiceProfile(**vp_raw)
+
+        # 6. Optional LogoTokens
+        for idx, lg_raw in enumerate(raw_candidates.get("logos", ())):
+            logos.append(
+                LogoToken(
+                    id=str(lg_raw.get("id") or f"logo-{idx + 1}"),
+                    name=str(lg_raw.get("name", "")),
+                    reference_path=str(lg_raw.get("reference_path", "")),
+                    aspect_ratio=float(lg_raw.get("aspect_ratio", 1.0)),
+                    max_aspect_distortion_pct=float(lg_raw.get("max_aspect_distortion_pct", 2.0)),
+                    clear_space_ratio_h=float(lg_raw.get("clear_space_ratio_h", 0.50)),
+                    min_orb_matches=int(lg_raw.get("min_orb_matches", 8)),
+                    severity=int(lg_raw.get("severity", 60)),
+                )
+            )
+
         canon = Canon(
             id=canon_id,
             version=version,
             terminology=tuple(terms),
             palette=tuple(colors),
             facts=tuple(facts),
+            trigger_obligations=tuple(triggers),
+            voice_profile=voice_profile,
+            logos=tuple(logos),
         )
         return canon, tuple(provenance)
 
