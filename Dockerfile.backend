@@ -5,7 +5,8 @@ WORKDIR /app
 RUN apt-get update && apt-get install -y --no-install-recommends \
     libgl1 \
     libglib2.0-0 \
-    && rm -rf /var/lib/apt/lists/*
+    && rm -rf /var/lib/apt/lists/* \
+    && mkdir -p /data
 
 COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /bin/
 
@@ -20,4 +21,4 @@ ENV CANONGATE_CANON_DIR=/app/canons
 ENV CANONGATE_DB_URL=sqlite+aiosqlite:////data/canongate.db
 
 EXPOSE 8000
-CMD ["uvicorn", "canongate.api.app:app", "--host", "0.0.0.0", "--port", "8000"]
+CMD ["sh", "-c", "uvicorn canongate.api.app:app --host 0.0.0.0 --port ${PORT:-8000}"]

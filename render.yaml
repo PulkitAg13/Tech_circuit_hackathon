@@ -1,0 +1,11 @@
+services:
+  - type: web
+    name: canongate-api
+    runtime: docker
+    dockerfilePath: ./Dockerfile.backend
+    plan: free
+    region: oregon
+    healthCheckPath: /api/health
+    envVars:
+      - key: CANONGATE_CORS_ORIGINS
+        value: '["http://localhost:5173","https://meerpi.github.io"]'
