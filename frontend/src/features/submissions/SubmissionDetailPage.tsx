@@ -1,7 +1,12 @@
-import { useState, useEffect, useCallback, useRef, useMemo } from "react";
+import {
+  useState,
+  useEffect,
+  useCallback,
+  useRef,
+  useMemo,
+  type ReactNode,
+} from "react";
 import { useParams, useNavigate } from "react-router-dom";
-import { useEditor, EditorContent } from "@tiptap/react";
-import StarterKit from "@tiptap/starter-kit";
 import {
   getSubmission,
   getFindings,
@@ -24,11 +29,7 @@ import {
   type ImageNodeMeta,
 } from "../../api/client";
 import { useAuth } from "../auth/context";
-import {
-  FindingHighlightsExtension,
-  findingHighlightsKey,
-  type FindingDecorationRange,
-} from "./FindingHighlightsExtension";
+import { codepointIndexToUtf16Offset } from "./FindingHighlightsExtension";
 
 // Role-gated workflow transitions matching backend/src/canongate/domain/workflow.py
 const WORKFLOW_ACTIONS: Record<
@@ -85,7 +86,7 @@ const WORKFLOW_STAGES = [
     ownerRole: "creator",
     ownerLabel: "Creator",
     statuses: ["draft", "changes_requested"],
-    desc: "Run Tier 1+2 scan, fix Blockers, and record Warning override justifications.",
+    desc: "Run pre-flight check, fix Blockers, and document context on Warning overrides.",
   },
   {
     num: 2,
@@ -103,16 +104,16 @@ const WORKFLOW_STAGES = [
     ownerRole: "admin",
     ownerLabel: "Legal Reviewer",
     statuses: ["approved"],
-    desc: "Audit Claim-Only SlotDiffs & Merkle chain; execute final statutory release.",
+    desc: "Audit high-risk claims & disclosures; execute final release sign-off.",
   },
   {
     num: 4,
     key: "stage4",
-    title: "Sealed & Released",
+    title: "Approved & Released",
     ownerRole: "published",
     ownerLabel: "Released",
     statuses: ["published"],
-    desc: "SHA-256 hash chain + Ed25519 Signed Tree Head + C2PA signed assets.",
+    desc: "Cryptographically sealed with a downloadable Governance Certificate.",
   },
 ] as const;
 
@@ -137,7 +138,7 @@ interface ExtractedBBoxOverlay {
   assetIndex: number;
 }
 
-/** Resolve backend asset URLs cleanly via relative `/api/...` paths. */
+/** Resolve backend asset URLs cleanly via relative `/api/...` paths or data URIs. */
 function resolveAssetUrl(url: string): string {
   if (!url) return "";
   if (url.startsWith("data:") || url.startsWith("blob:")) return url;
@@ -152,25 +153,108 @@ function resolveAssetUrl(url: string): string {
   return url.startsWith("/") ? url : `/${url}`;
 }
 
-function escapeHtml(str: string): string {
-  return str
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;")
-    .replace(/'/g, "&#039;");
-}
+/**
+ * Pure React inline span highlighter for a paragraph/table block.
+ * Highlights every `[start, end]` finding on `nodeId` and scrolls to the
+ * corresponding Finding Card when clicked — with zero Tiptap extension crashes.
+ */
+function renderHighlightedBlock(
+  blockText: string,
+  nodeId: string | undefined,
+  findings: FindingItem[],
+  selectedFindingId: number | null,
+  onSelectFinding: (rowId: number) => void,
+): ReactNode {
+  if (!nodeId || !blockText) {
+    return blockText;
+  }
 
-function blocksToHtml(blocks: string[]): string {
-  if (blocks.length === 0) return "<p></p>";
-  return blocks.map((b) => `<p>${escapeHtml(b)}</p>`).join("");
+  const blockFindings = findings
+    .filter((f) => {
+      const loc = f.payload?.locator;
+      return (
+        f.node_id === nodeId &&
+        typeof loc?.start === "number" &&
+        typeof loc?.end === "number" &&
+        loc.end > loc.start
+      );
+    })
+    .map((f) => {
+      const s = codepointIndexToUtf16Offset(
+        blockText,
+        Math.max(0, f.payload.locator.start ?? 0),
+      );
+      const e = Math.min(
+        blockText.length,
+        codepointIndexToUtf16Offset(
+          blockText,
+          Math.max(0, f.payload.locator.end ?? 0),
+        ),
+      );
+      return {
+        finding: f,
+        start: s,
+        end: e,
+      };
+    })
+    .filter((r) => r.end > r.start)
+    .sort((a, b) => a.start - b.start || b.finding.severity - a.finding.severity);
+
+  if (blockFindings.length === 0) {
+    return blockText;
+  }
+
+  const segments: ReactNode[] = [];
+  let cursor = 0;
+
+  blockFindings.forEach((item, idx) => {
+    if (item.start > cursor) {
+      segments.push(blockText.slice(cursor, item.start));
+    }
+    if (item.end > cursor) {
+      const sliceStart = Math.max(cursor, item.start);
+      const spanText = blockText.slice(sliceStart, item.end);
+      const f = item.finding;
+      const isBlocker = f.severity >= 50;
+      const isSelected = selectedFindingId === f.row_id;
+      const cls = [
+        "finding-inline-mark",
+        f.resolution !== "open"
+          ? "finding-mark-resolved"
+          : isBlocker
+            ? "finding-mark-blocker"
+            : "finding-mark-warning",
+        isSelected ? "finding-mark-selected" : "",
+      ]
+        .filter(Boolean)
+        .join(" ");
+
+      segments.push(
+        <mark
+          key={`mark-${f.row_id}-${idx}`}
+          className={cls}
+          data-finding-row-id={f.row_id}
+          title={`${f.check_id}: ${f.message}`}
+          onClick={() => onSelectFinding(f.row_id)}
+        >
+          {spanText}
+        </mark>,
+      );
+      cursor = item.end;
+    }
+  });
+
+  if (cursor < blockText.length) {
+    segments.push(blockText.slice(cursor));
+  }
+
+  return segments;
 }
 
 /**
  * Extract pixel bounding boxes `[x, y, w, h]` from both:
  * 1. Direct `ImageNode` findings (`locator.kind === "bbox"`).
- * 2. Low-confidence / micro-height OCR `TextNode` findings whose `node_id` or
- *    `message` carries `[conf=...,bbox=X_Y_W_H,img_h=...]`.
+ * 2. Low-confidence / micro-height OCR `TextNode` findings.
  */
 function extractBannerOverlays(
   findings: FindingItem[],
@@ -183,13 +267,14 @@ function extractBannerOverlays(
   for (const f of findings) {
     const loc = f.payload?.locator;
     if (
-      loc?.kind === "bbox" &&
-      typeof loc.x === "number" &&
-      typeof loc.y === "number" &&
-      typeof loc.w === "number" &&
-      typeof loc.h === "number"
+      typeof loc?.x === "number" &&
+      typeof loc?.y === "number" &&
+      typeof loc?.w === "number" &&
+      typeof loc?.h === "number"
     ) {
-      const matchedIdx = imageNodes.findIndex((img) => img.node_id === f.node_id);
+      const matchedIdx = imageNodes.findIndex(
+        (img) => img.node_id === f.node_id,
+      );
       overlays.push({
         rowId: f.row_id,
         findingId: f.finding_id,
@@ -211,7 +296,8 @@ function extractBannerOverlays(
       typeof ev.bbox === "string"
         ? ev.bbox
         : bboxTagRe.exec(f.message)?.[0] ?? "";
-    const m = bboxTagRe.exec(bboxStr) ?? /(\d+)_(\d+)_(\d+)_(\d+)/.exec(bboxStr);
+    const m =
+      bboxTagRe.exec(bboxStr) ?? /(\d+)_(\d+)_(\d+)_(\d+)/.exec(bboxStr);
     if (m) {
       overlays.push({
         rowId: f.row_id,
@@ -263,22 +349,22 @@ export function SubmissionDetailPage() {
   );
   const [savingDraft, setSavingDraft] = useState<boolean>(false);
 
-  // Conformal Risk Control (alpha) state
+  // Sensitivity / Conformal Risk Control (alpha) state
   const [conformalAlpha, setConformalAlpha] = useState<number>(0.1);
 
-  // Cognitive Forcing Function state:
-  // 1) Track which SlotDiff cards have been expanded by the user
+  // Track which SlotDiff tables have been expanded by the user
   const [expandedSlotDiffs, setExpandedSlotDiffs] = useState<
     Record<number, boolean>
   >({});
-  // 2) Structured Deliberate Override / Dismiss / Remediation popover state
+
+  // Structured Deliberate Override / Dismiss / Remediation popover state
   const [overrideTarget, setOverrideTarget] = useState<{
     rowId: number;
     mode: "overridden" | "dismissed" | "accepted";
   } | null>(null);
   const [overrideReason, setOverrideReason] = useState<string>("");
 
-  // Inline comment composer state (per finding or general submission)
+  // Inline comment composer state
   const [commentTargetRowId, setCommentTargetRowId] = useState<number | null>(
     null,
   );
@@ -286,13 +372,13 @@ export function SubmissionDetailPage() {
   const [postingComment, setPostingComment] = useState<boolean>(false);
   const [generalCommentBody, setGeneralCommentBody] = useState<string>("");
 
-  // Tier 3 Constrained Rewriter state
+  // Constrained Rewriter state
   const [rewritingRowId, setRewritingRowId] = useState<number | null>(null);
   const [rewritePreviews, setRewritePreviews] = useState<
     Record<number, SurgicalRewriteResponse>
   >({});
 
-  // Modals / Drawers
+  // Modals
   const [showAuditModal, setShowAuditModal] = useState(false);
   const [showVersionsModal, setShowVersionsModal] = useState(false);
   const [exportingCert, setExportingCert] = useState(false);
@@ -302,6 +388,7 @@ export function SubmissionDetailPage() {
   const [wfComment, setWfComment] = useState("");
 
   const findingCardRefs = useRef<Map<number, HTMLDivElement>>(new Map());
+  const autoScannedRef = useRef<boolean>(false);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -328,6 +415,33 @@ export function SubmissionDetailPage() {
   useEffect(() => {
     load();
   }, [load]);
+
+  // Auto-trigger scan once if a newly created draft bundle is opened with 0 findings
+  useEffect(() => {
+    if (
+      !loading &&
+      submission &&
+      submission.status === "draft" &&
+      findings.length === 0 &&
+      !scanning &&
+      !autoScannedRef.current
+    ) {
+      autoScannedRef.current = true;
+      setScanning(true);
+      triggerScan(
+        submissionId,
+        () => {},
+        () => {
+          setScanning(false);
+          load();
+        },
+        () => {
+          setScanning(false);
+        },
+        conformalAlpha,
+      );
+    }
+  }, [loading, submission, findings.length, scanning, submissionId, conformalAlpha, load]);
 
   // Default Authorised Legal Reviewer (admin) to Claim-Only & Overrides view
   useEffect(() => {
@@ -377,9 +491,7 @@ export function SubmissionDetailPage() {
 
     triggerScan(
       submissionId,
-      () => {
-        // SSE stream updates findings in real time; final load() syncs DB row_ids
-      },
+      () => {},
       () => {
         setScanning(false);
         load();
@@ -549,7 +661,7 @@ export function SubmissionDetailPage() {
       return submission.raw_content
         .split(/\n{2,}/)
         .map((s) => s.trim())
-        .filter(Boolean);
+        .filter((s) => s && !s.startsWith("!["));
     }
     return [];
   }, [submission]);
@@ -569,43 +681,6 @@ export function SubmissionDetailPage() {
     [findings, imageNodes],
   );
 
-  const decorationRanges = useMemo<FindingDecorationRange[]>(() => {
-    if (!textBlocks.length || !paragraphNodeIds.length) return [];
-
-    const nodeBlockPositions: Array<{ nodeId: string; pmStart: number }> = [];
-    let currentPmPos = 1;
-    for (let i = 0; i < textBlocks.length; i++) {
-      const nid = paragraphNodeIds[i];
-      if (nid) {
-        nodeBlockPositions.push({ nodeId: nid, pmStart: currentPmPos });
-      }
-      currentPmPos += textBlocks[i].length + 2;
-    }
-
-    const ranges: FindingDecorationRange[] = [];
-    for (const f of findings) {
-      const loc = f.payload?.locator;
-      if (
-        loc?.kind === "span" &&
-        typeof loc.start === "number" &&
-        typeof loc.end === "number"
-      ) {
-        const block = nodeBlockPositions.find((b) => b.nodeId === f.node_id);
-        if (block && loc.end > loc.start) {
-          ranges.push({
-            rowId: f.row_id,
-            findingId: f.finding_id,
-            from: block.pmStart + loc.start,
-            to: block.pmStart + loc.end,
-            severity: f.severity,
-            resolution: f.resolution,
-          });
-        }
-      }
-    }
-    return ranges;
-  }, [textBlocks, paragraphNodeIds, findings]);
-
   const handleSelectFindingFromSpan = useCallback((rowId: number) => {
     setSelectedFindingId(rowId);
     const el = findingCardRefs.current.get(rowId);
@@ -614,38 +689,10 @@ export function SubmissionDetailPage() {
     }
   }, []);
 
-  const editor = useEditor({
-    extensions: [
-      StarterKit,
-      FindingHighlightsExtension.configure({
-        onSelectFinding: handleSelectFindingFromSpan,
-      }),
-    ],
-    content: blocksToHtml(textBlocks),
-    editable: false,
-  });
-
-  useEffect(() => {
-    if (!editor || editor.isDestroyed) return;
-    const html = blocksToHtml(textBlocks);
-    if (editor.getHTML() !== html) {
-      editor.commands.setContent(html, false);
-    }
-  }, [editor, textBlocks]);
-
-  useEffect(() => {
-    if (!editor || editor.isDestroyed) return;
-    const tr = editor.state.tr.setMeta(findingHighlightsKey, {
-      ranges: decorationRanges,
-      selectedRowId: selectedFindingId,
-    });
-    editor.view.dispatch(tr);
-  }, [editor, decorationRanges, selectedFindingId]);
-
   if (loading) {
     return (
       <div className="detail-page">
-        <div className="loading-state">Loading submission...</div>
+        <div className="loading-state">Opening Review Studio...</div>
       </div>
     );
   }
@@ -653,7 +700,16 @@ export function SubmissionDetailPage() {
   if (!submission) {
     return (
       <div className="detail-page">
-        <div className="error-banner">Submission not found</div>
+        <div className="error-banner">
+          <span>Submission not found</span>
+          <button
+            type="button"
+            className="btn-secondary"
+            onClick={() => navigate("/dashboard")}
+          >
+            ← Back to Queue
+          </button>
+        </div>
       </div>
     );
   }
@@ -690,7 +746,7 @@ export function SubmissionDetailPage() {
                 {submission.status.replace("_", " ")}
               </span>
               <span className="meta-item">
-                Canon: <strong>{submission.canon_id}</strong> (
+                Playbook: <strong>{submission.canon_id}</strong> (
                 <code>{submission.canon_hash.slice(0, 8)}…</code>)
               </span>
               <span className="meta-item">
@@ -717,12 +773,12 @@ export function SubmissionDetailPage() {
             </div>
           </div>
 
-          {/* RBAC Role Mode Switcher (Preserves signed-in username) */}
+          {/* RBAC Role Switcher */}
           <div
             className="persona-switcher-group"
-            title="Switch your active RBAC role in the 4-stage workflow (preserves your signed-in account)"
+            title="Switch your active role view in the 4-stage workflow (preserves your signed-in identity)"
           >
-            <span className="persona-switcher-label">Active Role:</span>
+            <span className="persona-switcher-label">Role View:</span>
             <button
               type="button"
               disabled={switchingRole}
@@ -749,7 +805,6 @@ export function SubmissionDetailPage() {
             </button>
           </div>
 
-          {/* Revision History & Audit Trail Modals */}
           <button
             type="button"
             className="btn-secondary"
@@ -771,7 +826,7 @@ export function SubmissionDetailPage() {
             className="btn-secondary"
             onClick={handleExportCertificate}
             disabled={exportingCert}
-            title="Download self-contained SHA-256 + Ed25519 Governance Certificate JSON (verifiable via `canongate verify`)"
+            title="Download signed Governance Certificate JSON"
           >
             {exportingCert ? "Exporting..." : "⛨ Export Certificate"}
           </button>
@@ -801,7 +856,7 @@ export function SubmissionDetailPage() {
         </div>
       )}
 
-      {/* 4-Stage SOTA Collaborative Workflow Stepper & Action Gate */}
+      {/* 4-Stage Collaborative Workflow Stepper & Action Gate */}
       <section
         className="studio-workflow-stepper"
         aria-label="4-Stage Governance Progress"
@@ -876,7 +931,7 @@ export function SubmissionDetailPage() {
               })
             ) : submission.status === "published" ? (
               <span className="published-seal-badge">
-                ✓ Cryptographically Sealed &amp; Released — Certificate Ready
+                ✓ Approved &amp; Released — Certificate Ready
               </span>
             ) : (
               <div className="role-handoff-hint">
@@ -898,7 +953,7 @@ export function SubmissionDetailPage() {
                       )
                     }
                   >
-                    Switch to {activeStageObj.ownerLabel} Role →
+                    Switch to {activeStageObj.ownerLabel} View →
                   </button>
                 )}
               </div>
@@ -924,20 +979,17 @@ export function SubmissionDetailPage() {
                 marginBottom: "0.75rem",
               }}
             >
-              This transition will be permanently recorded in the append-only
-              SHA-256 hash chain and signed into the RFC 9162 Merkle audit tree
+              This transition will be recorded in the tamper-evident audit log
               under <strong>@{username}</strong> ({role}).
             </p>
             <div className="form-group">
-              <label htmlFor="wf-comment">
-                Governance Review Note (recorded in SHA-256 audit log)
-              </label>
+              <label htmlFor="wf-comment">Review Note (optional)</label>
               <textarea
                 id="wf-comment"
                 rows={3}
                 value={wfComment}
                 onChange={(e) => setWfComment(e.target.value)}
-                placeholder="Add context for this decision (e.g. verified KFS disclosures and brand compliance)..."
+                placeholder="Add context for this decision..."
               />
             </div>
             <div className="modal-actions">
@@ -953,31 +1005,27 @@ export function SubmissionDetailPage() {
                 className="btn-primary"
                 onClick={handleWorkflow}
               >
-                Confirm &amp; Append to Audit Chain
+                Confirm Transition
               </button>
             </div>
           </div>
         </div>
       )}
 
-      {/* Split-Screen Review Studio: Left = Multimodal Canvas + Document Editor | Right = Findings Sidebar */}
+      {/* Split-Screen Review Studio */}
       <div className="detail-content">
-        {/* LEFT PANE: Banner BBox Overlay + Tiptap Document Editor + Discussion */}
+        {/* LEFT PANE: Banner Inspector + Campaign Document + Discussion */}
         <div className="editor-pane">
-          {/* 1. Multimodal Banner Image & SVG Bounding Box Overlay Panel */}
+          {/* 1. Promotional Banner Inspector */}
           {activeBannerAsset && (
             <section className="content-panel card banner-overlay-section">
               <div className="banner-panel-header">
                 <div>
-                  <h2>
-                    Multimodal Banner Inspector &amp;{" "}
-                    <code>[x, y, w, h]</code> Bounding Box Overlay
-                  </h2>
+                  <h2>Promotional Banner &amp; Visual Inspector</h2>
                   <p className="gov-panel-desc" style={{ marginBottom: 0 }}>
-                    Visualising Tier 1 OpenCV ORB logo geometry, WCAG pixel
-                    luminance contrast, and dual-script OCR fine-print bounding
-                    boxes ({activeBannerAsset.width}×{activeBannerAsset.height}
-                    px).
+                    Inspecting logo geometry, brand colour accuracy, contrast
+                    legibility, and fine-print disclaimers (
+                    {activeBannerAsset.width}×{activeBannerAsset.height}px).
                   </p>
                 </div>
                 {imageNodes.length > 1 && (
@@ -1011,24 +1059,11 @@ export function SubmissionDetailPage() {
                     src={resolveAssetUrl(activeBannerAsset.url)}
                     alt={activeBannerAsset.alt ?? "Campaign Banner"}
                     className="banner-stage-img"
-                    style={{
-                      display: "block",
-                      maxWidth: "100%",
-                      height: "auto",
-                      borderRadius: "8px",
-                    }}
                   />
                   <svg
                     className="banner-svg-overlay"
                     viewBox={`0 0 ${activeBannerAsset.width} ${activeBannerAsset.height}`}
                     preserveAspectRatio="xMidYMid meet"
-                    style={{
-                      position: "absolute",
-                      inset: 0,
-                      width: "100%",
-                      height: "100%",
-                      pointerEvents: "none",
-                    }}
                   >
                     {bannerOverlays
                       .filter(
@@ -1090,14 +1125,14 @@ export function SubmissionDetailPage() {
             </section>
           )}
 
-          {/* 2. Campaign Content & Inline Diff Editor */}
+          {/* 2. Campaign Document & Inline Highlights */}
           <section className="content-panel card">
             <div className="editor-panel-header">
               <div>
-                <h2>Campaign Content &amp; Inline Span Provenance</h2>
+                <h2>Campaign Content &amp; Highlighted Findings</h2>
                 <p className="gov-panel-desc" style={{ marginBottom: 0 }}>
-                  Click any highlighted span in the document to jump to its
-                  Finding Card on the right.
+                  Click any highlighted phrase in the document to jump to its
+                  finding card on the right.
                 </p>
               </div>
               {canCreatorEditDraft && (
@@ -1114,7 +1149,7 @@ export function SubmissionDetailPage() {
                 >
                   {isEditingDraft
                     ? "Cancel Editing"
-                    : "✎ Edit Draft Copy & Re-Scan"}
+                    : "✎ Edit Campaign Copy & Re-Scan"}
                 </button>
               )}
             </div>
@@ -1125,8 +1160,8 @@ export function SubmissionDetailPage() {
                   htmlFor="studio-draft-textarea"
                   className="draft-editor-label"
                 >
-                  Edit Campaign Paragraphs / Markdown KFS Tables (separate
-                  blocks with a blank line):
+                  Edit Campaign Copy / Tables (separate blocks with a blank
+                  line):
                 </label>
                 <textarea
                   id="studio-draft-textarea"
@@ -1141,7 +1176,7 @@ export function SubmissionDetailPage() {
                     className="draft-change-note-input"
                     value={draftChangeNote}
                     onChange={(e) => setDraftChangeNote(e.target.value)}
-                    placeholder="Revision change note (e.g. Added under Rs 50,000 qualifier)"
+                    placeholder="Revision note (e.g. Added mandatory eligibility condition)"
                   />
                   <button
                     type="button"
@@ -1150,15 +1185,27 @@ export function SubmissionDetailPage() {
                     onClick={handleSaveEditedDraft}
                   >
                     {savingDraft
-                      ? "Saving Revision & Re-Scanning..."
-                      : "Save Immutable Revision & Re-Scan"}
+                      ? "Saving & Re-Scanning..."
+                      : "Save Revision & Re-Scan"}
                   </button>
                 </div>
               </div>
             ) : (
               <div className="content-preview tiptap-wrapper">
                 {textBlocks.length > 0 ? (
-                  <EditorContent editor={editor} />
+                  <div className="ProseMirror">
+                    {textBlocks.map((block, idx) => (
+                      <p key={paragraphNodeIds[idx] ?? idx} style={{ margin: "0 0 0.85rem" }}>
+                        {renderHighlightedBlock(
+                          block,
+                          paragraphNodeIds[idx],
+                          findings,
+                          selectedFindingId,
+                          handleSelectFindingFromSpan,
+                        )}
+                      </p>
+                    ))}
+                  </div>
                 ) : (
                   <p className="text-muted">
                     No text content blocks in this bundle.
@@ -1168,11 +1215,14 @@ export function SubmissionDetailPage() {
             )}
           </section>
 
-          {/* 3. General Submission Discussion Thread */}
+          {/* 3. Collaborative Review Discussion Thread */}
           <section className="content-panel card">
-            <div className="gov-panel-header" style={{ marginBottom: "0.6rem" }}>
+            <div
+              className="gov-panel-header"
+              style={{ marginBottom: "0.6rem" }}
+            >
               <h2 style={{ marginBottom: 0 }}>
-                Collaborative Review Discussion (
+                Review Discussion (
                 {comments.filter((c) => c.finding_id === null).length})
               </h2>
               <span className="sub-canon-tag">
@@ -1186,8 +1236,8 @@ export function SubmissionDetailPage() {
                   className="text-muted"
                   style={{ fontSize: "0.82rem", marginBottom: "0.6rem" }}
                 >
-                  No general review notes yet. Add a note below for the Brand
-                  Manager or Authorised Legal Reviewer.
+                  No review notes yet. Add a note below for the Brand Manager or
+                  Legal Reviewer.
                 </p>
               ) : (
                 comments
@@ -1208,7 +1258,7 @@ export function SubmissionDetailPage() {
                 type="text"
                 value={generalCommentBody}
                 onChange={(e) => setGeneralCommentBody(e.target.value)}
-                placeholder="Write a review note on this campaign bundle..."
+                placeholder="Write a review note on this campaign..."
                 className="comment-input"
               />
               <button
@@ -1223,7 +1273,7 @@ export function SubmissionDetailPage() {
           </section>
         </div>
 
-        {/* RIGHT PANE: Sticky Priority-Grouped Findings & SlotDiff Sidebar */}
+        {/* RIGHT PANE: Sticky Priority-Grouped Findings Sidebar */}
         <aside className="findings-pane">
           <div className="findings-toolbar card">
             <div className="findings-filter-tabs">
@@ -1258,36 +1308,34 @@ export function SubmissionDetailPage() {
                   filter === "claims_only" ? "active" : ""
                 }`}
                 onClick={() => setFilter("claims_only")}
-                title="Authorised Legal Reviewer view: filters to statutory claims, triggers, blockers, and overrides"
+                title="Legal Reviewer view: filters to claims, disclosures, blockers, and overrides"
               >
                 ⚖ Claims &amp; Overrides
               </button>
             </div>
 
-            {/* Conformal Risk Control (alpha) Calibration Control */}
             <div className="conformal-alpha-control">
-              <label
-                htmlFor="alpha-select"
-                title="Angelopoulos et al. Conformal Risk Control target false-omission rate α"
-              >
-                Conformal Risk Control (α):
-              </label>
+              <label htmlFor="alpha-select">Review Strictness:</label>
               <select
                 id="alpha-select"
                 value={conformalAlpha}
                 onChange={(e) => setConformalAlpha(Number(e.target.value))}
               >
-                <option value={0.04}>α = 0.04 (Strict BFSI/Legal)</option>
-                <option value={0.1}>α = 0.10 (Balanced Default)</option>
-                <option value={0.2}>α = 0.20 (Permissive Draft)</option>
+                <option value={0.04}>Strict (BFSI / Legal Sign-Off)</option>
+                <option value={0.1}>Balanced (Standard Review)</option>
+                <option value={0.2}>Permissive (Early Draft)</option>
               </select>
             </div>
           </div>
 
-          {filteredFindings.length === 0 ? (
+          {scanning ? (
+            <div className="empty-state card">
+              Scanning campaign against {submission.canon_id}...
+            </div>
+          ) : filteredFindings.length === 0 ? (
             <div className="empty-state card">
               {findings.length === 0
-                ? 'No findings yet. Click "⚡ Run Governance Check" in the top bar to scan this bundle.'
+                ? "✓ Zero compliance issues found! This campaign bundle passes all active playbook rules."
                 : "No findings match the current filter."}
             </div>
           ) : (
@@ -1307,7 +1355,6 @@ export function SubmissionDetailPage() {
                     ? evidence.entailment_prob
                     : null;
 
-                // Cognitive Forcing Function: Blocker SlotDiff must be expanded before Accept unlocks
                 const isSlotExpanded = Boolean(expandedSlotDiffs[f.row_id]);
                 const acceptLockedByForcingFunction =
                   isBlocker && isSlotDiff && !isSlotExpanded;
@@ -1342,16 +1389,8 @@ export function SubmissionDetailPage() {
                       </span>
                       <span className="check-id">{f.check_id}</span>
                       {trace?.tier && (
-                        <span
-                          className="tier-badge"
-                          title={
-                            trace.ai_used
-                              ? `Model: ${trace.model_name ?? "NLI/Rewriter"}`
-                              : "100% Deterministic Math/Vision (Zero AI)"
-                          }
-                        >
-                          CONTEXT TRACE: {trace.tier.toUpperCase()}
-                          {trace.ai_used ? " · AI" : " · ZERO AI"}
+                        <span className="tier-badge">
+                          {trace.ai_used ? "AI-ASSISTED CHECK" : "EXACT RULE CHECK"}
                         </span>
                       )}
                       {f.resolution !== "open" && (
@@ -1366,13 +1405,13 @@ export function SubmissionDetailPage() {
                     {f.payload?.rule_ref?.source_text && (
                       <div className="finding-rule">
                         <strong>
-                          Approved Canon Rule ({f.payload.rule_ref.rule_id}):
+                          Approved Playbook Rule ({f.payload.rule_ref.rule_id}):
                         </strong>{" "}
                         {f.payload.rule_ref.source_text}
                       </div>
                     )}
 
-                    {/* SlotDiff Table (Tier 2 NLI Claim Alignment) with Cognitive Forcing Function */}
+                    {/* Claim Comparison Table (SlotDiff) */}
                     {isSlotDiff && slots.length > 0 && (
                       <div
                         className="slot-diff-box"
@@ -1394,11 +1433,11 @@ export function SubmissionDetailPage() {
                           }
                         >
                           <span>
-                            <strong>SlotDiff Alignment</strong>
+                            <strong>Claim vs. Approved Fact Comparison</strong>
                             {entailmentProb !== null && (
                               <span>
                                 {" "}
-                                · Calibrated P(Canon ⊨ Draft) ={" "}
+                                · Match Confidence ={" "}
                                 {(entailmentProb * 100).toFixed(1)}%
                               </span>
                             )}
@@ -1412,8 +1451,8 @@ export function SubmissionDetailPage() {
                             }}
                           >
                             {isSlotExpanded
-                              ? "▲ Hide SlotDiff"
-                              : "▼ Expand SlotDiff to Unlock Actions"}
+                              ? "▲ Hide Comparison"
+                              : "▼ Inspect Claim Comparison"}
                           </button>
                         </div>
 
@@ -1421,8 +1460,8 @@ export function SubmissionDetailPage() {
                           <table className="slot-diff-table">
                             <thead>
                               <tr>
-                                <th>Slot</th>
-                                <th>Approved Canon</th>
+                                <th>Attribute</th>
+                                <th>Approved Fact</th>
                                 <th>Campaign Draft</th>
                                 <th>Status</th>
                               </tr>
@@ -1458,32 +1497,16 @@ export function SubmissionDetailPage() {
                       </div>
                     )}
 
-                    {/* Tier 3 Surgical Rewrite Preview Box */}
                     {rewritePreviews[f.row_id] && (
                       <div
                         className="gov-clean-box"
                         style={{ marginTop: "0.5rem", fontSize: "0.8rem" }}
                       >
                         <div>
-                          <strong>
-                            Tier 3 Constrained Rewriter (
-                            {rewritePreviews[f.row_id].used_provider}):
-                          </strong>{" "}
-                          Edit ratio{" "}
-                          {(
-                            rewritePreviews[f.row_id].edit_distance_ratio * 100
-                          ).toFixed(1)}
-                          % (≤{" "}
-                          {(
-                            rewritePreviews[f.row_id].max_edit_distance_ratio *
-                            100
-                          ).toFixed(0)}
-                          % ceiling) ·{" "}
+                          <strong>Suggested Rewrite:</strong>{" "}
                           {rewritePreviews[f.row_id].reverified
-                            ? "✓ Re-verified by Tiers 1 & 2"
-                            : "Needs human review"}
-                          {rewritePreviews[f.row_id].pii_masked_count > 0 &&
-                            ` · Masked ${rewritePreviews[f.row_id].pii_masked_count} PII span(s)`}
+                            ? "✓ Verified against playbook rules"
+                            : "Ready for review"}
                         </div>
                         <div style={{ marginTop: "0.25rem" }}>
                           <code>
@@ -1494,15 +1517,14 @@ export function SubmissionDetailPage() {
                       </div>
                     )}
 
-                    {/* Recorded Resolution Justification */}
                     {f.resolution !== "open" && f.resolution_reason && (
                       <div className="finding-override-reason">
-                        <strong>Recorded Governance Note:</strong>{" "}
+                        <strong>Recorded Review Note:</strong>{" "}
                         {f.resolution_reason}
                       </div>
                     )}
 
-                    {/* Action Buttons on Open Findings (Strictly aligned with domain/workflow.py RBAC) */}
+                    {/* Action Buttons on Open Findings */}
                     {f.resolution === "open" && (
                       <div
                         className="finding-actions"
@@ -1514,18 +1536,17 @@ export function SubmissionDetailPage() {
                             disabled={acceptLockedByForcingFunction}
                             title={
                               acceptLockedByForcingFunction
-                                ? "Cognitive Forcing Function: Expand the SlotDiff table above before accepting a Blocker fix."
-                                : "Apply surgical replacement to document and create a new immutable revision"
+                                ? "Inspect the Claim Comparison table above first to unlock this action."
+                                : "Apply suggested replacement to document"
                             }
                             className="btn-resolve btn-accept"
                             onClick={() => handleResolve(f.row_id, "accepted")}
                           >
                             {acceptLockedByForcingFunction
-                              ? "🔒 Expand SlotDiff to Unlock Fix"
+                              ? "🔒 Inspect Claim Comparison First"
                               : "✓ Accept & Apply Fix"}
                           </button>
                         ) : (
-                          /* Visual/Banner or Structural Finding without auto-text replacement */
                           <button
                             type="button"
                             disabled={acceptLockedByForcingFunction}
@@ -1539,27 +1560,24 @@ export function SubmissionDetailPage() {
                             }}
                           >
                             {acceptLockedByForcingFunction
-                              ? "🔒 Expand SlotDiff First"
-                              : "✓ Acknowledge & Record Remediation"}
+                              ? "🔒 Inspect Comparison First"
+                              : "✓ Mark Remediated"}
                           </button>
                         )}
 
-                        {/* Tier 3 Constrained Rewriter button for text-span findings */}
-                        {f.payload?.locator?.kind === "span" && (
+                        {typeof f.payload?.locator?.start === "number" && typeof f.payload?.locator?.end === "number" && (
                           <button
                             type="button"
                             className="btn-resolve"
                             disabled={rewritingRowId === f.row_id}
                             onClick={() => handleTier3Rewrite(f.row_id)}
-                            title="Invoke Tier 3 Constrained Rewriter (≤35% edit distance, Presidio PII scrub, Tier 1+2 re-verification)"
                           >
                             {rewritingRowId === f.row_id
-                              ? "Rewriting..."
-                              : "✨ Tier 3 Surgical Fix"}
+                              ? "Generating..."
+                              : "✨ Suggest Rewrite"}
                           </button>
                         )}
 
-                        {/* Warnings (severity < 50): Creator, Brand Manager, or Legal can Deliberately Override with justification */}
                         {!isBlocker && (
                           <button
                             type="button"
@@ -1572,11 +1590,10 @@ export function SubmissionDetailPage() {
                               setOverrideReason("");
                             }}
                           >
-                            Deliberate Override (Warning)
+                            Override Warning
                           </button>
                         )}
 
-                        {/* Warnings (severity < 50): Brand Manager or Legal can Dismiss with reason */}
                         {!isBlocker &&
                           (role === "reviewer" || role === "admin") && (
                             <button
@@ -1594,7 +1611,6 @@ export function SubmissionDetailPage() {
                             </button>
                           )}
 
-                        {/* Inline Comment Thread Toggle */}
                         <button
                           type="button"
                           className="btn-resolve"
@@ -1614,7 +1630,7 @@ export function SubmissionDetailPage() {
                       </div>
                     )}
 
-                    {/* Structured Popover for Deliberate Override / Dismiss / Remediation Note */}
+                    {/* Structured Popover for Override / Dismiss / Remediation Note */}
                     {overrideTarget && overrideTarget.rowId === f.row_id && (
                       <div
                         className="override-popover"
@@ -1624,9 +1640,9 @@ export function SubmissionDetailPage() {
                           <strong>
                             {overrideTarget.mode === "accepted"
                               ? "Record Remediation Note (min 5 chars):"
-                              : `Mandatory Justification for ${
+                              : `Justification for ${
                                   overrideTarget.mode === "overridden"
-                                    ? "Deliberate Warning Override"
+                                    ? "Warning Override"
                                     : "Warning Dismissal"
                                 } (min 5 chars):`}
                           </strong>
@@ -1638,8 +1654,8 @@ export function SubmissionDetailPage() {
                           onChange={(e) => setOverrideReason(e.target.value)}
                           placeholder={
                             overrideTarget.mode === "accepted"
-                              ? "Explain how this visual/structural finding was remediated..."
-                              : "Explain why this Warning should be overridden or dismissed (logged to friction telemetry & audit trail)..."
+                              ? "Explain how this visual/layout issue was resolved..."
+                              : "Provide context for overriding or dismissing this warning..."
                           }
                         />
                         <div className="override-popover-actions">
@@ -1662,7 +1678,7 @@ export function SubmissionDetailPage() {
                               )
                             }
                           >
-                            Confirm &amp; Record Decision
+                            Confirm &amp; Save
                           </button>
                         </div>
                       </div>
@@ -1691,7 +1707,7 @@ export function SubmissionDetailPage() {
                               type="text"
                               value={commentBody}
                               onChange={(e) => setCommentBody(e.target.value)}
-                              placeholder="Add inline comment on this finding..."
+                              placeholder="Add comment on this finding..."
                               className="comment-input"
                             />
                             <button
@@ -1716,7 +1732,7 @@ export function SubmissionDetailPage() {
         </aside>
       </div>
 
-      {/* Immutable Revision History Modal */}
+      {/* Revision History Modal */}
       {showVersionsModal && (
         <div
           className="modal-overlay"
@@ -1727,7 +1743,7 @@ export function SubmissionDetailPage() {
             onClick={(e) => e.stopPropagation()}
           >
             <div className="gov-panel-header">
-              <h3>Immutable Submission Revision History</h3>
+              <h3>Submission Revision History</h3>
               <button
                 type="button"
                 className="btn-ghost"
@@ -1737,8 +1753,8 @@ export function SubmissionDetailPage() {
               </button>
             </div>
             <p className="gov-panel-desc">
-              Every accepted surgical fix or studio edit creates an immutable
-              revision row with its own SHA-256 content hash.
+              Every accepted fix or copy edit records an immutable revision with
+              its own content hash.
             </p>
             <div className="audit-timeline">
               {versions.map((v) => (
@@ -1756,9 +1772,6 @@ export function SubmissionDetailPage() {
                     <span>
                       Content SHA-256: <code>{v.content_hash}</code>
                     </span>
-                    <span>
-                      Canon SHA-256: <code>{v.canon_hash.slice(0, 16)}…</code>
-                    </span>
                   </div>
                   <pre className="version-raw-preview">{v.raw_content}</pre>
                 </div>
@@ -1768,7 +1781,7 @@ export function SubmissionDetailPage() {
         </div>
       )}
 
-      {/* Cryptographic Audit Trail & RFC 9162 Merkle Proof Modal */}
+      {/* Audit Trail Modal */}
       {showAuditModal && (
         <div
           className="modal-overlay"
@@ -1779,9 +1792,7 @@ export function SubmissionDetailPage() {
             onClick={(e) => e.stopPropagation()}
           >
             <div className="gov-panel-header">
-              <h3>
-                Tamper-Evident SHA-256 Hash Chain &amp; RFC 9162 Merkle Proofs
-              </h3>
+              <h3>Approval &amp; Sign-Off Audit Trail</h3>
               <button
                 type="button"
                 className="btn-ghost"
@@ -1792,9 +1803,8 @@ export function SubmissionDetailPage() {
             </div>
             {audit.length === 0 ? (
               <p className="gov-panel-desc">
-                No workflow transitions recorded yet. Submit, approve, or
-                publish this bundle to append hash-chained events and generate
-                Ed25519 Signed Tree Heads.
+                No stage transitions recorded yet. Submit, approve, or release
+                this campaign to record signed audit events.
               </p>
             ) : (
               <>
@@ -1804,12 +1814,12 @@ export function SubmissionDetailPage() {
                     style={{ marginBottom: "1rem" }}
                   >
                     <div>
-                      <strong>
-                        Ed25519 Signed Tree Head (RFC 9162 Certificate
-                        Transparency):
-                      </strong>
+                      <strong>Cryptographic Audit Summary:</strong>
                     </div>
-                    <div className="audit-hashes" style={{ marginTop: "0.35rem" }}>
+                    <div
+                      className="audit-hashes"
+                      style={{ marginTop: "0.35rem" }}
+                    >
                       <span>
                         Merkle Root:{" "}
                         <code>
@@ -1817,13 +1827,14 @@ export function SubmissionDetailPage() {
                         </code>
                       </span>
                       <span>
-                        Ed25519 Sig:{" "}
+                        Signature:{" "}
                         <code>
                           {audit[0].tree_head.signature_hex.slice(0, 24)}…
                         </code>
                       </span>
                       <span>
-                        Tree Size: <strong>{audit[0].tree_head.tree_size}</strong>
+                        Total Events:{" "}
+                        <strong>{audit[0].tree_head.tree_size}</strong>
                       </span>
                     </div>
                   </div>
@@ -1845,19 +1856,12 @@ export function SubmissionDetailPage() {
                       )}
                       <div className="audit-hashes">
                         <span>
-                          Prev SHA-256:{" "}
-                          <code>{evt.prev_hash.slice(0, 16)}…</code>
+                          Prev Hash: <code>{evt.prev_hash.slice(0, 16)}…</code>
                         </span>
                         <span>
-                          Event SHA-256:{" "}
+                          Event Hash:{" "}
                           <code>{evt.event_hash.slice(0, 16)}…</code>
                         </span>
-                        {typeof evt.leaf_index === "number" && (
-                          <span>
-                            Merkle Leaf #{evt.leaf_index} (
-                            {evt.audit_path?.length ?? 0} inclusion proof nodes)
-                          </span>
-                        )}
                       </div>
                     </div>
                   ))}

@@ -9,8 +9,6 @@ import {
   CheckCircle2,
   GitPullRequest,
   Eye,
-  Cpu,
-  Layers,
   Send,
   ArrowRight,
   ChevronRight,
@@ -19,50 +17,49 @@ import {
   Database,
 } from "lucide-react";
 import { useAuth } from "../auth/context";
-import { ImageSlideshow } from "./ImageSlideshow";
 
 const CAPABILITIES = [
   {
     icon: Database,
-    tier: "Pipeline A · Grounded Canon Ingestion",
-    title: "Compile Brand Books & KFS Sheets into Signed Schemas",
+    category: "Single Source of Truth",
+    title: "Centralised Brand & Claim Playbooks",
     description:
-      "Ingests PDF/DOCX brand guidelines, KFS pricing schedules, and reference logos into five deterministic schemas protected by three anti-loss guards (Value-Anchor Coverage, Verbatim Character Grounding, and Round-Trip NLI).",
+      "Import your brand guidelines, approved product claims, pricing schedules, and visual standards into one structured playbook so every team and agency reviews against the latest rules.",
   },
   {
     icon: Eye,
-    tier: "Tier 1 · Deterministic Math & Vision (Zero AI)",
-    title: "Exact Physical, Linguistic & Statutory Verification",
+    category: "Copy, Documents & Banners",
+    title: "Multimodal Pre-Publication Review",
     description:
-      "Audits W3C WCAG 2.1 pixel luminance contrast, CIEDE2000 colour drift, OpenCV ORB logo distortion and 0.5H clear space, spaCy POS terminology, and CCPA 2022 Hindi-English disclaimer prominence parity.",
+      "Audit campaign copy, Word and PDF brochures, landing pages, and promotional banners — including fine-print disclaimers inside images — before anything goes live.",
   },
   {
     icon: Scale,
-    tier: "Tier 2 · Calibrated Slot-Level NLI",
-    title: "Catch Dropped Qualifiers & Cross-Modal Contradictions",
+    category: "Claim & Disclosure Accuracy",
+    title: "Catch Missing Conditions & Expired Offers",
     description:
-      "Aligns predicate-argument slots between approved Canon claims and draft copy to surface dropped conditions (e.g., missing loan caps or tenure limits) in an explainable SlotDiff table.",
+      "Automatically compare draft claims against your approved fact sheets to flag dropped qualifiers, outdated promotional dates, unverified numbers, and missing disclosures.",
+  },
+  {
+    icon: ScanEye,
+    category: "Visual & Accessibility Standards",
+    title: "Brand Palette, Logo & Contrast Checks",
+    description:
+      "Verify brand colour accuracy, logo proportions and clear space, image alt-text completeness, and WCAG contrast legibility across both web copy and ad creatives.",
   },
   {
     icon: Sparkles,
-    tier: "Tier 3 · Constrained Surgical Rewriter",
-    title: "Minimal Fixes That Preserve Creator Intent",
+    category: "Contextual Remediation",
+    title: "One-Click Brand-Safe Rewrite Suggestions",
     description:
-      "Proposes surgical rewrites only on flagged spans under a strict ≤ 35% Levenshtein edit ceiling with local DPDP PII masking, re-verifying every candidate through Tiers 1 & 2 before display.",
+      "Resolve flagged phrases in one click with minimal, context-aware rewrites that preserve your writer's original intent while keeping confidential material private.",
   },
   {
     icon: GitPullRequest,
-    tier: "Closed-Loop Governance Analytics",
-    title: "Empirical Bayes Friction → Automated Canon v1.1 PRs",
+    category: "Continuous Governance Insights",
+    title: "Spot Recurring Mistakes & Unclear Guidelines",
     description:
-      "Tracks override and dispute telemetry per rule. When posterior Friction(Ri) exceeds 0.40, CanonGate auto-drafts a Canon v1.1 clarification and backtests its impact across historical bundles.",
-  },
-  {
-    icon: Lock,
-    tier: "Cryptographic Provenance & Human Sign-Off",
-    title: "Role-Gated Workflow with RFC 9162 Merkle Certificates",
-    description:
-      "Separates Creator, Brand Manager, and Authorised Legal Reviewer responsibilities with cognitive forcing functions, an append-only SHA-256 hash chain, Ed25519 Signed Tree Heads, and C2PA asset signing.",
+      "Track which rules trigger the most review friction or overrides over time so brand managers can clarify ambiguous guidelines and reduce review bottlenecks.",
   },
 ];
 
@@ -70,25 +67,25 @@ const WORKFLOW_STEPS = [
   {
     step: "01",
     role: "Creator (Marketing / Agency)",
-    title: "Submit Multimodal Bundle & Run Pre-Flight Scan",
+    title: "Upload Campaign & Run Pre-Flight Check",
     detail:
-      "Upload DOCX, PDF, HTML, Markdown, and PNG/JPG promotional banners into a unified ContentAST with dual-script OCR (English + Devanagari) and resolve Blockers via 1-click surgical diffs.",
+      "Upload documents, landing page copy, and promotional banners to get instant, actionable feedback on claims, tone, visuals, and accessibility — and apply one-click fixes.",
     icon: FileSearch,
   },
   {
     step: "02",
     role: "Creator & Brand Manager",
-    title: "Collaborative Triage, Overrides & Canon Calibration",
+    title: "Collaborate, Review Revisions & Calibrate Rules",
     detail:
-      "Creators record structured justifications on Warning overrides and comment inline; Brand Managers inspect revision diffs, tune rule thresholds via Confirm & Calibrate sliders, and approve brand compliance.",
+      "Creators can document context when overriding non-blocking warnings; Brand Managers review version diffs, fine-tune guideline thresholds, and approve brand readiness.",
     icon: ScanEye,
   },
   {
     step: "03",
     role: "Authorised Legal Reviewer",
-    title: "Claim-Only Statutory Review & Cryptographic Release",
+    title: "Focused Claim Sign-Off & Release Certificate",
     detail:
-      "Legal Reviewers filter directly to statutory claims and overrides, verify the SlotDiff evidence, and issue final sign-off — generating a self-contained SHA-256 + Ed25519 Governance Certificate.",
+      "Legal and compliance reviewers filter directly to high-risk claims, disclosures, and overrides, issuing final sign-off backed by a verifiable audit trail.",
     icon: FileCheck2,
   },
 ];
@@ -97,33 +94,80 @@ const STATUTORY_PACKS = [
   {
     code: "CCPA 2022",
     name: "Misleading Ads & Disclaimer Parity",
-    desc: "Enforces same-language script parity and visual prominence between headlines and fine-print disclaimers.",
+    desc: "Checks that disclaimers do not contradict main claims and match the headline's language and visual prominence.",
   },
   {
     code: "RBI 2025 KFS",
     name: "Digital Lending Key Fact Statements",
-    desc: "Verifies promotional APR, processing fee caps, and validity dates against approved KFS schedules.",
+    desc: "Verifies promotional APR, processing fee caps, and offer validity dates against approved Key Fact Statements.",
   },
   {
     code: "ASCI FY25-26",
     name: "D2C Substantiation & Influencer Disclosures",
-    desc: "Distinguishes ingredient in-vitro studies from finished-product clinical proof and checks upfront disclosures.",
+    desc: "Distinguishes ingredient studies from finished-product clinical proof and checks upfront partnership disclosures.",
   },
   {
     code: "WCAG 2.1 AA",
-    name: "Pixel Luminance & Alt-Text Accessibility",
-    desc: "Computes exact W3C relative luminance contrast (≥ 4.5:1 AA) across both DOM styles and rasterised banners.",
+    name: "Contrast & Accessibility Compliance",
+    desc: "Verifies text legibility (≥ 4.5:1 contrast ratio) and image alt-text across documents, web pages, and banners.",
   },
 ];
 
+const INTERACTIVE_PREVIEWS = [
+  {
+    id: "bfsi",
+    label: "Digital Lending & BFSI",
+    playbook: "Indian Digital Lending Playbook",
+    draftSnippet:
+      "Get a 0% processing fee on personal loans today with guaranteed approval in 5 minutes!",
+    flaggedSpan: "0% processing fee on personal loans today",
+    issueType: "BLOCKER · Missing Mandatory Condition",
+    approvedFact:
+      "0% processing fee applies to personal loans under ₹50,000 for first-time borrowers (valid until 30 Sep 2026).",
+    suggestedFix:
+      "Get a 0% processing fee on personal loans under ₹50,000 for first-time borrowers today!",
+  },
+  {
+    id: "d2c",
+    label: "D2C Personal Care & Wellness",
+    playbook: "Indian D2C & ASCI Playbook",
+    draftSnippet:
+      "Clinically proven to regrow 23,800 hair strands in 30 days with 100% natural Rosemary extract.",
+    flaggedSpan: "Clinically proven to regrow 23,800 hair strands",
+    issueType: "BLOCKER · Claim Substantiation Mismatch",
+    approvedFact:
+      "Clinical study applies to the active ingredient in vitro; finished product supports healthier-looking hair with regular use.",
+    suggestedFix:
+      "Formulated with Rosemary extract shown in ingredient studies to support fuller, healthier-looking hair.",
+  },
+  {
+    id: "saas",
+    label: "Enterprise B2B & SaaS",
+    playbook: "Acme Enterprise Brand Playbook",
+    draftSnippet:
+      "Buy our cheap cloud security plan so your users can deploy faster with zero setup.",
+    flaggedSpan: "cheap cloud security plan so your users",
+    issueType: "WARNING · Brand Voice & Terminology",
+    approvedFact:
+      "Use 'cost-effective' or 'affordable' instead of 'cheap', and refer to 'customers' or 'teams' rather than 'users'.",
+    suggestedFix:
+      "Purchase our cost-effective cloud security plan so your teams can deploy faster with zero setup.",
+  },
+] as const;
+
 export function HomePage() {
   const { token, username, displayName, role } = useAuth();
+  const [activePreviewId, setActivePreviewId] = useState<string>("bfsi");
   const [contactName, setContactName] = useState("");
   const [contactEmail, setContactEmail] = useState("");
   const [contactOrg, setContactOrg] = useState("");
   const [contactMessage, setContactMessage] = useState("");
   const [contactSubmitted, setContactSubmitted] = useState(false);
   const [ticketRef, setTicketRef] = useState("");
+
+  const activePreview =
+    INTERACTIVE_PREVIEWS.find((p) => p.id === activePreviewId) ??
+    INTERACTIVE_PREVIEWS[0];
 
   function handleContactSubmit(e: FormEvent) {
     e.preventDefault();
@@ -151,15 +195,15 @@ export function HomePage() {
             </div>
             <div className="brand-text-group">
               <span className="brand-title">CanonGate</span>
-              <span className="brand-tag">Pre-Publication Governance</span>
+              <span className="brand-tag">Pre-Publication Brand Governance</span>
             </div>
           </Link>
 
           <nav className="home-nav-links" aria-label="Primary Navigation">
             <a href="#problem">Why CanonGate</a>
-            <a href="#capabilities">Architecture</a>
+            <a href="#capabilities">Capabilities</a>
             <a href="#workflow">Workflow</a>
-            <a href="#statutory">Statutory Packs</a>
+            <a href="#statutory">Regulatory Packs</a>
             <a href="#contact">Contact</a>
           </nav>
 
@@ -167,7 +211,7 @@ export function HomePage() {
             {token ? (
               <Link to="/dashboard" className="btn-primary home-cta-btn">
                 <span>
-                  Open Studio ({displayName || username} · {role})
+                  Open Workspace ({displayName || username} · {role})
                 </span>
                 <ArrowRight size={16} />
               </Link>
@@ -177,7 +221,7 @@ export function HomePage() {
                   Sign In
                 </Link>
                 <Link to="/login" className="btn-primary home-cta-btn">
-                  <span>Launch Governance Studio</span>
+                  <span>Start Campaign Review</span>
                   <ArrowRight size={16} />
                 </Link>
               </>
@@ -190,24 +234,24 @@ export function HomePage() {
       <section className="hero-section">
         <div className="hero-inner">
           <div className="hero-badge">
-            <Cpu size={14} />
+            <ShieldCheck size={14} />
             <span>
-              Deterministic Math & Vision First · Calibrated Slot NLI Second ·
-              Constrained Rewriting Last
+              Pre-Publication Brand, Claim &amp; Visual Governance for Modern
+              Teams
             </span>
           </div>
 
           <h1 className="hero-headline">
-            Stop Brand Drift & Unverified Claims{" "}
-            <span className="hero-highlight">Before Publication.</span>
+            Catch Off-Brand Visuals &amp; Unverified Claims{" "}
+            <span className="hero-highlight">Before You Publish.</span>
           </h1>
 
           <p className="hero-subheadline">
-            CanonGate compiles your brand guidelines, approved KFS fact sheets,
-            and statutory rules into a signed, machine-readable{" "}
-            <strong>Canon</strong> — auditing every campaign document and
-            promotional banner with exact character and pixel provenance while
-            keeping every approval decision in human hands.
+            CanonGate checks your marketing copy, brochures, landing pages, and
+            promotional banners against your approved brand guidelines, product
+            facts, and regulatory disclosures — explaining every issue and
+            suggesting brand-safe fixes while keeping every approval in human
+            hands.
           </p>
 
           <div className="hero-cta-group">
@@ -216,67 +260,145 @@ export function HomePage() {
               className="btn-primary hero-primary-btn"
             >
               <span>
-                {token
-                  ? "Continue to Governance Console"
-                  : "Start Pre-Flight Review"}
+                {token ? "Go to Campaign Workspace" : "Launch Governance Studio"}
               </span>
               <ChevronRight size={18} />
             </Link>
-            <a href="#capabilities" className="hero-secondary-btn">
-              <Layers size={17} />
-              <span>Explore 3-Tier Engine</span>
+            <a href="#workflow" className="hero-secondary-btn">
+              <span>See How Teams Collaborate</span>
             </a>
           </div>
 
-          {/* Empirical Evidence Metrics Strip */}
+          {/* Interactive Live Product Preview Window (replaces broken static slides) */}
+          <div className="hero-studio-preview">
+            <div className="hero-preview-topbar">
+              <div className="preview-window-dots">
+                <span className="win-dot dot-red" />
+                <span className="win-dot dot-amber" />
+                <span className="win-dot dot-green" />
+                <span className="preview-window-title">
+                  Live Pre-Publication Review Preview — {activePreview.playbook}
+                </span>
+              </div>
+              <div className="preview-sector-tabs">
+                {INTERACTIVE_PREVIEWS.map((item) => (
+                  <button
+                    key={item.id}
+                    type="button"
+                    className={`preview-sector-tab ${
+                      activePreviewId === item.id ? "active" : ""
+                    }`}
+                    onClick={() => setActivePreviewId(item.id)}
+                  >
+                    {item.label}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            <div className="hero-preview-body">
+              <div className="preview-draft-col">
+                <div className="preview-col-label">
+                  1 · Campaign Draft Submitted by Creator
+                </div>
+                <div className="preview-draft-box">
+                  <p>
+                    {activePreview.draftSnippet
+                      .split(activePreview.flaggedSpan)
+                      .map((part, idx, arr) => (
+                        <span key={idx}>
+                          {part}
+                          {idx < arr.length - 1 && (
+                            <mark className="preview-highlight-mark">
+                              {activePreview.flaggedSpan}
+                            </mark>
+                          )}
+                        </span>
+                      ))}
+                  </p>
+                </div>
+                <div className="preview-fix-box">
+                  <span className="preview-fix-badge">
+                    ✓ Suggested Brand-Safe Fix
+                  </span>
+                  <p>{activePreview.suggestedFix}</p>
+                </div>
+              </div>
+
+              <div className="preview-finding-col">
+                <div className="preview-col-label">
+                  2 · Explainable Governance Finding &amp; Source Rule
+                </div>
+                <div className="preview-finding-card">
+                  <div className="preview-finding-badge">
+                    {activePreview.issueType}
+                  </div>
+                  <div className="preview-rule-box">
+                    <strong>Approved Source Guideline:</strong>{" "}
+                    {activePreview.approvedFact}
+                  </div>
+                  <div className="preview-actions-row">
+                    <span className="preview-action-pill primary">
+                      ✓ Accept &amp; Apply Fix
+                    </span>
+                    <span className="preview-action-pill">
+                      💬 Add Review Note
+                    </span>
+                    <span className="preview-action-pill">
+                      Forward to Brand &amp; Legal Sign-Off →
+                    </span>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          {/* Empirical Industry Evidence Strip */}
           <div className="hero-metrics-grid" id="problem">
             <div className="hero-metric-card">
               <span className="metric-number">11,581</span>
               <span className="metric-label">
-                ASCI complaint cases in FY2025-26 (+21% YoY) across D2C &
-                digital ads
+                ASCI ad complaint cases in FY2025-26 (+21% YoY) across digital
+                and D2C campaigns
               </span>
             </div>
             <div className="hero-metric-card">
               <span className="metric-number">95.9%</span>
               <span className="metric-label">
-                of 1M audited pages fail WCAG 2.2 A/AA; low contrast is the #1
-                failure
+                of audited web pages fail WCAG 2.2 A/AA; low text contrast is
+                the #1 failure
               </span>
             </div>
             <div className="hero-metric-card">
               <span className="metric-number">₹10L–₹50L</span>
               <span className="metric-label">
-                Statutory CCPA penalties under Sec. 21 for misleading qualifiers
-                & fine print
+                Statutory CCPA penalties for misleading claims and unreadable
+                fine-print disclaimers
               </span>
             </div>
             <div className="hero-metric-card">
-              <span className="metric-number">100% Local</span>
+              <span className="metric-number">100% Private</span>
               <span className="metric-label">
-                Air-gapped default execution with DPDP PII scrubbing & RFC 9162
-                Merkle proofs
+                Self-hostable local execution that keeps pre-launch campaigns
+                and pricing sheets inside your workspace
               </span>
             </div>
           </div>
         </div>
       </section>
 
-      {/* Interactive Visual Showcase Slideshow */}
-      <ImageSlideshow />
-
-      {/* Capabilities / 3-Tier Engine Section */}
+      {/* Platform Capabilities Section */}
       <section className="home-section" id="capabilities">
         <div className="home-section-inner">
           <div className="section-header">
-            <span className="section-eyebrow">TWO-PIPELINE ARCHITECTURE</span>
+            <span className="section-eyebrow">PLATFORM CAPABILITIES</span>
             <h2 className="section-title">
-              Glass-Box Verification Built for Regulated Teams
+              Everything You Need to Govern Brand &amp; Claims Before Launch
             </h2>
             <p className="section-desc">
-              Unlike black-box chatbots or text-only linters that skip rasterised
-              banner fine print, CanonGate executes a strict, explainable
-              verification hierarchy across text, tables, and imagery.
+              Instead of rejecting creative work late in the cycle, CanonGate
+              gives writers, designers, brand managers, and legal reviewers
+              clear explanations and one-click fixes across every format.
             </p>
           </div>
 
@@ -288,7 +410,7 @@ export function HomePage() {
                   <div className="capability-icon-wrap">
                     <IconComponent size={22} />
                   </div>
-                  <div className="capability-tier">{cap.tier}</div>
+                  <div className="capability-tier">{cap.category}</div>
                   <h3 className="capability-title">{cap.title}</h3>
                   <p className="capability-desc">{cap.description}</p>
                 </article>
@@ -308,8 +430,8 @@ export function HomePage() {
             </h2>
             <p className="section-desc">
               Designed around real marketing, brand management, and legal
-              sign-off teams — with cognitive forcing functions that prevent
-              rubber-stamping.
+              sign-off teams — with clear stage ownership and full revision
+              history.
             </p>
           </div>
 
@@ -340,12 +462,12 @@ export function HomePage() {
           <div className="section-header">
             <span className="section-eyebrow">BUILT-IN REGULATORY PACKS</span>
             <h2 className="section-title">
-              Ready for Indian D2C, BFSI & Enterprise SaaS
+              Ready for Indian D2C, BFSI &amp; Enterprise SaaS
             </h2>
             <p className="section-desc">
-              Ships with three starter Brand Canons (`acme-corp`,
-              `indian-digital-lending`, `indian-d2c-nutra`) and four enforceable
-              statutory packs out of the box.
+              Ships with starter Brand Playbooks for Digital Lending, D2C
+              Personal Care &amp; Nutraceuticals, and Enterprise SaaS alongside
+              four enforceable statutory packs out of the box.
             </p>
           </div>
 
@@ -373,40 +495,48 @@ export function HomePage() {
               Deploy Self-Hosted Brand Governance
             </h2>
             <p className="section-desc">
-              Have questions about custom Canon compilation, air-gapped VPC
-              deployment, or CMS pre-publish webhooks? Send our engineering team
-              a message below.
+              Have questions about onboarding your brand guidelines, KFS fact
+              sheets, or setting up role-based pre-publication review for your
+              team? Send us a note below.
             </p>
 
             <div className="contact-highlights">
               <div className="contact-highlight-item">
                 <ShieldCheck size={18} />
                 <span>
-                  Air-gapped Local Mode by default — zero outbound data leakage
+                  Self-hosted local execution by default — confidential
+                  pre-launch materials stay in your environment
                 </span>
               </div>
               <div className="contact-highlight-item">
                 <Lock size={18} />
                 <span>
-                  DPDP 2025 PII masking + tamper-evident SHA-256 & Ed25519 audit
-                  ledger
+                  Automatic PII protection and tamper-evident approval
+                  certificates for every released campaign
                 </span>
               </div>
               <div className="contact-highlight-item">
                 <Sparkles size={18} />
                 <span>
-                  Team <strong>__Decisionsparalysis__</strong> · Aritra Mahanty,
-                  Pulkit Agrawal, Tejas Ranjeet, Kabir Roy
+                  Onboard PDF/DOCX brand books, colour palettes, and product
+                  fact sheets in minutes
                 </span>
               </div>
             </div>
           </div>
 
-          <div className="contact-card">
+          <div className="contact-card card">
             <form onSubmit={handleContactSubmit} className="contact-form">
-              <h3>Request Enterprise Onboarding & Architecture Brief</h3>
+              <h3 className="contact-form-title">
+                Request Enterprise Onboarding &amp; Product Walkthrough
+              </h3>
+              <p className="contact-form-subtitle">
+                Tell us about your team and content workflow, and we&apos;ll
+                prepare a tailored brand playbook setup.
+              </p>
+
               <div className="form-group">
-                <label htmlFor="contact-name">Your Name</label>
+                <label htmlFor="contact-name">Full Name</label>
                 <input
                   id="contact-name"
                   type="text"
@@ -431,13 +561,13 @@ export function HomePage() {
 
               <div className="form-group">
                 <label htmlFor="contact-org">
-                  Organisation / Sector (D2C, BFSI, Agency)
+                  Organisation &amp; Industry (D2C, BFSI, Enterprise, Agency)
                 </label>
                 <input
                   id="contact-org"
                   type="text"
                   required
-                  placeholder="e.g. FinTrust Digital Lending NBFC"
+                  placeholder="e.g. FinTrust Digital Lending"
                   value={contactOrg}
                   onChange={(e) => setContactOrg(e.target.value)}
                 />
@@ -445,13 +575,13 @@ export function HomePage() {
 
               <div className="form-group">
                 <label htmlFor="contact-message">
-                  Governance Requirements or Questions
+                  What content formats or guidelines do you want to govern?
                 </label>
                 <textarea
                   id="contact-message"
                   rows={4}
                   required
-                  placeholder="Tell us about your brand guidelines, KFS sheets, or pre-publication review workflow..."
+                  placeholder="Tell us about your brand guidelines, product fact sheets, or pre-publication review workflow..."
                   value={contactMessage}
                   onChange={(e) => setContactMessage(e.target.value)}
                 />
@@ -464,9 +594,10 @@ export function HomePage() {
 
               {contactSubmitted && (
                 <p className="contact-success-note" role="status">
-                  Inquiry registered ({ticketRef}) for {contactOrg || "your team"}.
-                  You can also explore the live interactive workspace right now
-                  via the Governance Studio button above.
+                  Inquiry registered ({ticketRef}) for{" "}
+                  {contactOrg || "your team"}. You can also test the live
+                  workspace right now via the Start Campaign Review button
+                  above.
                 </p>
               )}
             </form>
@@ -485,16 +616,15 @@ export function HomePage() {
               <span className="brand-title">CanonGate</span>
             </div>
             <p className="footer-caption">
-              Pre-publication brand & claim governance platform · Built by Team{" "}
-              <strong>__Decisionsparalysis__</strong>
+              Intelligent Pre-Publication Brand &amp; Claim Governance Platform
             </p>
           </div>
           <div className="footer-links">
-            <a href="#capabilities">Architecture</a>
+            <a href="#capabilities">Capabilities</a>
             <a href="#workflow">Workflow</a>
-            <a href="#statutory">Statutory Packs</a>
+            <a href="#statutory">Regulatory Packs</a>
             <Link to="/login">Sign In</Link>
-            <Link to="/dashboard">Governance Console</Link>
+            <Link to="/dashboard">Governance Workspace</Link>
           </div>
         </div>
       </footer>

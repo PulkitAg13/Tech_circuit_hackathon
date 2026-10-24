@@ -3,15 +3,13 @@ import {
   listSubmissions,
   listCanons,
   createSubmission,
+  deleteSubmission,
   getCanonLint,
   getCanonFriction,
   proposeCanonPr,
   applyCanonPr,
   calibrateCanonRule,
   compileBrandCanon,
-  getFindings,
-  resolveFinding,
-  workflowAction,
   type Submission,
   type CanonSummary,
   type CanonRuleItem,
@@ -25,68 +23,35 @@ import {
 import { useAuth } from "../auth/context";
 import { useNavigate, Link } from "react-router-dom";
 
-const SAMPLE_CAMPAIGNS: Record<
-  string,
-  { title: string; content: string; badge: string }
-> = {
-  "indian-digital-lending": {
-    title: "Q3 Instant Digital Loan — Rapido & FirstCry Red-Team Bundle",
-    badge: "RBI 2025 KFS + CCPA 2022",
-    content: `Get a 0% processing fee on personal loans today with instant approval in 5 minutes!
-
-Buy our cheap credit protection plan for users who want cutting-edge financial freedom.
-
-| Loan Slab | Interest Rate (p.a.) | Processing Fee |
-| --- | --- | --- |
-| Personal Loan | 10.5% | 0% |
-| *T&C Apply: GST and additional charges may apply on discounted fee | | |
-
-color: #FFFFFF; background-color: #777777; Muted grey footnote disclaimer text failing WCAG 2.1 AA contrast.`,
-  },
-  "indian-d2c-nutra": {
-    title: "Monsoon Hair & Immunity D2C Influencer Campaign",
-    badge: "ASCI FY25-26 + Influencer Disclosure",
-    content: `Clinically proven to regrow 23,800 hair strands in 30 days with 100% natural Rosemary extract!
-
-Partnering with @GlowWithMe for this monsoon transformation routine — buy our cheap starter kit today and cure hair fall permanently.`,
-  },
-  "acme-corp": {
-    title: "Acme Cloud Enterprise Launch Announcement",
-    badge: "B2B SaaS Brand Canon",
-    content: `Acme Corp was founded in 2018 and serves over 500 enterprise customers worldwide.
-
-Buy our cheap cutting-edge cloud governance suite so your users can deploy faster.`,
-  },
-};
-
-const SAMPLE_BRAND_BOOK_SPEC = `Brand Voice Guideline: Never use 'cheap', prefer 'affordable'. Never use 'guaranteed', prefer 'designed to'.
-Approved Palette — Primary Royal Blue: #1A73E8
-Approved KFS Claim: 0% processing fee on personal loans under Rs 50,000 valid until 2026-09-30.`;
-
 const ROLE_META: Record<
   string,
-  { label: string; shortLabel: string; stageOwned: string; responsibility: string }
+  {
+    label: string;
+    shortLabel: string;
+    stageOwned: string;
+    responsibility: string;
+  }
 > = {
   creator: {
     label: "Creator (Marketing / Agency)",
     shortLabel: "Creator",
     stageOwned: "Stage 1 · Pre-Flight & Remediation",
     responsibility:
-      "Authors multimodal campaign bundles, runs Tier 1+2 pre-flight scans, resolves Blockers, and records justifications on Warning overrides.",
+      "Uploads campaign copy, documents, and banners, runs pre-flight checks, resolves blocking issues, and documents context on warning overrides.",
   },
   reviewer: {
-    label: "Brand Manager (Canon Owner)",
+    label: "Brand Manager (Playbook Owner)",
     shortLabel: "Brand Manager",
-    stageOwned: "Stage 2 · Brand & Canon Review",
+    stageOwned: "Stage 2 · Brand & Playbook Review",
     responsibility:
-      "Ingests & calibrates Brand Canons, reviews revision diffs & Creator overrides, and approves brand compliance to forward to Legal.",
+      "Manages brand playbooks and rule thresholds, reviews revision history and warning overrides, and approves brand compliance.",
   },
   admin: {
     label: "Authorised Legal Reviewer",
     shortLabel: "Legal Sign-Off",
-    stageOwned: "Stage 3 · Statutory & Legal Sign-Off",
+    stageOwned: "Stage 3 · Regulatory & Legal Sign-Off",
     responsibility:
-      "Audits statutory SlotDiff claims (RBI KFS, CCPA, ASCI) and Merkle ledger to execute final legal sign-off and C2PA release.",
+      "Reviews high-risk claims, required disclosures, and overrides to issue final sign-off and generate the release certificate.",
   },
 };
 
@@ -97,35 +62,35 @@ function getStageMeta(status: string) {
         stageNum: 1,
         stageLabel: "Stage 1 · Creator Draft",
         ownerRole: "creator",
-        ownerText: "Creator Action: Run Scan & Fix Blockers",
+        ownerText: "Creator: Review findings & submit for Brand Review",
       };
     case "changes_requested":
       return {
         stageNum: 1,
         stageLabel: "Stage 1 · Changes Requested",
         ownerRole: "creator",
-        ownerText: "Creator Action: Address Reviewer Feedback",
+        ownerText: "Creator: Address reviewer feedback & resubmit",
       };
     case "in_review":
       return {
         stageNum: 2,
         stageLabel: "Stage 2 · Brand Review",
         ownerRole: "reviewer",
-        ownerText: "Brand Manager Gate: Verify Diffs & Overrides",
+        ownerText: "Brand Manager: Verify revisions & approve",
       };
     case "approved":
       return {
         stageNum: 3,
         stageLabel: "Stage 3 · Legal Sign-Off",
         ownerRole: "admin",
-        ownerText: "Legal Reviewer Gate: Final Statutory Sign-Off",
+        ownerText: "Legal Reviewer: Final claim sign-off & release",
       };
     case "published":
       return {
         stageNum: 4,
-        stageLabel: "Stage 4 · Sealed & Released",
+        stageLabel: "Stage 4 · Approved & Released",
         ownerRole: "published",
-        ownerText: "Released · SHA-256 + Ed25519 Certificate Ready",
+        ownerText: "Released · Signed Governance Certificate Ready",
       };
     default:
       return {
@@ -149,21 +114,20 @@ export function DashboardPage() {
   const [loading, setLoading] = useState(true);
   const [stageFilter, setStageFilter] = useState<string>("all");
 
-  // New submission form
+  // New submission form — automatically shown when queue is empty
   const [showForm, setShowForm] = useState(false);
   const [title, setTitle] = useState("");
   const [rawContent, setRawContent] = useState("");
   const [selectedCanon, setSelectedCanon] = useState("");
-  const [imagePathsInput, setImagePathsInput] = useState("");
   const [uploadedAttachments, setUploadedAttachments] = useState<
     BundleAttachmentPayload[]
   >([]);
   const [submitting, setSubmitting] = useState(false);
-  const [seedingDemo, setSeedingDemo] = useState(false);
+  const [deletingId, setDeletingId] = useState<number | null>(null);
   const [switchingRole, setSwitchingRole] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  // Canon Governance & Closed-Loop PR Studio state
+  // Brand Playbook (Canon) Studio state
   const [govCanonId, setGovCanonId] = useState<string>("");
   const [lintReport, setLintReport] = useState<CanonLintResponse | null>(null);
   const [frictionReport, setFrictionReport] =
@@ -177,7 +141,7 @@ export function DashboardPage() {
   const [prAppliedBanner, setPrAppliedBanner] = useState<string | null>(null);
   const [prThreshold, setPrThreshold] = useState<number>(0.35);
 
-  // Brand Manager Confirm & Calibrate Sliders state (populated dynamically from selected Canon)
+  // Rule Calibration Sliders state (populated dynamically from selected Canon)
   const [calRuleId, setCalRuleId] = useState<string>("");
   const [calSeverity, setCalSeverity] = useState<number>(40);
   const [calMaxDeltaE, setCalMaxDeltaE] = useState<number>(5.0);
@@ -187,9 +151,12 @@ export function DashboardPage() {
   const [calibrationResult, setCalibrationResult] =
     useState<CalibrateCanonRuleResponse | null>(null);
 
-  // Pipeline A Compile-to-Schema Onboarding state (no hardcoded Canon ID)
+  // Playbook Import state
   const [compileId, setCompileId] = useState<string>("");
   const [compileText, setCompileText] = useState<string>("");
+  const [compileAttachments, setCompileAttachments] = useState<
+    BundleAttachmentPayload[]
+  >([]);
   const [compiling, setCompiling] = useState(false);
   const [compileResult, setCompileResult] =
     useState<CompileCanonResponse | null>(null);
@@ -216,6 +183,9 @@ export function DashboardPage() {
     try {
       const [subs, cans] = await Promise.all([listSubmissions(), listCanons()]);
       setSubmissions(subs);
+      if (subs.length === 0) {
+        setShowForm(true);
+      }
       setCanons(cans);
       if (cans.length > 0) {
         const defaultCanon =
@@ -303,7 +273,7 @@ export function DashboardPage() {
         for (const r of frictionReport.rules) {
           if (r.needs_canon_revision) {
             notes[r.rule_id] =
-              "Practitioners repeatedly disputed strict threshold on promotional copy; clarify scope and calibrate tolerance in v1.1.";
+              "Rule frequently overridden during campaign reviews; clarify scope and calibrate threshold in v1.1.";
           }
         }
       }
@@ -323,7 +293,7 @@ export function DashboardPage() {
     try {
       const updated = await applyCanonPr(govCanonId, {}, prThreshold, 1, false);
       setPrAppliedBanner(
-        `Merged Canon ${updated.id} v${updated.version} (SHA-256: ${updated.hash.slice(0, 12)}…) into active governance registry.`,
+        `Activated Playbook ${updated.id} v${updated.version} (${updated.hash.slice(0, 12)}…).`,
       );
       await refresh();
       await loadGovernanceTelemetry(govCanonId);
@@ -360,9 +330,12 @@ export function DashboardPage() {
   async function handleCompileCanon(e: FormEvent) {
     e.preventDefault();
     const targetId = compileId.trim();
-    if (!targetId || !compileText.trim()) {
+    if (
+      !targetId ||
+      (!compileText.trim() && compileAttachments.length === 0)
+    ) {
       setError(
-        "Please provide both a target Canon ID and brand guideline text to compile.",
+        "Please provide a Playbook ID and either guideline text or an uploaded document.",
       );
       return;
     }
@@ -372,11 +345,14 @@ export function DashboardPage() {
       const res = await compileBrandCanon(
         targetId,
         compileText,
-        [],
+        compileAttachments,
         "1.0",
         false,
       );
       setCompileResult(res);
+      setCompileId("");
+      setCompileText("");
+      setCompileAttachments([]);
       await refresh();
       handleSelectGovCanon(res.canon_id);
     } catch (err) {
@@ -388,24 +364,33 @@ export function DashboardPage() {
 
   async function handleCreate(e: FormEvent) {
     e.preventDefault();
+    if (!rawContent.trim() && uploadedAttachments.length === 0) {
+      setError(
+        "Please enter campaign copy or attach at least one document or banner image.",
+      );
+      return;
+    }
     setSubmitting(true);
     setError(null);
     try {
-      const imagePaths = imagePathsInput
-        .split(",")
-        .map((p) => p.trim())
-        .filter(Boolean);
       const sub = await createSubmission(
-        title,
+        title.trim() || "Untitled Campaign",
         rawContent,
         selectedCanon,
-        imagePaths,
+        [],
         uploadedAttachments,
       );
+      // Automatically run pre-flight scan before opening Review Studio
+      await fetch(`/api/submissions/${sub.id}/scan?alpha=0.1`, {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${localStorage.getItem("cg_token") ?? ""}`,
+        },
+      }).catch(() => {});
+
       setShowForm(false);
       setTitle("");
       setRawContent("");
-      setImagePathsInput("");
       setUploadedAttachments([]);
       navigate(`/submissions/${sub.id}`);
     } catch (err) {
@@ -415,13 +400,21 @@ export function DashboardPage() {
     }
   }
 
-  function handleLoadSampleTemplate(canonId: string) {
-    const sample =
-      SAMPLE_CAMPAIGNS[canonId] ?? SAMPLE_CAMPAIGNS["indian-digital-lending"];
-    setSelectedCanon(canonId);
-    setTitle(sample.title);
-    setRawContent(sample.content);
-    setShowForm(true);
+  async function handleDeleteSubmission(
+    e: React.MouseEvent,
+    submissionId: number,
+  ) {
+    e.stopPropagation();
+    setDeletingId(submissionId);
+    setError(null);
+    try {
+      await deleteSubmission(submissionId);
+      setSubmissions((prev) => prev.filter((s) => s.id !== submissionId));
+    } catch (err) {
+      setError((err as Error).message);
+    } finally {
+      setDeletingId(null);
+    }
   }
 
   async function handleSwitchRoleMode(
@@ -439,77 +432,10 @@ export function DashboardPage() {
     }
   }
 
-  async function handleSeedDemoPipeline() {
-    setSeedingDemo(true);
-    setError(null);
-    const originalRole = role || "creator";
-    try {
-      const sample = SAMPLE_CAMPAIGNS["indian-digital-lending"];
-      const sub = await createSubmission(
-        "RBI 2025 KFS & CCPA Pre-Flight — Instant Personal Loan Bundle",
-        sample.content,
-        "indian-digital-lending",
-        [],
-        [],
-      );
-
-      await fetch(`/api/submissions/${sub.id}/scan?alpha=0.1`, {
-        method: "POST",
-        headers: {
-          Authorization: `Bearer ${localStorage.getItem("cg_token") ?? ""}`,
-        },
-      });
-
-      const findings = await getFindings(sub.id);
-      for (const f of findings) {
-        if (f.severity >= 50) {
-          await resolveFinding(
-            sub.id,
-            f.row_id,
-            "accepted",
-            "Accepted canon-grounded qualifier & WCAG contrast fix",
-          );
-        } else {
-          await resolveFinding(
-            sub.id,
-            f.row_id,
-            "overridden",
-            "Approved promotional phrasing per Q3 BFSI campaign brief",
-          );
-        }
-      }
-
-      if (role !== "creator") {
-        await switchRole("creator");
-      }
-      await workflowAction(
-        sub.id,
-        "submit",
-        "Creator pre-flight scan complete; all blockers remediated and warnings documented.",
-      );
-
-      await switchRole("reviewer");
-      await workflowAction(
-        sub.id,
-        "approve",
-        "Brand Manager verified KFS SlotDiff alignment, voice profile, and warning override rationale.",
-      );
-
-      if (originalRole !== "reviewer") {
-        await switchRole(originalRole);
-      }
-
-      await refresh();
-      navigate(`/submissions/${sub.id}`);
-    } catch (err) {
-      setError((err as Error).message);
-    } finally {
-      setSeedingDemo(false);
-    }
-  }
-
-  async function handleFileSelect(files: FileList | null) {
-    if (!files || files.length === 0) return;
+  async function readFilesAsBase64(
+    files: FileList | null,
+  ): Promise<BundleAttachmentPayload[]> {
+    if (!files || files.length === 0) return [];
     const loaded: BundleAttachmentPayload[] = [];
     for (const file of Array.from(files)) {
       const buf = await file.arrayBuffer();
@@ -523,7 +449,21 @@ export function DashboardPage() {
         content_base64: btoa(binary),
       });
     }
-    setUploadedAttachments((prev) => [...prev, ...loaded]);
+    return loaded;
+  }
+
+  async function handleFileSelect(files: FileList | null) {
+    const loaded = await readFilesAsBase64(files);
+    if (loaded.length > 0) {
+      setUploadedAttachments((prev) => [...prev, ...loaded]);
+    }
+  }
+
+  async function handleCompileFileSelect(files: FileList | null) {
+    const loaded = await readFilesAsBase64(files);
+    if (loaded.length > 0) {
+      setCompileAttachments((prev) => [...prev, ...loaded]);
+    }
   }
 
   const activeCanonSummary = canons.find((c) => c.id === govCanonId);
@@ -560,7 +500,7 @@ export function DashboardPage() {
 
   return (
     <div className="dashboard-page">
-      {/* Curved Console Header */}
+      {/* Console Header */}
       <header className="console-header-curved">
         <div className="header-left">
           <Link
@@ -592,13 +532,13 @@ export function DashboardPage() {
               }`}
               onClick={() => setActiveTab("governance")}
             >
-              Canon Governance & v1.1 PR Studio
+              Brand Playbooks &amp; Rule Studio
             </button>
           </nav>
         </div>
 
         <div className="header-right">
-          {/* Authenticated User Identity Badge (Never hijacked on role switch) */}
+          {/* Authenticated User Identity Pill */}
           <div
             className="user-identity-pill"
             title={`Signed in as ${displayName || username} (@${username})`}
@@ -614,12 +554,12 @@ export function DashboardPage() {
             </div>
           </div>
 
-          {/* RBAC Role Mode Switcher (Updates current user's role without changing username) */}
+          {/* RBAC Role Switcher (Preserves signed-in username) */}
           <div
             className="persona-switcher-group"
-            title="Switch your active RBAC role in the 4-stage workflow (preserves your signed-in account)"
+            title="Switch your active role in the 4-stage review workflow (keeps your signed-in identity)"
           >
-            <span className="persona-switcher-label">Active Role:</span>
+            <span className="persona-switcher-label">Role View:</span>
             <button
               type="button"
               disabled={switchingRole}
@@ -669,7 +609,7 @@ export function DashboardPage() {
 
         {activeTab === "submissions" ? (
           <>
-            {/* 4-Stage SOTA Collaborative Governance Pipeline Overview */}
+            {/* 4-Stage Collaborative Governance Pipeline Banner */}
             <section
               className="workflow-pipeline-banner"
               aria-label="4-Stage Governance Workflow"
@@ -680,7 +620,7 @@ export function DashboardPage() {
                     4-STAGE COLLABORATIVE GOVERNANCE WORKFLOW
                   </span>
                   <h2 className="workflow-pipeline-title">
-                    Active Workspace: {currentRoleMeta.label} —{" "}
+                    {currentRoleMeta.label} —{" "}
                     <span className="workflow-pipeline-highlight">
                       {currentRoleMeta.stageOwned}
                     </span>
@@ -692,21 +632,10 @@ export function DashboardPage() {
                 <div className="toolbar-actions-group">
                   <button
                     type="button"
-                    className="btn-secondary"
-                    disabled={seedingDemo}
-                    onClick={handleSeedDemoPipeline}
-                    title="Seeds a complete Indian Digital Lending campaign bundle, resolves findings, and advances it through Brand Review so Legal Sign-Off & Certificate export can be inspected immediately."
-                  >
-                    {seedingDemo
-                      ? "Seeding Demo Workflow..."
-                      : "⚡ Seed End-to-End Demo Bundle"}
-                  </button>
-                  <button
-                    type="button"
                     className="btn-primary"
                     onClick={() => setShowForm(!showForm)}
                   >
-                    {showForm ? "Cancel" : "+ New Campaign Bundle"}
+                    {showForm ? "Hide Submission Form" : "+ New Campaign Bundle"}
                   </button>
                 </div>
               </div>
@@ -723,13 +652,15 @@ export function DashboardPage() {
                 >
                   <div className="stage-pill-top">
                     <span className="stage-pill-num">STAGE 1</span>
-                    <span className="stage-pill-count">{stageCounts.stage1}</span>
+                    <span className="stage-pill-count">
+                      {stageCounts.stage1}
+                    </span>
                   </div>
                   <div className="stage-pill-name">
-                    Creator Pre-Flight & Fixes
+                    Creator Pre-Flight &amp; Fixes
                   </div>
                   <div className="stage-pill-owner">
-                    Owner: Creator · Fix Blockers & Override Warnings
+                    Owner: Creator · Fix Blockers &amp; Document Overrides
                   </div>
                 </button>
 
@@ -744,13 +675,13 @@ export function DashboardPage() {
                 >
                   <div className="stage-pill-top">
                     <span className="stage-pill-num">STAGE 2</span>
-                    <span className="stage-pill-count">{stageCounts.stage2}</span>
+                    <span className="stage-pill-count">
+                      {stageCounts.stage2}
+                    </span>
                   </div>
-                  <div className="stage-pill-name">
-                    Brand Manager Review
-                  </div>
+                  <div className="stage-pill-name">Brand Manager Review</div>
                   <div className="stage-pill-owner">
-                    Owner: Brand Manager · Audit Diffs & Approve
+                    Owner: Brand Manager · Verify Diffs &amp; Approve
                   </div>
                 </button>
 
@@ -765,13 +696,15 @@ export function DashboardPage() {
                 >
                   <div className="stage-pill-top">
                     <span className="stage-pill-num">STAGE 3</span>
-                    <span className="stage-pill-count">{stageCounts.stage3}</span>
+                    <span className="stage-pill-count">
+                      {stageCounts.stage3}
+                    </span>
                   </div>
                   <div className="stage-pill-name">
                     Authorised Legal Sign-Off
                   </div>
                   <div className="stage-pill-owner">
-                    Owner: Legal Reviewer · Claim-Only Gate & Release
+                    Owner: Legal Reviewer · Claim Sign-Off &amp; Release
                   </div>
                 </button>
 
@@ -786,52 +719,33 @@ export function DashboardPage() {
                 >
                   <div className="stage-pill-top">
                     <span className="stage-pill-num">STAGE 4</span>
-                    <span className="stage-pill-count">{stageCounts.stage4}</span>
+                    <span className="stage-pill-count">
+                      {stageCounts.stage4}
+                    </span>
                   </div>
-                  <div className="stage-pill-name">
-                    Cryptographically Released
-                  </div>
+                  <div className="stage-pill-name">Approved &amp; Released</div>
                   <div className="stage-pill-owner">
-                    SHA-256 Chain + Ed25519 STH + C2PA Assets
+                    Signed Audit Certificate &amp; Provenance Ready
                   </div>
                 </button>
               </div>
             </section>
 
-            {/* Quick-load starter templates bar */}
-            <div className="template-quickstart-bar">
-              <span className="template-bar-label">
-                Quick-Load Red-Team Campaign Bundle:
-              </span>
-              <button
-                type="button"
-                className="template-chip"
-                onClick={() =>
-                  handleLoadSampleTemplate("indian-digital-lending")
-                }
-              >
-                🏦 Indian Digital Lending (RBI KFS + CCPA)
-              </button>
-              <button
-                type="button"
-                className="template-chip"
-                onClick={() => handleLoadSampleTemplate("indian-d2c-nutra")}
-              >
-                🌿 D2C Personal Care & Nutra (ASCI FY25-26)
-              </button>
-              <button
-                type="button"
-                className="template-chip"
-                onClick={() => handleLoadSampleTemplate("acme-corp")}
-              >
-                ☁️ Acme Enterprise Cloud (B2B SaaS)
-              </button>
-            </div>
-
+            {/* New Campaign Submission Form */}
             {showForm && (
               <form className="submission-form card" onSubmit={handleCreate}>
-                <h3>Submit Multimodal Campaign Bundle for Governance Check</h3>
-                <div className="form-row">
+                <div className="gov-panel-header">
+                  <div>
+                    <h3>Submit Campaign Content for Pre-Publication Review</h3>
+                    <p className="gov-panel-desc" style={{ marginBottom: 0 }}>
+                      Enter your marketing copy, pricing table, or HTML below,
+                      or attach `.docx`, `.pdf`, `.html`, `.md`, `.png`, or
+                      `.jpg` files to scan against your chosen Brand Playbook.
+                    </p>
+                  </div>
+                </div>
+
+                <div className="form-row" style={{ marginTop: "0.75rem" }}>
                   <div className="form-group flex-1">
                     <label htmlFor="sub-title">Campaign Title</label>
                     <input
@@ -839,12 +753,12 @@ export function DashboardPage() {
                       type="text"
                       value={title}
                       onChange={(e) => setTitle(e.target.value)}
-                      placeholder="e.g. Q3 Instant Loan Promotional Landing Page"
+                      placeholder="e.g. Q3 Product Launch Landing Page & Banner"
                       required
                     />
                   </div>
-                  <div className="form-group">
-                    <label htmlFor="sub-canon">Governing Brand Canon</label>
+                  <div className="form-group flex-1">
+                    <label htmlFor="sub-canon">Governing Brand Playbook</label>
                     <select
                       id="sub-canon"
                       value={selectedCanon}
@@ -853,74 +767,98 @@ export function DashboardPage() {
                       {canons.map((c) => (
                         <option key={c.id} value={c.id}>
                           {c.id} (v{c.version} — {c.term_count} terms,{" "}
-                          {c.fact_count} facts, {c.color_count} colours)
+                          {c.fact_count} approved facts, {c.color_count} brand
+                          colours)
                         </option>
                       ))}
                     </select>
                   </div>
                 </div>
+
                 <div className="form-group">
                   <label htmlFor="sub-content">
-                    Campaign Copy / Markdown Table / HTML Snippet (double
-                    newline between blocks)
+                    Campaign Copy / Markdown Pricing Table / HTML Content
                   </label>
                   <textarea
                     id="sub-content"
-                    rows={8}
+                    rows={6}
                     value={rawContent}
                     onChange={(e) => setRawContent(e.target.value)}
-                    placeholder="Paste your marketing copy, KFS pricing table, or HTML snippet here..."
+                    placeholder="Write or paste your campaign copy, claims, disclaimers, or Markdown table here..."
                   />
                 </div>
-                <div className="form-row">
-                  <div className="form-group flex-1">
-                    <label htmlFor="sub-files">
-                      Upload Multimodal Files (`.docx`, `.pdf`, `.html`, `.md`,
-                      `.png`, `.jpg` Banners)
-                    </label>
-                    <input
-                      id="sub-files"
-                      type="file"
-                      multiple
-                      accept=".docx,.pdf,.html,.htm,.md,.txt,.png,.jpg,.jpeg,.webp"
-                      onChange={(e) => handleFileSelect(e.target.files)}
-                    />
-                    {uploadedAttachments.length > 0 && (
-                      <div className="uploaded-files-pills">
-                        {uploadedAttachments.map((att, idx) => (
-                          <span
-                            key={`${att.filename}-${idx}`}
-                            className="file-pill"
+
+                <div className="form-group">
+                  <label htmlFor="sub-files">
+                    Attach Documents or Promotional Banners (`.docx`, `.pdf`,
+                    `.html`, `.md`, `.png`, `.jpg`)
+                  </label>
+                  <input
+                    id="sub-files"
+                    type="file"
+                    multiple
+                    accept=".docx,.pdf,.html,.htm,.md,.txt,.png,.jpg,.jpeg,.webp"
+                    onChange={(e) => handleFileSelect(e.target.files)}
+                  />
+                  {uploadedAttachments.length > 0 && (
+                    <div className="uploaded-files-pills">
+                      {uploadedAttachments.map((att, idx) => (
+                        <span
+                          key={`${att.filename}-${idx}`}
+                          className="file-pill"
+                        >
+                          📎 {att.filename}
+                          <button
+                            type="button"
+                            style={{
+                              marginLeft: "0.4rem",
+                              border: "none",
+                              background: "transparent",
+                              cursor: "pointer",
+                              color: "inherit",
+                              fontWeight: 800,
+                            }}
+                            onClick={() =>
+                              setUploadedAttachments((prev) =>
+                                prev.filter((_, i) => i !== idx),
+                              )
+                            }
                           >
-                            📎 {att.filename}
-                          </span>
-                        ))}
-                      </div>
-                    )}
-                  </div>
-                  <div className="form-group flex-1">
-                    <label htmlFor="sub-images">
-                      Server Image / Banner Asset Paths (optional,
-                      comma-separated)
-                    </label>
-                    <input
-                      id="sub-images"
-                      type="text"
-                      value={imagePathsInput}
-                      onChange={(e) => setImagePathsInput(e.target.value)}
-                      placeholder="e.g. /assets/banners/monsoon_promo.png"
-                    />
-                  </div>
+                            ✕
+                          </button>
+                        </span>
+                      ))}
+                    </div>
+                  )}
                 </div>
-                <button
-                  type="submit"
-                  className="btn-primary"
-                  disabled={submitting}
+
+                <div
+                  style={{
+                    display: "flex",
+                    justifyContent: "flex-end",
+                    gap: "0.75rem",
+                    marginTop: "0.5rem",
+                  }}
                 >
-                  {submitting
-                    ? "Parsing ContentAST & Creating Bundle..."
-                    : "Create & Open in Split-Screen Review Studio →"}
-                </button>
+                  {submissions.length > 0 && (
+                    <button
+                      type="button"
+                      className="btn-ghost"
+                      onClick={() => setShowForm(false)}
+                    >
+                      Cancel
+                    </button>
+                  )}
+                  <button
+                    type="submit"
+                    className="btn-primary"
+                    disabled={submitting}
+                  >
+                    {submitting
+                      ? "Scanning & Opening Review Studio..."
+                      : "Create & Open in Split-Screen Review Studio →"}
+                  </button>
+                </div>
               </form>
             )}
 
@@ -929,42 +867,54 @@ export function DashboardPage() {
               <div className="queue-filter-tabs">
                 <button
                   type="button"
-                  className={`filter-pill ${stageFilter === "all" ? "active" : ""}`}
+                  className={`filter-pill ${
+                    stageFilter === "all" ? "active" : ""
+                  }`}
                   onClick={() => setStageFilter("all")}
                 >
-                  All Bundles ({submissions.length})
+                  All Campaigns ({submissions.length})
                 </button>
                 <button
                   type="button"
-                  className={`filter-pill ${stageFilter === "mine" ? "active" : ""}`}
+                  className={`filter-pill ${
+                    stageFilter === "mine" ? "active" : ""
+                  }`}
                   onClick={() => setStageFilter("mine")}
                 >
                   Action Required for {currentRoleMeta.shortLabel}
                 </button>
                 <button
                   type="button"
-                  className={`filter-pill ${stageFilter === "stage1" ? "active" : ""}`}
+                  className={`filter-pill ${
+                    stageFilter === "stage1" ? "active" : ""
+                  }`}
                   onClick={() => setStageFilter("stage1")}
                 >
                   Stage 1: Draft / Revisions ({stageCounts.stage1})
                 </button>
                 <button
                   type="button"
-                  className={`filter-pill ${stageFilter === "stage2" ? "active" : ""}`}
+                  className={`filter-pill ${
+                    stageFilter === "stage2" ? "active" : ""
+                  }`}
                   onClick={() => setStageFilter("stage2")}
                 >
                   Stage 2: Brand Review ({stageCounts.stage2})
                 </button>
                 <button
                   type="button"
-                  className={`filter-pill ${stageFilter === "stage3" ? "active" : ""}`}
+                  className={`filter-pill ${
+                    stageFilter === "stage3" ? "active" : ""
+                  }`}
                   onClick={() => setStageFilter("stage3")}
                 >
                   Stage 3: Legal Sign-Off ({stageCounts.stage3})
                 </button>
                 <button
                   type="button"
-                  className={`filter-pill ${stageFilter === "stage4" ? "active" : ""}`}
+                  className={`filter-pill ${
+                    stageFilter === "stage4" ? "active" : ""
+                  }`}
                   onClick={() => setStageFilter("stage4")}
                 >
                   Stage 4: Released ({stageCounts.stage4})
@@ -973,13 +923,13 @@ export function DashboardPage() {
             </div>
 
             {loading ? (
-              <div className="loading-state">Loading campaign bundles...</div>
+              <div className="loading-state">Loading campaign queue...</div>
             ) : filteredSubmissions.length === 0 ? (
               <div className="empty-state card">
                 <p>
                   {submissions.length === 0
-                    ? "No campaign bundles in the queue yet. Click one of the Quick-Load Red-Team Campaign Bundles above or click + New Campaign Bundle to get started."
-                    : "No campaign bundles match the selected workflow stage filter."}
+                    ? "Your campaign queue is currently empty. Use the form above to submit your first campaign copy, document, or banner for pre-publication review."
+                    : "No campaigns match the selected workflow stage filter."}
                 </p>
                 {stageFilter !== "all" && (
                   <button
@@ -988,7 +938,7 @@ export function DashboardPage() {
                     style={{ marginTop: "0.75rem" }}
                     onClick={() => setStageFilter("all")}
                   >
-                    Show All Bundles ({submissions.length})
+                    Show All Campaigns ({submissions.length})
                   </button>
                 )}
               </div>
@@ -1009,7 +959,29 @@ export function DashboardPage() {
                         <span className={`status-badge status-${s.status}`}>
                           {stageInfo.stageLabel}
                         </span>
-                        <span className="sub-canon-tag">{s.canon_id}</span>
+                        <div
+                          style={{
+                            display: "flex",
+                            alignItems: "center",
+                            gap: "0.45rem",
+                          }}
+                        >
+                          <span className="sub-canon-tag">{s.canon_id}</span>
+                          <button
+                            type="button"
+                            className="btn-ghost"
+                            style={{
+                              padding: "0.18rem 0.45rem",
+                              fontSize: "0.72rem",
+                              color: "#64748b",
+                            }}
+                            disabled={deletingId === s.id}
+                            onClick={(e) => handleDeleteSubmission(e, s.id)}
+                            title="Delete this campaign bundle from queue"
+                          >
+                            {deletingId === s.id ? "…" : "✕"}
+                          </button>
+                        </div>
                       </div>
                       <h3 className="sub-card-title">{s.title}</h3>
                       <div
@@ -1018,16 +990,33 @@ export function DashboardPage() {
                         }`}
                       >
                         <span>
-                          {isMyTurn ? "● Action Required: " : "Next Step: "}
+                          {isMyTurn ? "● Action Required — " : ""}
                           {stageInfo.ownerText}
                         </span>
                       </div>
-                      <div className="sub-card-meta">
-                        <span>Bundle #{s.id}</span>
-                        <span>SHA-256: {s.content_hash.slice(0, 10)}…</span>
-                        {s.image_nodes && s.image_nodes.length > 0 && (
-                          <span>🖼 {s.image_nodes.length} banner(s)</span>
-                        )}
+                      <div
+                        className="sub-card-meta"
+                        style={{
+                          justifyContent: "space-between",
+                          alignItems: "center",
+                          marginTop: "0.65rem",
+                        }}
+                      >
+                        <span>
+                          Bundle #{s.id} ·{" "}
+                          {s.image_nodes && s.image_nodes.length > 0
+                            ? `${s.image_nodes.length} banner(s)`
+                            : `${s.text_blocks?.length ?? 1} text block(s)`}
+                        </span>
+                        <span
+                          style={{
+                            fontWeight: 700,
+                            color: "#0f766e",
+                            fontFamily: "var(--font-sans)",
+                          }}
+                        >
+                          Open Review Studio →
+                        </span>
                       </div>
                     </div>
                   );
@@ -1036,19 +1025,19 @@ export function DashboardPage() {
             )}
           </>
         ) : (
-          /* Canon Governance, Empirical Bayes Friction & Closed-Loop v1.1 PR Studio */
+          /* Brand Playbooks & Rule Studio */
           <div className="governance-studio">
             <div className="toolbar">
               <div>
-                <h2>Canon Governance, Friction Telemetry & v1.1 PR Studio</h2>
+                <h2>Brand Playbooks, Rule Calibration &amp; Friction Insights</h2>
                 <p className="gov-subtitle">
-                  Closed-loop Empirical Bayes Beta-Binomial guideline friction (
-                  <code>Friction(R_i) &gt; 0.40</code>) → automated Canon v1.1
-                  PR generator & historical bundle backtest
+                  Inspect active brand playbooks, calibrate rule severities and
+                  visual tolerances, and review automated v1.1 rule improvements
+                  based on team override patterns.
                 </p>
               </div>
               <div className="form-group" style={{ minWidth: "280px" }}>
-                <label htmlFor="gov-canon-select">Active Brand Canon</label>
+                <label htmlFor="gov-canon-select">Active Brand Playbook</label>
                 <select
                   id="gov-canon-select"
                   value={govCanonId}
@@ -1067,14 +1056,14 @@ export function DashboardPage() {
               <div className="pr-applied-banner card">{prAppliedBanner}</div>
             )}
 
-            {/* Canon Schema Summary Strip */}
+            {/* Playbook Summary Strip */}
             {activeCanonSummary && (
               <div className="canon-summary-strip">
                 <div className="canon-metric-box">
                   <span className="canon-metric-val">
                     v{activeCanonSummary.version}
                   </span>
-                  <span className="canon-metric-lbl">Canon Version</span>
+                  <span className="canon-metric-lbl">Playbook Version</span>
                 </div>
                 <div className="canon-metric-box">
                   <span className="canon-metric-val">
@@ -1092,34 +1081,29 @@ export function DashboardPage() {
                   <span className="canon-metric-val">
                     {activeCanonSummary.color_count}
                   </span>
-                  <span className="canon-metric-lbl">
-                    Palette Tokens (ΔE00)
-                  </span>
+                  <span className="canon-metric-lbl">Brand Colour Tokens</span>
                 </div>
                 <div className="canon-metric-box">
                   <span className="canon-metric-val">
                     {frictionReport
-                      ? frictionReport.krippendorff_alpha.toFixed(3)
-                      : "1.000"}
+                      ? `${(frictionReport.krippendorff_alpha * 100).toFixed(0)}%`
+                      : "100%"}
                   </span>
-                  <span className="canon-metric-lbl">
-                    Krippendorff&apos;s α Agreement
-                  </span>
+                  <span className="canon-metric-lbl">Reviewer Consistency</span>
                 </div>
               </div>
             )}
 
             {govLoading ? (
               <div className="loading-state">
-                Computing Empirical Bayes friction telemetry and linting
-                Canon...
+                Loading playbook rules and review insights...
               </div>
             ) : (
               <div className="gov-panels-grid">
-                {/* Panel 1: Static Canon Linter */}
+                {/* Panel 1: Guideline Consistency Check */}
                 <div className="card gov-panel">
                   <div className="gov-panel-header">
-                    <h3>1. Static Canon Integrity Linter</h3>
+                    <h3>1. Playbook Consistency Check</h3>
                     {lintReport && (
                       <span
                         className={`status-badge ${
@@ -1129,22 +1113,21 @@ export function DashboardPage() {
                         }`}
                       >
                         {lintReport.is_valid
-                          ? "VALID SCHEMA"
+                          ? "VALID PLAYBOOK"
                           : `${lintReport.issues.length} ISSUE(S)`}
                       </span>
                     )}
                   </div>
                   <p className="gov-panel-desc">
-                    Checks for duplicate rule IDs, circular terminology
-                    replacements (<code>A → B → A</code>), and uncalibrated
-                    CIEDE2000 colour collisions.
+                    Verifies that your playbook has no duplicate rule IDs,
+                    contradictory terminology replacements, or overlapping brand
+                    colours.
                   </p>
                   {lintReport && lintReport.issues.length === 0 ? (
                     <div className="gov-clean-box">
-                      ✓ Zero circular terminology rules, duplicate IDs, or
-                      palette collisions detected in{" "}
-                      <strong>{lintReport.canon_id}</strong> (v
-                      {lintReport.canon_version}).
+                      ✓ All terminology rules, approved claims, and colour
+                      tokens in <strong>{lintReport.canon_id}</strong> (v
+                      {lintReport.canon_version}) are consistent and conflict-free.
                     </div>
                   ) : (
                     <ul className="gov-issue-list">
@@ -1158,19 +1141,18 @@ export function DashboardPage() {
                   )}
                 </div>
 
-                {/* Panel 2: Empirical Bayes Guideline Friction */}
+                {/* Panel 2: Guideline Friction Insights */}
                 <div className="card gov-panel">
                   <div className="gov-panel-header">
-                    <h3>2. Empirical Bayes Guideline Friction</h3>
+                    <h3>2. Guideline Friction &amp; Override Insights</h3>
                     <span className="sub-canon-tag">
-                      {frictionReport?.total_findings ?? 0} historical flags
+                      {frictionReport?.total_findings ?? 0} total flags
                     </span>
                   </div>
                   <p className="gov-panel-desc">
-                    Applies Beta(1, 4) shrinkage so single-flag noise shrinks
-                    toward the prior while systematically disputed rules (
-                    <code>posterior &gt; {prThreshold.toFixed(2)}</code>)
-                    trigger a Canon v1.1 revision.
+                    Identifies which brand rules are repeatedly overridden by
+                    creators or reviewers so you can clarify ambiguous wording
+                    or adjust severity.
                   </p>
 
                   {frictionReport && frictionReport.rules.length > 0 ? (
@@ -1179,8 +1161,8 @@ export function DashboardPage() {
                         <tr>
                           <th>Rule ID</th>
                           <th>Flags</th>
-                          <th>Overrides / Disputes</th>
-                          <th>Posterior Friction</th>
+                          <th>Overrides</th>
+                          <th>Friction Rate</th>
                           <th>Status</th>
                         </tr>
                       </thead>
@@ -1201,8 +1183,8 @@ export function DashboardPage() {
                               }
                             >
                               {r.needs_canon_revision
-                                ? "NEEDS v1.1 PR"
-                                : "CALIBRATED"}
+                                ? "REVIEW RULE"
+                                : "HEALTHY"}
                             </td>
                           </tr>
                         ))}
@@ -1210,19 +1192,17 @@ export function DashboardPage() {
                     </table>
                   ) : (
                     <div className="gov-clean-box">
-                      No historical overrides recorded yet for{" "}
-                      <strong>{govCanonId}</strong>. Run a scan on a submission
-                      and override a Warning to populate live friction
-                      telemetry, or click{" "}
-                      <strong>Simulate &amp; Propose Canon v1.1 PR</strong>{" "}
-                      below.
+                      No rule overrides recorded yet for{" "}
+                      <strong>{govCanonId}</strong>. As your team reviews
+                      campaigns and records overrides, rule friction metrics
+                      will appear here automatically.
                     </div>
                   )}
 
                   <div className="gov-pr-controls">
                     <label className="threshold-label">
                       <span>
-                        Friction Trigger Threshold:{" "}
+                        Friction Alert Threshold:{" "}
                         <strong>{(prThreshold * 100).toFixed(0)}%</strong>
                       </span>
                       <input
@@ -1241,31 +1221,31 @@ export function DashboardPage() {
                       disabled={prLoading}
                     >
                       {prLoading
-                        ? "Simulating Historical Bundles..."
-                        : "Simulate & Propose Canon v1.1 PR"}
+                        ? "Analysing Past Reviews..."
+                        : "Draft Playbook v1.1 Improvement"}
                     </button>
                   </div>
                 </div>
               </div>
             )}
 
-            {/* Panel 3: Proposed Canon v1.1 PR Diff & Backtest Impact */}
+            {/* Panel 3: Proposed Playbook v1.1 Diff */}
             {prProposal && (
               <div className="card gov-pr-card">
                 <div className="gov-panel-header">
                   <div>
                     <h3>
-                      3. Auto-Drafted Canon PR: {prProposal.canon_id} v
+                      3. Proposed Playbook Update: {prProposal.canon_id} v
                       {prProposal.base_version} → v{prProposal.proposed_version}
                     </h3>
                     <p className="gov-panel-desc">
-                      Historical Backtest across{" "}
-                      <strong>{prProposal.bundles_evaluated}</strong> campaign
-                      bundle(s): Total Findings{" "}
+                      Simulated impact across{" "}
+                      <strong>{prProposal.bundles_evaluated}</strong> past
+                      campaign(s): Total Flags{" "}
                       <strong>{prProposal.before_findings}</strong> →{" "}
                       <strong>{prProposal.after_findings}</strong> (
-                      {(prProposal.reduction_ratio * 100).toFixed(1)}% noise
-                      reduction)
+                      {(prProposal.reduction_ratio * 100).toFixed(1)}% reduction
+                      in false alarms)
                     </p>
                   </div>
                   {prProposal.has_changes && (
@@ -1276,8 +1256,8 @@ export function DashboardPage() {
                       disabled={applyingPr}
                     >
                       {applyingPr
-                        ? "Merging v1.1..."
-                        : `✓ Merge & Activate v${prProposal.proposed_version}`}
+                        ? "Activating v1.1..."
+                        : `✓ Approve & Activate v${prProposal.proposed_version}`}
                     </button>
                   )}
                 </div>
@@ -1288,10 +1268,10 @@ export function DashboardPage() {
                       <thead>
                         <tr>
                           <th>Rule ID</th>
-                          <th>Action</th>
-                          <th>Before (v{prProposal.base_version})</th>
-                          <th>After (v{prProposal.proposed_version})</th>
-                          <th>Rationale</th>
+                          <th>Recommended Change</th>
+                          <th>Current Rule (v{prProposal.base_version})</th>
+                          <th>Updated Rule (v{prProposal.proposed_version})</th>
+                          <th>Reason</th>
                         </tr>
                       </thead>
                       <tbody>
@@ -1316,7 +1296,7 @@ export function DashboardPage() {
                     {prProposal.yaml_diff && (
                       <div className="yaml-diff-box">
                         <div className="yaml-diff-title">
-                          Unified Canon YAML Diff
+                          Playbook Diff Preview
                         </div>
                         <pre className="yaml-diff-pre">
                           {prProposal.yaml_diff}
@@ -1327,31 +1307,26 @@ export function DashboardPage() {
                 ) : (
                   <div className="gov-clean-box">
                     No rules in <strong>{prProposal.canon_id}</strong> currently
-                    exceed the {(prThreshold * 100).toFixed(0)}% posterior
-                    friction threshold. Override or dispute a finding in the
-                    Review Studio (or lower the slider threshold) to generate a
-                    v1.1 rule relaxation diff.
+                    exceed the {(prThreshold * 100).toFixed(0)}% friction
+                    threshold.
                   </div>
                 )}
               </div>
             )}
 
-            {/* Panel 4 & 5: Brand Manager Confirm & Calibrate Sliders + Pipeline A Compiler */}
-            <div
-              className="gov-panels-grid"
-              style={{ marginTop: "1.25rem" }}
-            >
-              {/* Panel 4: Confirm & Calibrate Sliders (Dynamic Rule Dropdown) */}
+            {/* Panel 4 & 5: Calibrate Rule Thresholds + Import New Playbook */}
+            <div className="gov-panels-grid" style={{ marginTop: "1.25rem" }}>
+              {/* Panel 4: Calibrate Rule Thresholds */}
               <div className="card gov-panel">
                 <div className="gov-panel-header">
-                  <h3>4. Confirm &amp; Calibrate Rule Sliders</h3>
-                  <span className="sub-canon-tag">Guard 3 · Brand Manager</span>
+                  <h3>4. Calibrate Rule Thresholds</h3>
+                  <span className="sub-canon-tag">Brand Manager Controls</span>
                 </div>
                 <p className="gov-panel-desc">
-                  Select any rule from <strong>{govCanonId}</strong> to tune its
-                  severity (Warning <code>1–49</code> vs Blocker{" "}
-                  <code>50–100</code>), CIEDE2000 colour tolerance (
-                  <code>ΔE00</code>), and readability bounds in real time.
+                  Select any rule in <strong>{govCanonId}</strong> to adjust
+                  whether it acts as a non-blocking Warning (<code>1–49</code>)
+                  or a hard Blocker (<code>50–100</code>), or fine-tune colour
+                  and readability limits.
                 </p>
                 <form
                   onSubmit={handleCalibrateRule}
@@ -1359,7 +1334,7 @@ export function DashboardPage() {
                 >
                   <div className="form-group">
                     <label htmlFor="cal-rule-select">
-                      Select Rule from <code>{govCanonId}</code> to Calibrate
+                      Select Rule from <code>{govCanonId}</code>
                     </label>
                     {activeCanonSummary?.rules &&
                     activeCanonSummary.rules.length > 0 ? (
@@ -1380,7 +1355,7 @@ export function DashboardPage() {
                         type="text"
                         value={calRuleId}
                         onChange={(e) => setCalRuleId(e.target.value)}
-                        placeholder="Enter rule ID"
+                        placeholder="Select a rule ID"
                       />
                     )}
                   </div>
@@ -1390,7 +1365,7 @@ export function DashboardPage() {
                       className="gov-clean-box"
                       style={{ marginBottom: "0.75rem", fontSize: "0.78rem" }}
                     >
-                      <strong>Source Rule Grounding:</strong>{" "}
+                      <strong>Source Guideline:</strong>{" "}
                       {selectedCalRule.source_text}
                     </div>
                   )}
@@ -1398,7 +1373,7 @@ export function DashboardPage() {
                   <div className="slider-grid">
                     <label className="threshold-label">
                       <span>
-                        Rule Severity S: <strong>{calSeverity}</strong> (
+                        Rule Severity: <strong>{calSeverity}</strong> (
                         {calSeverity >= 50 ? "BLOCKER" : "WARNING"})
                       </span>
                       <input
@@ -1412,7 +1387,7 @@ export function DashboardPage() {
                     </label>
                     <label className="threshold-label">
                       <span>
-                        Palette Max ΔE00:{" "}
+                        Colour Drift Tolerance (ΔE):{" "}
                         <strong>{calMaxDeltaE.toFixed(1)}</strong>
                       </span>
                       <input
@@ -1428,7 +1403,7 @@ export function DashboardPage() {
                     </label>
                     <label className="threshold-label">
                       <span>
-                        Voice Max Sentence Words: <strong>{calMaxWords}</strong>
+                        Max Sentence Length: <strong>{calMaxWords} words</strong>
                       </span>
                       <input
                         type="range"
@@ -1441,7 +1416,7 @@ export function DashboardPage() {
                     </label>
                     <label className="threshold-label">
                       <span>
-                        Max Flesch-Kincaid Grade:{" "}
+                        Max Reading Grade Level:{" "}
                         <strong>{calMaxFkGrade.toFixed(1)}</strong>
                       </span>
                       <input
@@ -1464,8 +1439,8 @@ export function DashboardPage() {
                     style={{ marginTop: "0.75rem" }}
                   >
                     {calibrating
-                      ? "Calibrating Canon..."
-                      : `Confirm & Calibrate '${calRuleId}'`}
+                      ? "Saving Rule Settings..."
+                      : `Save Calibration for '${calRuleId}'`}
                   </button>
                 </form>
 
@@ -1474,62 +1449,61 @@ export function DashboardPage() {
                     className="gov-clean-box"
                     style={{ marginTop: "0.75rem" }}
                   >
-                    ✓ Calibrated <strong>{calibrationResult.canon_id}</strong>{" "}
-                    (v{calibrationResult.previous_version} → v
-                    {calibrationResult.new_version}, SHA-256:{" "}
-                    <code>{calibrationResult.new_hash.slice(0, 12)}…</code>)
+                    ✓ Updated <strong>{calibrationResult.canon_id}</strong> (v
+                    {calibrationResult.previous_version} → v
+                    {calibrationResult.new_version})
                   </div>
                 )}
               </div>
 
-              {/* Panel 5: Pipeline A Compile-to-Schema Onboarding */}
+              {/* Panel 5: Import New Brand Playbook */}
               <div className="card gov-panel">
                 <div className="gov-panel-header">
-                  <h3>5. Pipeline A: Compile-to-Schema Onboarding</h3>
-                  <button
-                    type="button"
-                    className="btn-secondary"
-                    style={{ padding: "0.25rem 0.6rem", fontSize: "0.75rem" }}
-                    onClick={() => {
-                      setCompileId("fintech-kfs-canon");
-                      setCompileText(SAMPLE_BRAND_BOOK_SPEC);
-                    }}
-                  >
-                    Load Sample Brand Book Excerpt
-                  </button>
+                  <h3>5. Import New Brand Playbook</h3>
+                  <span className="sub-canon-tag">PDF / DOCX / Text</span>
                 </div>
                 <p className="gov-panel-desc">
-                  Compile raw brand guidelines and KFS fact sheets into a signed
-                  Canon behind Guard 1 (Value-Anchor Recall = 1.0), Guard 2
-                  (Verbatim Character Grounding), and Guard 3 (Round-Trip NLI ≥
-                  0.90).
+                  Create a new enforceable Brand Playbook from your brand
+                  guidelines, approved product fact sheets, and hex colour
+                  palette.
                 </p>
                 <form
                   onSubmit={handleCompileCanon}
                   className="gov-compile-form"
                 >
                   <div className="form-group">
-                    <label htmlFor="compile-canon-id">New Canon ID</label>
+                    <label htmlFor="compile-canon-id">Playbook Identifier</label>
                     <input
                       id="compile-canon-id"
                       type="text"
                       value={compileId}
                       onChange={(e) => setCompileId(e.target.value)}
-                      placeholder="e.g. fintech-kfs-canon"
+                      placeholder="e.g. my-brand-playbook"
                       required
                     />
                   </div>
                   <div className="form-group">
                     <label htmlFor="compile-raw-text">
-                      Brand Book / KFS Fact Sheet Specification
+                      Brand Rules, Approved Claims &amp; Colour Hex Codes
                     </label>
                     <textarea
                       id="compile-raw-text"
                       rows={4}
                       value={compileText}
                       onChange={(e) => setCompileText(e.target.value)}
-                      placeholder="Paste brand voice rules, hex palette tokens, and approved KFS claims..."
-                      required
+                      placeholder="Example: Never use 'cheap', prefer 'affordable'. Primary Blue: #1A73E8. Approved Claim: 0% processing fee on loans under Rs 50,000 valid until 2026-09-30."
+                    />
+                  </div>
+                  <div className="form-group">
+                    <label htmlFor="compile-files">
+                      Or Upload Brand Book / Fact Sheet (`.pdf`, `.docx`, `.md`)
+                    </label>
+                    <input
+                      id="compile-files"
+                      type="file"
+                      multiple
+                      accept=".pdf,.docx,.md,.txt"
+                      onChange={(e) => handleCompileFileSelect(e.target.files)}
                     />
                   </div>
                   <button
@@ -1538,8 +1512,8 @@ export function DashboardPage() {
                     disabled={compiling}
                   >
                     {compiling
-                      ? "Running Guards 1–3..."
-                      : "Compile & Sign Brand Canon"}
+                      ? "Compiling Brand Playbook..."
+                      : "Import & Activate Playbook"}
                   </button>
                 </form>
 
@@ -1549,29 +1523,12 @@ export function DashboardPage() {
                     style={{ marginTop: "0.75rem" }}
                   >
                     <div>
-                      ✓ Compiled <strong>{compileResult.canon_id}</strong> (
+                      ✓ Imported Playbook{" "}
+                      <strong>{compileResult.canon_id}</strong> (
                       {compileResult.term_count} terms,{" "}
                       {compileResult.color_count} colours,{" "}
-                      {compileResult.fact_count} facts · SHA-256:{" "}
-                      <code>{compileResult.hash.slice(0, 12)}…</code>)
+                      {compileResult.fact_count} approved facts)
                     </div>
-                    {compileResult.provenance.map((p) => (
-                      <div
-                        key={p.rule_id}
-                        style={{ fontSize: "0.78rem", marginTop: "0.25rem" }}
-                      >
-                        • <code>{p.rule_id}</code> [{p.start}:{p.end}] · Guard 1
-                        Recall:{" "}
-                        <strong>
-                          {(p.effective_anchor_recall * 100).toFixed(0)}%
-                        </strong>{" "}
-                        · Guard 3 Round-Trip NLI:{" "}
-                        <strong>
-                          {(p.round_trip_nli_score * 100).toFixed(0)}%
-                        </strong>{" "}
-                        ({p.alignment_status})
-                      </div>
-                    ))}
                   </div>
                 )}
               </div>

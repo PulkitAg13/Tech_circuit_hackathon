@@ -265,6 +265,26 @@ async def get_submission(session: AsyncSession, submission_id: int) -> Submissio
     return result.scalar_one_or_none()
 
 
+async def delete_submission(session: AsyncSession, submission_id: int) -> bool:
+    """Delete a submission and its associated findings, versions, comments, and events."""
+    if _is_sqlite_session(session):
+        cur = session.conn.execute("SELECT id FROM submissions WHERE id = ?", (submission_id,))
+        if not cur.fetchone():
+            return False
+        for tbl in ("submission_comments", "findings", "submission_versions", "workflow_events"):
+            session.conn.execute(f"DELETE FROM {tbl} WHERE submission_id = ?", (submission_id,))
+        session.conn.execute("DELETE FROM submissions WHERE id = ?", (submission_id,))
+        session.conn.commit()
+        return True
+
+    sub = await get_submission(session, submission_id)
+    if not sub:
+        return False
+    await session.delete(sub)
+    await session.flush()
+    return True
+
+
 async def list_submissions(
     session: AsyncSession, *, limit: int = 50, offset: int = 0
 ) -> list[SubmissionRow]:

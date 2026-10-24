@@ -1,7 +1,6 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
-import { AuthProvider } from "./features/auth/AuthContext";
-import { useAuth } from "./features/auth/useAuth";
+import { AuthProvider, useAuth } from "./features/auth/AuthContext";
 import { HomePage } from "./features/home/HomePage";
 import { LoginPage } from "./features/auth/LoginPage";
 import { DashboardPage } from "./features/submissions/DashboardPage";

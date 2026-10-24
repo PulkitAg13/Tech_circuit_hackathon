@@ -40,9 +40,28 @@ async def _seed_default_users() -> None:
                 )
 
 
+_LEGACY_DEMO_TITLES = (
+    "Diwali Instant Digital Loan Campaign Bundle",
+    "AyurGlow Curcumin Gold Elixir Landing Page",
+    "RBI 2025 KFS & CCPA Pre-Flight — Instant Personal Loan Bundle",
+)
+
+
+async def _purge_legacy_demo_submissions() -> None:
+    """Remove any leftover auto-seeded demo bundles from older database files."""
+    from canongate.store import repos
+
+    async with async_session() as session, session.begin():
+        subs = await repos.list_submissions(session, limit=200)
+        for s in subs:
+            if s.title in _LEGACY_DEMO_TITLES and hasattr(repos, "delete_submission"):
+                await repos.delete_submission(session, s.id)
+
+
 async def _startup_init() -> None:
     await init_db()
     await _seed_default_users()
+    await _purge_legacy_demo_submissions()
     from canongate.api.deps import _load_all_canons
 
     _load_all_canons()

@@ -335,6 +335,21 @@ async def get_submission(
     return _to_response(sub)
 
 
+@router.delete("/{submission_id}")
+async def remove_submission(
+    submission_id: int,
+    session: SessionDep,
+    user: CurrentUser,
+) -> dict[str, Any]:
+    """Delete a submission bundle from the workspace queue."""
+    if hasattr(repos, "delete_submission"):
+        deleted = await repos.delete_submission(session, submission_id)
+        if not deleted:
+            raise HTTPException(status_code=404, detail="Submission not found")
+        return {"deleted": True, "id": submission_id}
+    raise HTTPException(status_code=404, detail="Delete not supported")
+
+
 @router.put("/{submission_id}/content", response_model=SubmissionResponse)
 async def update_submission_raw_content(
     submission_id: int,

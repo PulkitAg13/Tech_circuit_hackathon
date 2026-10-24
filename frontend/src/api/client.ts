@@ -396,6 +396,12 @@ export function getSubmission(id: number): Promise<Submission> {
   return request(`/submissions/${id}`);
 }
 
+export function deleteSubmission(id: number): Promise<{ deleted: boolean; id: number }> {
+  return request(`/submissions/${id}`, {
+    method: "DELETE",
+  });
+}
+
 export function updateSubmissionContent(
   id: number,
   rawContent: string,

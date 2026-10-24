@@ -1,22 +1,15 @@
 /**
- * ProseMirror 1-Indexed Token Position & UTF-16 Surrogate Offset Translation.
+ * ProseMirror & React UTF-16 Span Coordinate Translation Utilities.
  *
- * Two distinct coordinate mismatches exist between Python backend `Span(start, end)`
- * and ProseMirror's flat document positions:
- *
- * 1. Block Node Boundary Tokens (`+1` per opening/closing block tag):
- *    ProseMirror's flat document tree uses 1-indexed token positions where every
- *    block node (`<p>`, `<h1>`, `<li>`) adds `+1` opening token and `+1` closing token.
- *
- * 2. Python Unicode Codepoint Indices vs. JavaScript/ProseMirror UTF-16 Code Units:
- *    Python `re.Match.start()` / `end()` count Unicode codepoints (`len("🚀") == 1`),
- *    whereas JavaScript strings and ProseMirror text nodes index by UTF-16 code units
- *    (`"🚀".length === 2` for astral-plane codepoints U+10000..U+10FFFF).
- *    When `blockText` is provided, `codepointIndexToUtf16Offset` converts Python
- *    codepoint indices into exact UTF-16 offsets before adding `blockPos + 1`.
+ * Converts 0-indexed Python Unicode codepoint offsets (`Span(start, end)`)
+ * into exact JavaScript UTF-16 string slices and ProseMirror positions so
+ * astral-plane characters (emojis, symbols) never drift.
  */
 
-import type { FindingResponse } from "../../api/client";
+import { Extension } from "@tiptap/core";
+import type { FindingItem } from "../../api/client";
+
+export type FindingResponse = FindingItem;
 
 export interface SpanLike {
   start: number;
@@ -34,7 +27,7 @@ export interface ProseMirrorRange {
  */
 export function codepointIndexToUtf16Offset(
   text: string,
-  codepointIndex: number
+  codepointIndex: number,
 ): number {
   if (codepointIndex <= 0) {
     return 0;
@@ -59,7 +52,7 @@ export function spanToProseMirrorRange(
   blockPos: number,
   blockNodeSize: number,
   span: SpanLike,
-  blockText?: string
+  blockText?: string,
 ): ProseMirrorRange | null {
   const maxContentPos = blockPos + Math.max(1, blockNodeSize - 1);
   const startOffset =
@@ -85,7 +78,7 @@ export interface ProseMirrorNodeLike {
   textContent?: string;
   nodeSize: number;
   descendants(
-    callback: (node: ProseMirrorNodeLike, pos: number) => boolean | void
+    callback: (node: ProseMirrorNodeLike, pos: number) => boolean | void,
   ): void;
 }
 
@@ -107,7 +100,7 @@ export interface FindingsPluginMeta {
  */
 export function computeFindingDecorationSpecs(
   doc: ProseMirrorNodeLike,
-  meta: FindingsPluginMeta
+  meta: FindingsPluginMeta,
 ): DecorationSpec[] {
   const specs: DecorationSpec[] = [];
   let blockIndex = 0;
@@ -135,7 +128,7 @@ export function computeFindingDecorationSpecs(
             pos,
             node.nodeSize,
             { start: loc.start, end: loc.end },
-            node.textContent
+            node.textContent,
           );
           if (range) {
             const isBlocker = f.severity >= 50;
@@ -158,7 +151,6 @@ export function computeFindingDecorationSpecs(
           }
         }
       }
-      // Stop recursion into child inline text nodes once handled at textblock level
       return false;
     }
     return true;
@@ -167,10 +159,6 @@ export function computeFindingDecorationSpecs(
   return specs;
 }
 
-/**
- * Factory that binds `computeFindingDecorationSpecs` into a live ProseMirror
- * `Plugin` + `DecorationSet` (compatible with `@tiptap/pm/state` and `@tiptap/pm/view`).
- */
 export function createProseMirrorFindingsPlugin<
   TPluginKey,
   TDecoration,
@@ -183,7 +171,7 @@ export function createProseMirrorFindingsPlugin<
     inline(
       from: number,
       to: number,
-      attrs: Record<string, string>
+      attrs: Record<string, string>,
     ): TDecoration;
   };
   DecorationSet: {
@@ -205,13 +193,13 @@ export function createProseMirrorFindingsPlugin<
           mapping?: unknown;
           getMeta(key: TPluginKey): FindingsPluginMeta | undefined;
         },
-        oldSet: TDecorationSet
+        oldSet: TDecorationSet,
       ): TDecorationSet {
         const meta = tr.getMeta(pm.pluginKey);
         if (meta) {
           const specs = computeFindingDecorationSpecs(tr.doc, meta);
           const decorations = specs.map((s) =>
-            pm.Decoration.inline(s.from, s.to, s.attrs)
+            pm.Decoration.inline(s.from, s.to, s.attrs),
           );
           return pm.DecorationSet.create(tr.doc, decorations);
         }
@@ -224,15 +212,12 @@ export function createProseMirrorFindingsPlugin<
     props: {
       decorations(state: unknown) {
         return (this as { getState(s: unknown): TDecorationSet }).getState(
-          state
+          state,
         );
       },
     },
   });
 }
-
-
-// ── Tiptap Extension & PluginKey Exports for SubmissionDetailPage ──
 
 export interface FindingDecorationRange {
   rowId: number;
@@ -249,13 +234,11 @@ export interface FindingHighlightsOptions {
   onSelectFinding?: (rowId: number) => void;
 }
 
-export const FindingHighlightsExtension = {
+export const FindingHighlightsExtension = Extension.create<FindingHighlightsOptions>({
   name: "findingHighlights",
-  options: {} as FindingHighlightsOptions,
-  configure(opts: FindingHighlightsOptions) {
+  addOptions() {
     return {
-      ...this,
-      options: { ...this.options, ...opts },
+      onSelectFinding: undefined,
     };
   },
-};
+});
