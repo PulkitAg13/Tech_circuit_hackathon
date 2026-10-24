@@ -240,7 +240,15 @@ export function DashboardPage() {
   }, [syncRuleSliders]);
 
   useEffect(() => {
-    refresh();
+    let active = true;
+    void Promise.resolve().then(() => {
+      if (active) {
+        refresh();
+      }
+    });
+    return () => {
+      active = false;
+    };
   }, [refresh]);
 
   const loadGovernanceTelemetry = useCallback(async (canonId: string) => {
@@ -263,7 +271,15 @@ export function DashboardPage() {
 
   useEffect(() => {
     if (activeTab === "governance" && govCanonId) {
-      loadGovernanceTelemetry(govCanonId);
+      let active = true;
+      void Promise.resolve().then(() => {
+        if (active) {
+          loadGovernanceTelemetry(govCanonId);
+        }
+      });
+      return () => {
+        active = false;
+      };
     }
   }, [activeTab, govCanonId, loadGovernanceTelemetry]);
 

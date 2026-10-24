@@ -7,8 +7,6 @@ import {
 } from "../../api/client";
 import { AuthContext, type AuthState } from "./context";
 
-export { useAuth } from "./context";
-
 function loadFromStorage(): AuthState {
   return {
     token: localStorage.getItem("cg_token"),

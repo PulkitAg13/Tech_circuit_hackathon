@@ -392,7 +392,6 @@ export function SubmissionDetailPage() {
   const [wfAction, setWfAction] = useState<string | null>(null);
   const [wfComment, setWfComment] = useState("");
 
-  const findingCardRefs = useRef<Map<number, HTMLDivElement>>(new Map());
   const autoScannedRef = useRef<boolean>(false);
 
   const load = useCallback(async () => {
@@ -418,7 +417,15 @@ export function SubmissionDetailPage() {
   }, [submissionId]);
 
   useEffect(() => {
-    load();
+    let active = true;
+    void Promise.resolve().then(() => {
+      if (active) {
+        load();
+      }
+    });
+    return () => {
+      active = false;
+    };
   }, [load]);
 
   // Auto-trigger scan once if a newly created draft bundle is opened with 0 findings
@@ -458,11 +465,15 @@ export function SubmissionDetailPage() {
 
   // Default Authorised Legal Reviewer (admin) to Claim-Only & Overrides view
   useEffect(() => {
-    if (role === "admin") {
-      setFilter("claims_only");
-    } else {
-      setFilter("all");
-    }
+    let active = true;
+    void Promise.resolve().then(() => {
+      if (active) {
+        setFilter(role === "admin" ? "claims_only" : "all");
+      }
+    });
+    return () => {
+      active = false;
+    };
   }, [role]);
 
   function handleStartEditDraft() {
@@ -681,7 +692,7 @@ export function SubmissionDetailPage() {
 
   const handleSelectFindingFromSpan = useCallback((rowId: number) => {
     setSelectedFindingId(rowId);
-    const el = findingCardRefs.current.get(rowId);
+    const el = document.getElementById(`finding-card-${rowId}`);
     if (el) {
       el.scrollIntoView({ behavior: "smooth", block: "nearest" });
     }
@@ -1381,10 +1392,7 @@ export function SubmissionDetailPage() {
                 return (
                   <div
                     key={f.row_id}
-                    ref={(el) => {
-                      if (el) findingCardRefs.current.set(f.row_id, el);
-                      else findingCardRefs.current.delete(f.row_id);
-                    }}
+                    id={`finding-card-${f.row_id}`}
                     onClick={() => setSelectedFindingId(f.row_id)}
                     className={`finding-card card ${
                       isBlocker ? "finding-blocker" : "finding-warning"
