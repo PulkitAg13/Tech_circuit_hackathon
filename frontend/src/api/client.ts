@@ -14,17 +14,24 @@ export function getApiBase(): string {
   if (typeof window !== "undefined" && localStorage.getItem("cg_api_base")) {
     return localStorage.getItem("cg_api_base")!;
   }
+  if (import.meta.env.VITE_API_URL) {
+    return `${import.meta.env.VITE_API_URL.replace(/\/$/, "")}/api`;
+  }
+  // If hosted on Render or GitHub Pages, default to the live Render backend:
+  if (
+    typeof window !== "undefined" &&
+    (window.location.hostname.includes("onrender.com") ||
+      window.location.hostname.includes("github.io"))
+  ) {
+    return "https://canongate-api.onrender.com/api";
+  }
   return "/api";
 }
 
 export function isStaticOrGitHubPages(): boolean {
   if (typeof window === "undefined") return false;
-  if (localStorage.getItem("cg_api_base")) return false;
-  return (
-    window.location.hostname.includes("github.io") ||
-    window.location.protocol === "file:" ||
-    localStorage.getItem("cg_mode") === "standalone"
-  );
+  if (localStorage.getItem("cg_mode") === "standalone") return true;
+  return false;
 }
 
 function getToken(): string | null {
@@ -58,6 +65,13 @@ async function request<T>(
       },
     });
 
+    const contentType = res.headers.get("content-type") || "";
+    // If static hosting returned HTML SPA fallback (like index.html) instead of API JSON:
+    if (contentType.includes("text/html")) {
+      console.warn(`[CanonGate] API at ${base}${path} returned HTML fallback; falling back to in-browser engine.`);
+      return handleBrowserRequest<T>(path, options);
+    }
+
     if (!res.ok) {
       if (
         res.status === 404 &&
@@ -75,8 +89,11 @@ async function request<T>(
     if (
       (err as Error)?.message?.includes("Failed to fetch") ||
       (err as Error)?.message?.includes("NetworkError") ||
-      (err as Error)?.message?.includes("Load failed")
+      (err as Error)?.message?.includes("Load failed") ||
+      (err as Error)?.message?.includes("Unexpected token '<'") ||
+      (err as Error)?.message?.includes("JSON.parse")
     ) {
+      console.warn(`[CanonGate] API unreachable at ${base}${path}; falling back to in-browser engine.`);
       return handleBrowserRequest<T>(path, options);
     }
     throw err;
@@ -1092,16 +1109,10 @@ export function triggerScan(
         },
       );
 
-      if (!res.ok || !res.body) {
-        if (
-          res.status === 404 &&
-          !window.location.hostname.includes("localhost") &&
-          !window.location.hostname.includes("127.0.0.1")
-        ) {
-          runBrowserScan(submissionId, onFinding, onDone);
-          return;
-        }
-        throw new ApiError(res.status, res.statusText);
+      const contentType = res.headers.get("content-type") || "";
+      if (!res.ok || !res.body || contentType.includes("text/html")) {
+        runBrowserScan(submissionId, onFinding, onDone);
+        return;
       }
 
       const reader = res.body.getReader();

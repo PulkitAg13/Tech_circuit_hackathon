@@ -10,6 +10,7 @@ import {
   applyCanonPr,
   calibrateCanonRule,
   compileBrandCanon,
+  getApiBase,
   type Submission,
   type CanonSummary,
   type CanonRuleItem,
@@ -480,7 +481,8 @@ export function DashboardPage() {
         uploadedAttachments,
       );
       // Automatically run pre-flight scan before opening Review Studio
-      await fetch(`/api/submissions/${sub.id}/scan?alpha=0.1`, {
+      const apiBase = getApiBase();
+      await fetch(`${apiBase}/submissions/${sub.id}/scan?alpha=0.1`, {
         method: "POST",
         headers: {
           Authorization: `Bearer ${localStorage.getItem("cg_token") ?? ""}`,

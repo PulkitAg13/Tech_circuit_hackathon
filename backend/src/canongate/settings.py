@@ -67,6 +67,7 @@ class Settings(_BaseSettings):
         "http://127.0.0.1:5173",
         "http://localhost:4173",
         "https://meerpi.github.io",
+        "https://canongate-web.onrender.com",
     ]
 
     # Auth
