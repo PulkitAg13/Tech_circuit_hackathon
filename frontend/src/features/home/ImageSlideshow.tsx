@@ -8,7 +8,7 @@ export interface SlideItem {
   alt: string;
 }
 
-export const SLIDES: SlideItem[] = [
+const SLIDES: SlideItem[] = [
   {
     id: 1,
     title: "Detect Issues Early, Protect Your Brand",
@@ -67,11 +67,11 @@ export function ImageSlideshow() {
     startTimeRef.current = Date.now();
   }, []);
 
-  const goToSlide = (index: number) => {
+  const goToSlide = useCallback((index: number) => {
     setCurrentIndex(index);
     setProgress(0);
     startTimeRef.current = Date.now();
-  };
+  }, []);
 
   // 5-second automatic sliding loop with progress bar animation
   useEffect(() => {

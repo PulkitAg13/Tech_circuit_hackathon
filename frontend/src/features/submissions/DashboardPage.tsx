@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo, type ChangeEvent, type FormEvent } from "react";
+import { useState, useMemo, type ChangeEvent, type FormEvent } from "react";
 import { useNavigate, Link } from "react-router-dom";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import {
@@ -18,7 +18,7 @@ import {
   scanSubmission,
   login as apiLogin,
 } from "../../api/client";
-import { useAuth } from "../auth/AuthContext";
+import { useAuth } from "../auth/useAuth";
 
 const STATUS_BADGE_CLASS: Record<string, string> = {
   draft: "status-draft",
@@ -124,24 +124,20 @@ export function DashboardPage() {
   const [calDeltaE, setCalDeltaE] = useState<number>(3.0);
   const [calStatusMsg, setCalStatusMsg] = useState("");
 
-  useEffect(() => {
-    if (canons.length > 0 && !canonId) {
-      setCanonId(canons[0].id);
-      setSelectedCanonId(canons[0].id);
-    }
-  }, [canons, canonId]);
+  const effectiveCanonId = canonId || (canons[0]?.id ?? "");
+  const effectiveSelectedCanonId = selectedCanonId || (canons[0]?.id ?? "");
 
   // Server state for canon governance
   const { data: frictionData = null } = useQuery({
-    queryKey: ["canonFriction", selectedCanonId],
-    queryFn: () => getCanonFriction(selectedCanonId),
-    enabled: !!selectedCanonId && activeTab === "governance",
+    queryKey: ["canonFriction", effectiveSelectedCanonId],
+    queryFn: () => getCanonFriction(effectiveSelectedCanonId),
+    enabled: !!effectiveSelectedCanonId && activeTab === "governance",
   });
 
   const { data: lintData = null } = useQuery({
-    queryKey: ["canonLint", selectedCanonId],
-    queryFn: () => getCanonLint(selectedCanonId),
-    enabled: !!selectedCanonId && activeTab === "governance",
+    queryKey: ["canonLint", effectiveSelectedCanonId],
+    queryFn: () => getCanonLint(effectiveSelectedCanonId),
+    enabled: !!effectiveSelectedCanonId && activeTab === "governance",
   });
 
   // Filtered submissions based on tab filter & search
@@ -208,8 +204,8 @@ export function DashboardPage() {
     onSuccess: (summary) => {
       setCalStatusMsg(`Activated ${summary.id} v${summary.version} (${summary.hash.slice(0, 10)}…)`);
       queryClient.invalidateQueries({ queryKey: ["canons"] });
-      queryClient.invalidateQueries({ queryKey: ["canonFriction", selectedCanonId] });
-      queryClient.invalidateQueries({ queryKey: ["canonLint", selectedCanonId] });
+      queryClient.invalidateQueries({ queryKey: ["canonFriction", effectiveSelectedCanonId] });
+      queryClient.invalidateQueries({ queryKey: ["canonLint", effectiveSelectedCanonId] });
     },
     onError: (err: any) => {
       setError(err.message || "Failed to apply Canon v1.1 PR");
@@ -218,7 +214,7 @@ export function DashboardPage() {
 
   const calibrateMutation = useMutation({
     mutationFn: () =>
-      calibrateCanonRule(selectedCanonId, {
+      calibrateCanonRule(effectiveSelectedCanonId, {
         rule_id: calRuleId,
         severity: calSeverity,
         max_delta_e: calDeltaE,
@@ -228,7 +224,7 @@ export function DashboardPage() {
         `Calibrated '${calRuleId}' in ${res.canon_id}: v${res.previous_version} → v${res.new_version}`
       );
       queryClient.invalidateQueries({ queryKey: ["canons"] });
-      queryClient.invalidateQueries({ queryKey: ["canonLint", selectedCanonId] });
+      queryClient.invalidateQueries({ queryKey: ["canonLint", effectiveSelectedCanonId] });
     },
     onError: (err: any) => {
       setError(err.message || "Failed to calibrate rule");
@@ -263,7 +259,7 @@ export function DashboardPage() {
     createMutation.mutate({
       title: title || "Untitled Campaign Draft",
       rawContent: content,
-      canonId: canonId || (canons[0]?.id ?? "indian-digital-lending"),
+      canonId: effectiveCanonId || (canons[0]?.id ?? "indian-digital-lending"),
       attachments,
     });
   }
@@ -282,8 +278,8 @@ export function DashboardPage() {
   }
 
   function handleProposePr() {
-    if (!selectedCanonId) return;
-    proposePrMutation.mutate(selectedCanonId);
+    if (!effectiveSelectedCanonId) return;
+    proposePrMutation.mutate(effectiveSelectedCanonId);
   }
 
   function handleCompileCanon(e: FormEvent) {
@@ -895,7 +891,7 @@ export function DashboardPage() {
               </div>
               <div className="hero-banner-controls">
                 <select
-                  value={selectedCanonId}
+                  value={effectiveSelectedCanonId}
                   onChange={(e) => loadCanonGovernance(e.target.value)}
                   className="form-select select-compact"
                 >
@@ -1067,7 +1063,7 @@ export function DashboardPage() {
                     <button
                       type="button"
                       className="btn-success btn-sm"
-                      onClick={() => applyPrMutation.mutate(selectedCanonId)}
+                      onClick={() => applyPrMutation.mutate(effectiveSelectedCanonId)}
                       disabled={applyPrMutation.isPending}
                     >
                       ✓ Merge &amp; Activate Canon v{prProposal.proposed_version} PR

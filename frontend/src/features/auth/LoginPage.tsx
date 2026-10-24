@@ -1,6 +1,6 @@
 import { useState, useEffect, type FormEvent } from "react";
 import { useNavigate, useLocation } from "react-router-dom";
-import { useAuth } from "./AuthContext";
+import { useAuth } from "./useAuth";
 import { login as apiLogin, register as apiRegister } from "../../api/client";
 
 /**
@@ -38,12 +38,12 @@ export function LoginPage() {
 
   // State: isSignUp toggles the classic sliding container (right-panel-active)
   const [isSignUp, setIsSignUp] = useState(Boolean((location.state as any)?.signup));
+  const [prevKey, setPrevKey] = useState(location.key);
 
-  useEffect(() => {
-    if ((location.state as any)?.signup !== undefined) {
-      setIsSignUp(Boolean((location.state as any)?.signup));
-    }
-  }, [location.state]);
+  if (location.key !== prevKey) {
+    setPrevKey(location.key);
+    setIsSignUp(Boolean((location.state as any)?.signup));
+  }
 
   // Sign In form fields
   const [signInEmail, setSignInEmail] = useState("");

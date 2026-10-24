@@ -1,17 +1,6 @@
-import { createContext, useContext, useState, type ReactNode } from "react";
+import { useState, type ReactNode } from "react";
 import { type TokenResponse, switchRole as apiSwitchRole, login as apiLogin, register as apiRegister } from "../../api/client";
-
-export interface AuthState {
-  token: string | null;
-  username: string | null;
-  role: string | null;
-  isAuthenticated: boolean;
-  login: (data: TokenResponse) => void;
-  logout: () => void;
-  switchPersona: (targetUsername: string, targetRole: string) => Promise<void>;
-}
-
-const AuthContext = createContext<AuthState | null>(null);
+import { AuthContext } from "./context";
 
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [token, setToken] = useState<string | null>(() => localStorage.getItem("cg_token"));
@@ -76,8 +65,4 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   );
 }
 
-export function useAuth() {
-  const ctx = useContext(AuthContext);
-  if (!ctx) throw new Error("useAuth must be used within AuthProvider");
-  return ctx;
-}
+
