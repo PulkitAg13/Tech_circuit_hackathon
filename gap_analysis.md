@@ -63,3 +63,12 @@ A walking skeleton is **the thinnest possible slice that runs through every laye
 | **TOTAL** | **82** | **0** | **1** | **83** |
 
 **100% of Round 2 ("The Build") Must-Have and Should-Have Features Complete (82/83 features complete; 98/98 backend tests passing across all 13 test suites (including live real-campaign multimodal adverts), with 0 `ruff check`, `ruff format`, or `import-linter` issues).**
+
+---
+
+## 📑 Referenced Architectural Documents & Presentation Decks
+
+* 📊 [**System Architecture Diagram (PDF)**](./PulmoTwin_Architecture_Diagram.pdf) — Complete architectural overview, check pipeline, SMT solving, and Merkle tree ledger.
+* 📑 [**Pitch Deck Presentation (PDF)**](./PulmoTwin_Pitch_Deck.pdf) — Pitch deck covering product vision, regulatory landscape, and business model.
+* 🏛️ [**Architecture Decision Records (ADRs)**](./docs/adr/) — ADRs 0001 through 0005.
+
