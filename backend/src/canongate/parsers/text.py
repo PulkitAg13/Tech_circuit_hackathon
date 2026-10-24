@@ -1,11 +1,8 @@
 """Plain-text and Markdown parser → ContentAST.
 
-For the walking skeleton, this is intentionally simple:
-- Splits on blank lines to get paragraphs
-- Each paragraph becomes a TextNode
-
-Later, we can upgrade to a proper Markdown parser (mistune/marko)
-that preserves heading levels, lists, etc.
+Splits on blank lines to get paragraphs and delegates Markdown image tags
+`![alt](path)` and `image_paths` to `parse_banner_image` so embedded banners
+automatically produce both `ImageNode`s and OCR `TextNode`s.
 """
 
 from __future__ import annotations
@@ -13,9 +10,8 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
-from PIL import Image
-
-from canongate.domain.ast import ContentAST, ImageNode, Node, TextNode
+from canongate.domain.ast import ContentAST, Node, TextNode
+from canongate.parsers.banner import parse_banner_image
 
 _BLOCK_SPLIT = re.compile(r"\n{2,}")
 _MD_IMAGE = re.compile(r"^!\[(.*?)\]\((.*?)\)$")
@@ -30,7 +26,8 @@ def parse_text(
     """Parse raw text (or markdown) and optional images into a ContentAST.
 
     Paragraphs are split on double newlines. Markdown image syntax `![alt](path)`
-    pointing to valid image files is converted into ImageNodes.
+    pointing to valid image files is converted into `ImageNode`s + OCR `TextNode`s
+    via `parse_banner_image`.
     """
     blocks = _BLOCK_SPLIT.split(raw.strip())
     nodes: list[Node] = []
@@ -44,28 +41,17 @@ def parse_text(
             alt, img_path = m.group(1), m.group(2)
             p = Path(img_path)
             if p.is_file():
-                try:
-                    data = p.read_bytes()
-                    with Image.open(p) as img:
-                        w, h = img.size
-                    nodes.append(
-                        ImageNode.from_bytes(data, path=str(p), width=w, height=h, alt=alt or None)
-                    )
+                img_ast = parse_banner_image(p, path=str(p), alt=alt or None)
+                if img_ast.nodes:
+                    nodes.extend(img_ast.nodes)
                     continue
-                except Exception:
-                    pass
         nodes.append(TextNode.from_text(b, path=f"{source}/p[{i}]"))
 
     if image_paths:
         for p_str in image_paths:
             p = Path(p_str)
             if p.is_file():
-                try:
-                    data = p.read_bytes()
-                    with Image.open(p) as img:
-                        w, h = img.size
-                    nodes.append(ImageNode.from_bytes(data, path=str(p), width=w, height=h))
-                except Exception:
-                    pass
+                img_ast = parse_banner_image(p, path=str(p))
+                nodes.extend(img_ast.nodes)
 
     return ContentAST(nodes=tuple(nodes))

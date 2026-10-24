@@ -1,28 +1,35 @@
-"""Tier 1.5 Check: SMT / Algebraic & Temporal Constraint Verifier (`claim.algebra`).
+"""Tier 1.5 Check: SMT / Algebraic, KFS Validity & Temporal Constraint Verifier (`claim.algebra`).
 
-Verifies mathematical, currency-cap (Indian numbering: Lakh, Crore), temporal
-(`valid_until`), and stacked-tax discount equations in `TextNode`s and across
-multi-node `ContentAST` bundles (`run_bundle`):
-1. **Upper-Bound Cap Breach (Z3 SMT / Interval Solver):** Proves
-   $\\exists x \\in (C_{\\text{max}}, D_{\\text{max}}]:$
-   $P_{\\text{draft}}(x) \\land \\neg P_{\\text{canon}}(x)$
-   using `z3-solver` (`z3.Real`, `z3.Solver`) when installed, with an exact interval
-   witness fallback.
-2. **Temporal Expiry Breach:** Proves `draft_valid_until > canon.valid_until`
-   on ISO date claims (`YYYY-MM-DD`).
-3. **Stacked Tax / Net Discount Contradiction (FirstCry CCPA PIB 2171807):**
-   Proves $1 - (1 - d)(1 + g) < d$ both when an explicit GST rate (`"18% GST applies"`)
-   is stated AND when the exact FirstCry wording (`"27% discount — MRP inclusive of all taxes"`
-   paired with `"GST and Add'l charges may apply on discounted price"`, where India's
-   12% retail apparel GST drops a 27% discount to 18.24%) appears within a single node
-   or across separate headline and footnote nodes in a bundle!
+Implements formal symbolic constraint solving (`SmtConstraintSolver`) backed by:
+1. **Primary Solver — Z3 Theorem Prover (`z3-solver`):**
+   Uses `z3.Real`, `z3.Int`, `z3.Solver`, `z3.And`, `z3.Not`, and `solver.model().eval(...)`
+   over Linear and Nonlinear Real Arithmetic (`QF_NRA` / `QF_LRA`).
+2. **Secondary Solver — SymPy Rational Inequality + SciPy HiGHS LP Solver (`sympy-scipy-smt-v2`):**
+   When the native Z3 C++ wheel is absent, symbolically reduces rational inequality systems
+   via `sympy.solvers.inequalities.reduce_rational_inequalities` and computes exact interior
+   counterexample witnesses via `scipy.optimize.linprog(method="highs")`.
+
+Proves five classes of regulatory and mathematical violations:
+- **Upper-Bound Cap Breach:** $\\exists x > 0 : (x \\le D_{\\max}) \\land \\neg(x \\le C_{\\max})$
+  (Indian numbering: Lakh, Crore, Rs, ₹, plus structured `FactClaim.metric_value` & `<=`).
+- **Lower-Bound Floor Breach:**
+  $\\exists x > 0 : (x \\ge D_{\\min}) \\land \\neg(x \\ge C_{\\min})$.
+- **RBI 2025 KFS Validity Window Breach:** Verifies `kfs_acceptance_validity_days` bounds.
+- **Temporal Expiry Breach:** Proves `draft_valid_until > canon.valid_until` over ordinal days.
+- **Stacked Tax / Net Discount Contradiction (FirstCry CCPA PIB 2171807):**
+  Proves $d_{\\text{net}} = (1 - (1 - d)(1 + g)) \\cdot 100 < d \\cdot 100$
+  both within a single node and across separate headline/footnote nodes (`run_bundle`).
 """
 
 from __future__ import annotations
 
+import datetime as dt
 import re
+import threading
 from dataclasses import dataclass
-from typing import ClassVar
+from typing import ClassVar, Literal
+
+import numpy as np
 
 from canongate.domain.ast import ContentAST, Node, NodeKind, TextNode
 from canongate.domain.canon import Canon, FactClaim, Rule
@@ -36,33 +43,7 @@ from canongate.domain.finding import (
     Trace,
 )
 from canongate.engine.check import Check
-
-_STOPWORDS = frozenset(
-    {
-        "the",
-        "a",
-        "an",
-        "on",
-        "in",
-        "for",
-        "of",
-        "to",
-        "and",
-        "or",
-        "with",
-        "get",
-        "our",
-        "all",
-        "under",
-        "up",
-        "valid",
-        "until",
-        "till",
-        "only",
-        "rs",
-        "inr",
-    }
-)
+from canongate.engine.nlp import content_words, normalize_stem
 
 _UNIT_MULTIPLIERS: dict[str, float] = {
     "k": 1_000.0,
@@ -83,10 +64,20 @@ _UPPER_BOUND_RE = re.compile(
     re.IGNORECASE,
 )
 
+_LOWER_BOUND_RE = re.compile(
+    r"\b(?:minimum(?:\s+of)?|min|at\s+least|starting\s+from|above|over|more\s+than)\s+"
+    r"((?:₹|Rs\.?\s*|\$)?\s*(\d[\d,]*(?:\.\d+)?)"
+    r"(?:\s*(k|thousand|lakh|lakhs|lac|cr|crore|crores|m))?\b)",
+    re.IGNORECASE,
+)
+
+_DAYS_VALIDITY_RE = re.compile(
+    r"\b(?:valid\s+for|validity\s*(?:of|:)?|within|for)\s+((\d+)\s*days?)\b",
+    re.IGNORECASE,
+)
+
 _ISO_DATE_RE = re.compile(r"\b(\d{4}-\d{2}-\d{2})\b")
 
-# Matches both "Flat 27% Off ... inclusive of all taxes" and FirstCry's
-# "27% discount on MRP (inclusive of all taxes)" or "MRP inclusive of all taxes ... 27% off"
 _DISCOUNT_PCT_RE = re.compile(
     r"(?:flat\s+)?(\d+(?:\.\d+)?)\s*%\s*(?:off|discount)\b",
     re.IGNORECASE,
@@ -95,8 +86,6 @@ _TAX_INCLUSIVE_RE = re.compile(
     r"\b(?:mrp\s+)?inclusive\s+of\s+all\s+taxes\b",
     re.IGNORECASE,
 )
-# Matches explicit ("18% GST applies") or implicit FirstCry
-# ("GST and Add'l charges may apply on discounted price")
 _ADDED_GST_RE = re.compile(
     r"(?:(\d+(?:\.\d+)?)\s*%\s*)?\bgst\s+"
     r"(?:and\s+add(?:'|’|itio)?(?:na)?l\s+charges\s+)?"
@@ -111,25 +100,7 @@ class BoundSpec:
     raw_text: str
     value: float
     span: Span
-
-
-def _prove_upper_bound_sat(draft_val: float, canon_val: float) -> tuple[bool, float, str]:
-    """Prove exists x: (x <= draft_val) AND NOT (x <= canon_val) via Z3 SMT or interval solver."""
-    try:
-        import z3  # type: ignore[import-not-found]
-
-        x = z3.Real("amount")
-        solver = z3.Solver()
-        solver.add(x > 0)
-        solver.add(x <= draft_val)
-        solver.add(z3.Not(x <= canon_val))
-        if solver.check() == z3.sat:
-            return True, 0.5 * (canon_val + draft_val), "z3-smt-v4"
-        return False, 0.0, "z3-smt-v4"
-    except ImportError:
-        if draft_val > canon_val:
-            return True, 0.5 * (canon_val + draft_val), "interval-smt-v1"
-        return False, 0.0, "interval-smt-v1"
+    kind: Literal["upper", "lower"] = "upper"
 
 
 def _parse_indian_amount(num_str: str, unit_str: str | None) -> float:
@@ -138,28 +109,261 @@ def _parse_indian_amount(num_str: str, unit_str: str | None) -> float:
     return clean * mult
 
 
-def _extract_upper_bounds(text: str) -> tuple[BoundSpec, ...]:
-    bounds: list[BoundSpec] = []
-    for m in _UPPER_BOUND_RE.finditer(text):
-        val = _parse_indian_amount(m.group(2), m.group(3))
-        bounds.append(
-            BoundSpec(
-                raw_text=m.group(0).strip(),
-                value=val,
-                span=Span(start=m.start(1), end=m.end(1)),
+_Z3_LOCK = threading.Lock()
+
+
+class SmtConstraintSolver:
+    """Formal SMT / symbolic arithmetic constraint solver (`z3` -> `sympy` + `scipy` HiGHS)."""
+
+    @staticmethod
+    def prove_upper_bound_breach(draft_val: float, canon_val: float) -> tuple[bool, float, str]:
+        """Prove $\\exists x > 0 : (x \\le D_{\\max}) \\land \\neg(x \\le C_{\\max})$."""
+        try:
+            import z3  # type: ignore[import-not-found]
+
+            with _Z3_LOCK:
+                x = z3.Real("amount")
+                solver = z3.Solver()
+                solver.add(x > 0)
+                solver.add(x <= draft_val)
+                solver.add(z3.Not(x <= canon_val))
+                solver.add(x >= canon_val + 0.5 * (draft_val - canon_val))
+                if solver.check() == z3.sat:
+                    model = solver.model()
+                    val = model.eval(x, model_completion=True)
+                    witness = (
+                        float(val.as_fraction())
+                        if hasattr(val, "as_fraction")
+                        else 0.5 * (canon_val + draft_val)
+                    )
+                    return True, witness, "z3-smt-v4"
+                return False, 0.0, "z3-smt-v4"
+        except ImportError:
+            pass
+
+        try:
+            import sympy as sp
+            from scipy.optimize import linprog
+            from sympy.solvers.inequalities import reduce_rational_inequalities
+
+            x_sym = sp.Symbol("amount", real=True)
+            sol = reduce_rational_inequalities(
+                [
+                    [
+                        x_sym > 0,
+                        x_sym <= sp.Rational(str(draft_val)),
+                        x_sym > sp.Rational(str(canon_val)),
+                    ]
+                ],
+                x_sym,
             )
+            sol_set = sol.as_set()
+            if sol_set.is_empty:
+                return False, 0.0, "sympy-scipy-smt-v2"
+
+            # Find interior witness maximizing distance above canon_val via HiGHS LP
+            eps = max(1e-3, 0.5 * (draft_val - canon_val))
+            lp = linprog(
+                c=[-1.0],
+                A_ub=np.array([[1.0], [-1.0]], dtype=np.float64),
+                b_ub=np.array([draft_val, -(canon_val + eps)], dtype=np.float64),
+                bounds=(0.0, None),
+                method="highs",
+            )
+            witness = (
+                float(lp.x[0])
+                if (lp.success and lp.x is not None)
+                else 0.5 * (canon_val + draft_val)
+            )
+            return True, min(witness, 0.5 * (canon_val + draft_val)), "sympy-scipy-smt-v2"
+        except Exception:
+            if draft_val > canon_val:
+                return True, 0.5 * (canon_val + draft_val), "interval-smt-v1"
+            return False, 0.0, "interval-smt-v1"
+
+    @staticmethod
+    def prove_lower_bound_breach(draft_val: float, canon_val: float) -> tuple[bool, float, str]:
+        """Prove $\\exists x > 0 : (x \\ge D_{\\min}) \\land \\neg(x \\ge C_{\\min})$."""
+        try:
+            import z3  # type: ignore[import-not-found]
+
+            with _Z3_LOCK:
+                x = z3.Real("amount")
+                solver = z3.Solver()
+                solver.add(x > 0)
+                solver.add(x >= draft_val)
+                solver.add(z3.Not(x >= canon_val))
+                if solver.check() == z3.sat:
+                    return True, 0.5 * (draft_val + canon_val), "z3-smt-v4"
+                return False, 0.0, "z3-smt-v4"
+        except ImportError:
+            pass
+
+        try:
+            import sympy as sp
+            from sympy.solvers.inequalities import reduce_rational_inequalities
+
+            x_sym = sp.Symbol("amount", real=True)
+            sol = reduce_rational_inequalities(
+                [
+                    [
+                        x_sym > 0,
+                        x_sym >= sp.Rational(str(draft_val)),
+                        x_sym < sp.Rational(str(canon_val)),
+                    ]
+                ],
+                x_sym,
+            )
+            if not sol.as_set().is_empty:
+                return True, 0.5 * (draft_val + canon_val), "sympy-scipy-smt-v2"
+            return False, 0.0, "sympy-scipy-smt-v2"
+        except Exception:
+            if draft_val < canon_val:
+                return True, 0.5 * (draft_val + canon_val), "interval-smt-v1"
+            return False, 0.0, "interval-smt-v1"
+
+    @staticmethod
+    def prove_temporal_expiry_breach(draft_iso: str, canon_iso: str) -> tuple[bool, str, str]:
+        r"""Prove $\exists t \in \mathbb{Z}$ such that:
+        $(t \le t_{\text{draft}}) \land \neg(t \le t_{\text{canon}})$.
+        """
+        try:
+            d_ord = dt.date.fromisoformat(draft_iso).toordinal()
+            c_ord = dt.date.fromisoformat(canon_iso).toordinal()
+        except ValueError:
+            return (draft_iso > canon_iso), draft_iso, "temporal-smt-v1"
+
+        try:
+            import z3  # type: ignore[import-not-found]
+
+            with _Z3_LOCK:
+                t = z3.Int("epoch_day")
+                solver = z3.Solver()
+                solver.add(t <= d_ord)
+                solver.add(z3.Not(t <= c_ord))
+                if solver.check() == z3.sat:
+                    return True, draft_iso, "z3-smt-v4"
+                return False, "", "z3-smt-v4"
+        except ImportError:
+            pass
+
+        try:
+            import sympy as sp
+            from sympy.solvers.inequalities import reduce_rational_inequalities
+
+            t_sym = sp.Symbol("epoch_day", real=True)
+            sol = reduce_rational_inequalities([[t_sym <= d_ord, t_sym > c_ord]], t_sym)
+            if not sol.as_set().is_empty:
+                return True, draft_iso, "sympy-scipy-smt-v2"
+            return False, "", "sympy-scipy-smt-v2"
+        except Exception:
+            return (d_ord > c_ord), draft_iso, "temporal-smt-v1"
+
+    @staticmethod
+    def prove_drip_pricing_contradiction(
+        claimed_pct: float,
+        gst_pct: float,
+    ) -> tuple[bool, float, str]:
+        """Prove $d_{\\text{eff}} = (1 - (1 - d)(1 + g)) \\cdot 100 < d \\cdot 100$."""
+        try:
+            import z3  # type: ignore[import-not-found]
+
+            with _Z3_LOCK:
+                d_eff = z3.Real("effective_pct")
+                solver = z3.Solver()
+                net_mult = (1.0 - claimed_pct / 100.0) * (1.0 + gst_pct / 100.0)
+                exact_eff = round((1.0 - net_mult) * 100.0, 2)
+                solver.add(d_eff == exact_eff)
+                solver.add(z3.Not(d_eff >= claimed_pct))
+                if solver.check() == z3.sat:
+                    return True, exact_eff, "z3-smt-v4"
+                return False, exact_eff, "z3-smt-v4"
+        except ImportError:
+            pass
+
+        try:
+            import sympy as sp
+            from sympy.solvers.inequalities import reduce_rational_inequalities
+
+            d_r = sp.Rational(str(claimed_pct)) / sp.Integer(100)
+            g_r = sp.Rational(str(gst_pct)) / sp.Integer(100)
+            eff_r = (sp.Integer(1) - (sp.Integer(1) - d_r) * (sp.Integer(1) + g_r)) * sp.Integer(
+                100
+            )
+            x_sym = sp.Symbol("d_eff", real=True)
+            sol = reduce_rational_inequalities(
+                [[x_sym >= eff_r, x_sym <= eff_r, x_sym < sp.Rational(str(claimed_pct))]],
+                x_sym,
+            )
+            eff_float = round(float(eff_r), 2)
+            return (not sol.as_set().is_empty), eff_float, "sympy-scipy-smt-v2"
+        except Exception:
+            net_mult = (1.0 - claimed_pct / 100.0) * (1.0 + gst_pct / 100.0)
+            eff_float = round((1.0 - net_mult) * 100.0, 2)
+            return (eff_float < claimed_pct), eff_float, "drip-pricing-smt-v1"
+
+
+default_smt_solver = SmtConstraintSolver()
+
+
+def _extract_bounds(
+    text: str,
+    pattern: re.Pattern[str],
+    kind: Literal["upper", "lower"],
+) -> tuple[BoundSpec, ...]:
+    return tuple(
+        BoundSpec(
+            raw_text=m.group(0).strip(),
+            value=_parse_indian_amount(m.group(2), m.group(3)),
+            span=Span(start=m.start(1), end=m.end(1)),
+            kind=kind,
         )
-    return tuple(bounds)
+        for m in pattern.finditer(text)
+    )
 
 
-def _content_keywords(text: str) -> set[str]:
-    words = re.findall(r"[a-zA-Z]{3,}", text.lower())
-    return {w for w in words if w not in _STOPWORDS}
+def _extract_upper_bounds(text: str) -> tuple[BoundSpec, ...]:
+    return _extract_bounds(text, _UPPER_BOUND_RE, "upper")
+
+
+def _extract_lower_bounds(text: str) -> tuple[BoundSpec, ...]:
+    return _extract_bounds(text, _LOWER_BOUND_RE, "lower")
+
+
+def _resolve_canon_bound(
+    fact: FactClaim,
+    fact_full: str,
+    kind: Literal["upper", "lower"],
+) -> BoundSpec | None:
+    bounds = (
+        _extract_upper_bounds(fact_full) if kind == "upper" else _extract_lower_bounds(fact_full)
+    )
+    if bounds:
+        return bounds[0]
+    ops = ("<=", "<") if kind == "upper" else (">=", ">")
+    if fact.comparison_operator in ops and fact.metric_value:
+        m = re.search(
+            r"(\d[\d,]*(?:\.\d+)?)(?:\s*(k|thousand|lakh|lakhs|lac|cr|crore|crores|m))?",
+            fact.metric_value,
+            re.IGNORECASE,
+        )
+        if m:
+            return BoundSpec(
+                raw_text=fact.metric_value,
+                value=_parse_indian_amount(m.group(1), m.group(2)),
+                span=Span(start=0, end=len(fact.metric_value)),
+                kind=kind,
+            )
+    return None
+
+
+def _content_stems(text: str) -> set[str]:
+    return {normalize_stem(w) for w in content_words(text)}
 
 
 class ClaimAlgebraCheck(Check):
     check_id: ClassVar[str] = "claim.algebra"
-    check_version: ClassVar[str] = "1.1"
+    check_version: ClassVar[str] = "2.0"
     node_kinds: ClassVar[frozenset[NodeKind]] = frozenset({NodeKind.TEXT})
 
     def run(self, node: Node, canon: Canon) -> list[Finding]:
@@ -172,14 +376,16 @@ class ClaimAlgebraCheck(Check):
         if not canon.facts:
             return findings
 
-        node_kw = _content_keywords(node.text)
+        node_stems = _content_stems(node.text)
         for fact in canon.facts:
-            fact_full = " ".join([fact.text, *fact.conditions])
-            fact_kw = _content_keywords(fact_full)
-            if len(node_kw & fact_kw) < 2:
+            fact_full = " ".join([fact.text, *fact.conditions, fact.subject_product])
+            fact_stems = _content_stems(fact_full)
+            if len(node_stems & fact_stems) < 2:
                 continue
 
             findings.extend(self._check_upper_bound_breach(node, canon, fact, fact_full))
+            findings.extend(self._check_lower_bound_breach(node, canon, fact, fact_full))
+            findings.extend(self._check_kfs_validity_days_breach(node, canon, fact))
             findings.extend(self._check_expiry_date_breach(node, canon, fact))
 
         return findings
@@ -225,19 +431,23 @@ class ClaimAlgebraCheck(Check):
         fact: FactClaim,
         fact_full: str,
     ) -> list[Finding]:
-        canon_bounds = _extract_upper_bounds(fact_full)
-        if not canon_bounds:
+        canon_cap = _resolve_canon_bound(fact, fact_full, "upper")
+        if canon_cap is None:
             return []
         draft_bounds = _extract_upper_bounds(node.text)
         if not draft_bounds:
             return []
-
-        canon_cap = canon_bounds[0]
-        canon_amt_str = canon_cap.span.slice(fact_full)
+        canon_amt_str = (
+            canon_cap.span.slice(fact_full)
+            if canon_cap.span.end <= len(fact_full) and canon_cap.raw_text in fact_full
+            else canon_cap.raw_text
+        )
         out: list[Finding] = []
 
         for d_bound in draft_bounds:
-            is_sat, witness, solver_sha = _prove_upper_bound_sat(d_bound.value, canon_cap.value)
+            is_sat, witness, solver_sha = default_smt_solver.prove_upper_bound_breach(
+                d_bound.value, canon_cap.value
+            )
             if is_sat:
                 out.append(
                     self.finding(
@@ -269,6 +479,107 @@ class ClaimAlgebraCheck(Check):
                 )
         return out
 
+    def _check_lower_bound_breach(
+        self,
+        node: TextNode,
+        canon: Canon,
+        fact: FactClaim,
+        fact_full: str,
+    ) -> list[Finding]:
+        canon_floor = _resolve_canon_bound(fact, fact_full, "lower")
+        if canon_floor is None:
+            return []
+        draft_bounds = _extract_lower_bounds(node.text)
+        if not draft_bounds:
+            return []
+        canon_amt_str = (
+            canon_floor.span.slice(fact_full)
+            if canon_floor.span.end <= len(fact_full) and canon_floor.raw_text in fact_full
+            else canon_floor.raw_text
+        )
+        out: list[Finding] = []
+
+        for d_bound in draft_bounds:
+            is_sat, witness, solver_sha = default_smt_solver.prove_lower_bound_breach(
+                d_bound.value, canon_floor.value
+            )
+            if is_sat:
+                out.append(
+                    self.finding(
+                        node=node,
+                        locator=d_bound.span,
+                        severity=85,
+                        message=(
+                            f"SMT / Algebraic floor breach: draft permits down to "
+                            f"{d_bound.value:,.0f} ({d_bound.raw_text!r}), violating Canon "
+                            f"lower bound >= {canon_floor.value:,.0f} ({canon_floor.raw_text!r})."
+                        ),
+                        rule_ref=canon.to_rule_ref(fact),
+                        evidence=AlgebraicProofEvidence(
+                            draft_expr=f"amount >= {d_bound.value:.0f}",
+                            canon_constraint=f"amount >= {canon_floor.value:.0f}",
+                            solver_status="sat_counterexample",
+                            counterexample={
+                                "witness_amount": f"{witness:.0f}",
+                                "draft_lower_bound": f"{d_bound.value:.0f}",
+                                "canon_lower_bound": f"{canon_floor.value:.0f}",
+                            },
+                        ),
+                        suggestion=Suggestion(
+                            label=f"Raise floor to {canon_amt_str}",
+                            replacements=(Replace(span=d_bound.span, replacement=canon_amt_str),),
+                        ),
+                        trace=Trace(tier=Tier.SMT, model_sha=solver_sha),
+                    )
+                )
+        return out
+
+    def _check_kfs_validity_days_breach(
+        self,
+        node: TextNode,
+        canon: Canon,
+        fact: FactClaim,
+    ) -> list[Finding]:
+        if fact.kfs_acceptance_validity_days is None:
+            return []
+        min_days = int(fact.kfs_acceptance_validity_days)
+        out: list[Finding] = []
+        for match in _DAYS_VALIDITY_RE.finditer(node.text):
+            draft_days = int(match.group(2))
+            is_sat, witness, solver_sha = default_smt_solver.prove_lower_bound_breach(
+                float(draft_days), float(min_days)
+            )
+            if is_sat:
+                span = Span(start=match.start(1), end=match.end(1))
+                out.append(
+                    self.finding(
+                        node=node,
+                        locator=span,
+                        severity=80,
+                        message=(
+                            f"RBI 2025 KFS validity window breach: draft gives {draft_days} days, "
+                            f"below mandatory KFS minimum {min_days} days."
+                        ),
+                        rule_ref=canon.to_rule_ref(fact),
+                        evidence=AlgebraicProofEvidence(
+                            draft_expr=f"kfs_validity_days == {draft_days}",
+                            canon_constraint=f"kfs_validity_days >= {min_days}",
+                            solver_status="sat_counterexample",
+                            counterexample={
+                                "witness_days": f"{witness:.1f}",
+                                "draft_days": str(draft_days),
+                                "canon_min_days": str(min_days),
+                            },
+                        ),
+                        suggestion=Suggestion(
+                            label=f"Set KFS validity to {min_days} days",
+                            replacements=(Replace(span=span, replacement=f"{min_days} days"),),
+                        ),
+                        trace=Trace(tier=Tier.SMT, model_sha=solver_sha),
+                    )
+                )
+        return out
+
     def _check_expiry_date_breach(
         self,
         node: TextNode,
@@ -281,7 +592,10 @@ class ClaimAlgebraCheck(Check):
         out: list[Finding] = []
         for match in _ISO_DATE_RE.finditer(node.text):
             draft_date = match.group(1)
-            if draft_date > canon_date:
+            is_sat, _, solver_sha = default_smt_solver.prove_temporal_expiry_breach(
+                draft_date, canon_date
+            )
+            if is_sat:
                 span = Span(start=match.start(1), end=match.end(1))
                 out.append(
                     self.finding(
@@ -306,7 +620,7 @@ class ClaimAlgebraCheck(Check):
                             label=f"Use approved expiry date {canon_date}",
                             replacements=(Replace(span=span, replacement=canon_date),),
                         ),
-                        trace=Trace(tier=Tier.SMT, model_sha="temporal-smt-v1"),
+                        trace=Trace(tier=Tier.SMT, model_sha=solver_sha),
                     )
                 )
         return out
@@ -339,13 +653,10 @@ class ClaimAlgebraCheck(Check):
         locator: Span,
     ) -> Finding:
         claimed_pct = float(disc_match.group(1))
-        # Default to 12.0% GST (FirstCry CCPA PIB 2171807 standard apparel
-        # slab -> 27% drops to 18.24%) when the footnote states
-        # "GST and Add'l charges may apply on discounted price"
-        # without an explicit percentage number.
         gst_pct = float(gst_match.group(1)) if gst_match.group(1) else 12.0
-        net_multiplier = (1.0 - claimed_pct / 100.0) * (1.0 + gst_pct / 100.0)
-        effective_pct = round((1.0 - net_multiplier) * 100.0, 2)
+        _, effective_pct, solver_sha = default_smt_solver.prove_drip_pricing_contradiction(
+            claimed_pct, gst_pct
+        )
 
         rule_ref = Rule(
             rule_id="ccpa-drip-pricing-discount-math",
@@ -383,5 +694,5 @@ class ClaimAlgebraCheck(Check):
                 label=f"State true net discount {effective_pct:.2f}%",
                 replacements=(Replace(span=span, replacement=f"{effective_pct:.2f}"),),
             ),
-            trace=Trace(tier=Tier.SMT, model_sha="drip-pricing-smt-v1"),
+            trace=Trace(tier=Tier.SMT, model_sha=solver_sha),
         )

@@ -1,8 +1,8 @@
 """Canon: the machine-readable representation of brand rules.
 
-Today loaded from YAML or compiled via Pipeline A (`CanonCompiler`).
-Supports all five CanonGate rule schemas (`TermRule`, `ColorToken`, `FactClaim`
-with `substantiation_level` and KFS metadata, `TriggerObligation`, `VoiceProfile`).
+Loaded from YAML or compiled via Pipeline A (`CanonCompiler`).
+Supports CanonGate rule schemas (`TermRule` with `pos_constraint`,
+`ColorToken`, and `FactClaim` with `substantiation_level` and KFS metadata).
 """
 
 from __future__ import annotations
@@ -49,14 +49,14 @@ def _parse_hex_rgb(hex_str: str) -> tuple[int, int, int]:
 
 
 class TermRule(FrozenModel, frozen=True):
-    """A banned term with its preferred replacement."""
+    """A banned term with its preferred replacement and optional POS constraint."""
 
     id: str
     pattern_text: str  # raw string, compiled into a cached regex at runtime
     preferred: str
     severity: Annotated[int, Field(ge=1, le=100)] = 60
     note: str = ""
-    pos_constraint: str | None = None
+    pos_constraint: str | None = None  # e.g. "NOUN", "VERB", "ADJ", "ADV"
 
     @property
     def pattern(self) -> re.Pattern[str]:
@@ -113,25 +113,74 @@ class Rule(FrozenModel, frozen=True):
 
 CanonRule = TermRule | ColorToken | FactClaim
 
+_TermHashKey = tuple[str, str, str, int, str, str | None]
+_PaletteHashKey = tuple[str, str, str, float, tuple[int, int, int]]
+_FactHashKey = tuple[
+    str,
+    str,
+    tuple[str, ...],
+    str | None,
+    str,
+    str,
+    str,
+    int | None,
+    str,
+]
+
 
 @lru_cache(maxsize=128)
 def _compute_canon_hash_cached(
     canon_id: str,
     version: str,
-    terms_key: tuple[tuple[str, str, str, int, str], ...],
-    palette_key: tuple[tuple[str, str, str, float, tuple[int, int, int]], ...],
-    facts_key: tuple[tuple[str, str, tuple[str, ...], str | None], ...],
+    terms_key: tuple[_TermHashKey, ...],
+    palette_key: tuple[_PaletteHashKey, ...],
+    facts_key: tuple[_FactHashKey, ...],
 ) -> CanonHash:
+    facts_payload = []
+    for (
+        fid,
+        text,
+        conds,
+        valid_until,
+        subj,
+        metric,
+        comp_op,
+        kfs_days,
+        sub_level,
+    ) in facts_key:
+        f_dict: dict[str, object] = {
+            "conditions": list(conds),
+            "id": fid,
+            "text": text,
+            "valid_until": valid_until,
+        }
+        if subj:
+            f_dict["subject_product"] = subj
+        if metric:
+            f_dict["metric_value"] = metric
+        if comp_op != "==":
+            f_dict["comparison_operator"] = comp_op
+        if kfs_days is not None:
+            f_dict["kfs_acceptance_validity_days"] = kfs_days
+        if sub_level != "finished_product_clinical":
+            f_dict["substantiation_level"] = sub_level
+        facts_payload.append(f_dict)
+
+    terms_payload = []
+    for tid, pat, pref, sev, note, pos_c in terms_key:
+        t_dict: dict[str, object] = {
+            "id": tid,
+            "note": note,
+            "pattern_text": pat,
+            "preferred": pref,
+            "severity": sev,
+        }
+        if pos_c:
+            t_dict["pos_constraint"] = pos_c
+        terms_payload.append(t_dict)
+
     payload = {
-        "facts": [
-            {
-                "conditions": list(conds),
-                "id": fid,
-                "text": text,
-                "valid_until": valid_until,
-            }
-            for fid, text, conds, valid_until in facts_key
-        ],
+        "facts": facts_payload,
         "id": canon_id,
         "palette": [
             {
@@ -143,16 +192,7 @@ def _compute_canon_hash_cached(
             }
             for cid, hex_val, name, max_de, rgb in palette_key
         ],
-        "terminology": [
-            {
-                "id": tid,
-                "note": note,
-                "pattern_text": pat,
-                "preferred": pref,
-                "severity": sev,
-            }
-            for tid, pat, pref, sev, note in terms_key
-        ],
+        "terminology": terms_payload,
         "version": version,
     }
     raw = json.dumps(payload, sort_keys=True, separators=(",", ":"))
@@ -176,10 +216,24 @@ class Canon(FrozenModel, frozen=True):
     def hash(self) -> CanonHash:
         """Deterministic O(1)-cached hash of the entire rule set (canonical JSON, sorted keys)."""
         terms_key = tuple(
-            (t.id, t.pattern_text, t.preferred, t.severity, t.note) for t in self.terminology
+            (t.id, t.pattern_text, t.preferred, t.severity, t.note, t.pos_constraint)
+            for t in self.terminology
         )
         palette_key = tuple((c.id, c.hex, c.name, c.max_delta_e, c.rgb) for c in self.palette)
-        facts_key = tuple((f.id, f.text, tuple(f.conditions), f.valid_until) for f in self.facts)
+        facts_key = tuple(
+            (
+                f.id,
+                f.text,
+                tuple(f.conditions),
+                f.valid_until,
+                f.subject_product,
+                f.metric_value,
+                f.comparison_operator,
+                f.kfs_acceptance_validity_days,
+                f.substantiation_level,
+            )
+            for f in self.facts
+        )
         return _compute_canon_hash_cached(
             self.id,
             self.version,

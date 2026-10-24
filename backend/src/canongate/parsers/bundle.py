@@ -69,7 +69,11 @@ class BundleParser:
         """Parse a single file `Path`, raw text `str`, or `(filename, payload)` tuple."""
         try:
             if isinstance(item, tuple) and len(item) == 2:
-                filename, payload = item
+                if isinstance(item[0], (bytes, bytearray)) and isinstance(item[1], (str, Path)):
+                    payload, filename = item
+                    filename = str(filename)
+                else:
+                    filename, payload = item
                 ext = Path(filename).suffix.lower()
                 stem = Path(filename).stem or "asset"
                 return self._dispatch_payload(ext, stem, filename, payload)

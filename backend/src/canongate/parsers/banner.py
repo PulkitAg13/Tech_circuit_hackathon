@@ -1,26 +1,36 @@
-"""Multimodal Image & Promotional Banner Parser (`parsers/banner.py`).
+"""Multimodal Image & Promotional Banner Parser with Dual-Script OCR (`parsers/banner.py`).
 
 Produces:
 1. An `ImageNode` with verified pixel dimensions `(width, height)`, SHA-256
    content identity, and `alt` metadata for Tier 1 visual checks
    (`visual.subordination`, `c2pa.inbound`, `visual.palette_drift`,
-   `accessibility.contrast`).
-2. Companion `TextNode`s (`{path}/ocr[{i}]`) when an OCR callable/engine
-   (such as PaddleOCR PP-OCRv5) or sidecar text is provided, so banner copy
-   and fine-print disclaimers flow automatically through Tier 1 and Tier 2
-   claim/terminology checks.
-3. Fast, zero-dependency OpenCV morphological text-band detection
-   (`detect_banner_text_boxes`) for measuring fine-print pixel heights
-   (ASCI 26px / 1080p rule) and foreground/background contrast regions.
+   `accessibility.contrast`, `legibility.placement`).
+2. Companion `TextNode`s (`{path}/ocr[{i}]` or `{path}/ocr_low_conf[{i}][...]`)
+   automatically extracted in live runs via `BannerOCREngine`:
+   - **Primary Engine:** `PaddleOCR 3.x (PP-OCRv5)` dual-script recognizer
+     (`en` + `hi`/`devanagari`) supporting both `.predict()` (`rec_texts`,
+     `rec_scores`, `rec_boxes`/`dt_polys`) and `.ocr()`.
+   - **Automatic Local Fallback:** `Tesseract 5` (`pytesseract.image_to_data`)
+     with 2x bicubic upscaling on small banners, grouping word boxes into
+     lines with exact bounding boxes and confidence scores $\\in [0, 1]$.
+   - **Confidence & Height Gating (Plan §3.1 p. 4):** Any fine-print OCR box
+     with `confidence < 0.75` or `height < 10px` is tagged with
+     `ocr_low_conf` metadata so `legibility.placement` flags it for human review
+     while still routing its text through Tier 1 and Tier 2 checks.
+3. Fast OpenCV morphological text-band detection (`detect_banner_text_boxes`).
 """
 
 from __future__ import annotations
 
+import hashlib
 import io
 import logging
+import re
+from collections import defaultdict
 from collections.abc import Sequence
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 import cv2
 import numpy as np
@@ -31,13 +41,413 @@ from canongate.domain.finding import BBox
 
 logger = logging.getLogger(__name__)
 
+_DEVANAGARI_RE = re.compile(r"[\u0900-\u097F]")
+_LATIN_RE = re.compile(r"[A-Za-z]")
+_REAL_WORD_RE = re.compile(r"[A-Za-z\u0900-\u097F]{2,}|\d{2,}|[₹$%]\d+|\d+[₹$%]")
+_STRIPE_NOISE_RE = re.compile(r"^[|Il1!.\-_/:;,\s]+$")
+
+
+_DEFAULT_BBOX: BBox = BBox(x=0, y=0, w=100, h=20)
+
+
+@dataclass(frozen=True, slots=True)
+class OCRBox:
+    """Recognized text line from a banner image with confidence, bounding box, and script."""
+
+    text: str
+    confidence: float = 0.95
+    bbox: BBox = _DEFAULT_BBOX
+    script: Literal["latin", "devanagari", "mixed"] = "latin"
+
+    @property
+    def is_low_confidence(self) -> bool:
+        return self.confidence < 0.75
+
+    @property
+    def is_micro_height(self) -> bool:
+        return 0 < self.bbox.h < 10
+
+
+def _detect_script(text: str) -> Literal["latin", "devanagari", "mixed"]:
+    has_hi = bool(_DEVANAGARI_RE.search(text))
+    has_lat = bool(_LATIN_RE.search(text))
+    if has_hi and has_lat:
+        return "mixed"
+    if has_hi:
+        return "devanagari"
+    return "latin"
+
+
+def _is_meaningful_ocr_line(text: str) -> bool:
+    """Filter out single-bar stripe artifacts produced when OCR scans synthetic test stripes."""
+    cleaned = text.strip()
+    if len(cleaned) < 2 or _STRIPE_NOISE_RE.match(cleaned):
+        return False
+    if not _REAL_WORD_RE.search(cleaned):
+        return False
+    alnum = [c.lower() for c in cleaned if c.isalnum()]
+    return len(set(alnum)) >= 2
+
+
+def _poly_or_box_to_bbox(coords: Any) -> BBox:
+    """Convert a 4-point polygon `[[x1,y1], ...]` or `[x1, y1, x2, y2]` into a `BBox`."""
+    try:
+        arr = np.asarray(coords, dtype=np.float64)
+        if arr.ndim == 2 and arr.shape[1] == 2:
+            x0 = max(0, int(np.min(arr[:, 0])))
+            y0 = max(0, int(np.min(arr[:, 1])))
+            x1 = max(x0 + 1, int(np.max(arr[:, 0])))
+            y1 = max(y0 + 1, int(np.max(arr[:, 1])))
+            return BBox(x=x0, y=y0, w=x1 - x0, h=y1 - y0)
+        flat = arr.flatten()
+        if len(flat) == 4:
+            x0, y0, v2, v3 = (max(0, int(v)) for v in flat)
+            # Support both [x1, y1, x2, y2] and [x, y, w, h]
+            w = (v2 - x0) if v2 > x0 else max(1, v2)
+            h = (v3 - y0) if v3 > y0 else max(1, v3)
+            return BBox(x=x0, y=y0, w=max(1, w), h=max(1, h))
+    except Exception:
+        pass
+    return BBox(x=0, y=0, w=100, h=20)
+
+
+class BannerOCREngine:
+    """Dual-script (English + Devanagari) banner OCR engine (`PaddleOCR` -> `Tesseract`)."""
+
+    __slots__ = (
+        "_paddle_en",
+        "_paddle_hi",
+        "_paddle_probed",
+        "_tess_cache",
+        "_tesseract_available",
+    )
+
+    def __init__(self) -> None:
+        self._paddle_en: Any = None
+        self._paddle_hi: Any = None
+        self._paddle_probed: bool = False
+        self._tesseract_available: bool | None = None
+        self._tess_cache: dict[bytes, list[OCRBox]] = {}
+
+    def _ensure_paddle(self) -> None:
+        if self._paddle_probed:
+            return
+        self._paddle_probed = True
+        try:
+            from paddleocr import PaddleOCR  # type: ignore[import-not-found]
+
+            try:
+                self._paddle_en = PaddleOCR(
+                    ocr_version="PP-OCRv5",
+                    lang="en",
+                    use_doc_orientation_classify=False,
+                    use_doc_unwarping=False,
+                    use_textline_orientation=False,
+                )
+                self._paddle_hi = PaddleOCR(
+                    ocr_version="PP-OCRv5",
+                    lang="hi",
+                    use_doc_orientation_classify=False,
+                    use_doc_unwarping=False,
+                    use_textline_orientation=False,
+                )
+            except TypeError:
+                self._paddle_en = PaddleOCR(lang="en", show_log=False)
+        except Exception:
+            self._paddle_en = None
+            self._paddle_hi = None
+
+    def extract(
+        self,
+        image_input: str | Path | bytes | np.ndarray,
+        *,
+        custom_engine: Any = "auto",
+    ) -> list[OCRBox]:
+        """Extract `OCRBox` lines from `image_input` using custom, PaddleOCR, or Tesseract."""
+        if custom_engine is None:
+            return []
+        if custom_engine != "auto":
+            return self._extract_from_custom_engine(image_input, custom_engine)
+
+        self._ensure_paddle()
+        if self._paddle_en is not None:
+            boxes = self._extract_from_custom_engine(image_input, self._paddle_en)
+            if self._paddle_hi is not None:
+                hi_boxes = self._extract_from_custom_engine(image_input, self._paddle_hi)
+                for hb in hi_boxes:
+                    if hb.script in ("devanagari", "mixed") and all(
+                        hb.text != b.text for b in boxes
+                    ):
+                        boxes.append(hb)
+            if boxes:
+                return boxes
+
+        return self._extract_with_tesseract(image_input)
+
+    def _extract_from_custom_engine(
+        self,
+        image_input: str | Path | bytes | np.ndarray,
+        engine: Any,
+    ) -> list[OCRBox]:
+        arg = str(image_input) if isinstance(image_input, Path) else image_input
+        try:
+            if hasattr(engine, "predict"):
+                raw_res = engine.predict(arg)
+            elif hasattr(engine, "ocr"):
+                raw_res = engine.ocr(arg)
+            else:
+                raw_res = engine(arg)
+        except Exception:
+            logger.warning("OCR engine failed on %r; continuing without OCR text", arg)
+            return []
+
+        return self.normalize_raw_ocr_output(raw_res)
+
+    @staticmethod
+    def normalize_raw_ocr_output(raw_res: Any) -> list[OCRBox]:
+        """Normalize PaddleOCR 3.x `.predict()`, 2.x `.ocr()`, dicts, or strings into `OCRBox`."""
+        boxes: list[OCRBox] = []
+        if not raw_res:
+            return boxes
+
+        for item in raw_res:
+            if isinstance(item, OCRBox):
+                boxes.append(item)
+            elif isinstance(item, str) and item.strip():
+                txt = item.strip()
+                boxes.append(OCRBox(text=txt, confidence=0.95, script=_detect_script(txt)))
+            elif isinstance(item, dict):
+                # PaddleOCR 3.x predict() dict:
+                # {"rec_texts": [...], "rec_scores": [...], "rec_boxes"/"dt_polys": [...]}
+                if "rec_texts" in item:
+                    texts = item.get("rec_texts") or []
+                    scores = item.get("rec_scores") or []
+                    polys = (
+                        item.get("rec_boxes")
+                        if item.get("rec_boxes") is not None
+                        else (
+                            item.get("dt_polys")
+                            if item.get("dt_polys") is not None
+                            else item.get("rec_polys")
+                        )
+                    )
+                    for idx, raw_t in enumerate(texts):
+                        t_str = str(raw_t).strip()
+                        if not t_str:
+                            continue
+                        conf = float(scores[idx]) if idx < len(scores) else 0.95
+                        bbox = (
+                            _poly_or_box_to_bbox(polys[idx])
+                            if (polys is not None and idx < len(polys))
+                            else BBox(x=0, y=idx * 24, w=120, h=20)
+                        )
+                        boxes.append(
+                            OCRBox(
+                                text=t_str,
+                                confidence=round(conf, 4),
+                                bbox=bbox,
+                                script=_detect_script(t_str),
+                            )
+                        )
+                elif item.get("text"):
+                    t_str = str(item["text"]).strip()
+                    conf = float(item.get("confidence", item.get("score", 0.95)))
+                    raw_b = item.get("bbox")
+                    bbox = (
+                        raw_b
+                        if isinstance(raw_b, BBox)
+                        else (
+                            _poly_or_box_to_bbox(raw_b)
+                            if raw_b is not None
+                            else BBox(x=0, y=0, w=100, h=20)
+                        )
+                    )
+                    boxes.append(
+                        OCRBox(
+                            text=t_str,
+                            confidence=round(conf, 4),
+                            bbox=bbox,
+                            script=_detect_script(t_str),
+                        )
+                    )
+            elif isinstance(item, (list, tuple)):
+                # PaddleOCR 2.x format: [ [ [[x1,y1]..], ("text", confidence) ], ... ]
+                # or direct tuple: ( [[x1,y1]..], ("text", confidence) )
+                candidates = (
+                    [item]
+                    if (
+                        len(item) == 2
+                        and isinstance(item[1], (list, tuple))
+                        and len(item[1]) >= 1
+                        and isinstance(item[1][0], str)
+                    )
+                    else item
+                )
+                for sub in candidates:
+                    if (
+                        isinstance(sub, (list, tuple))
+                        and len(sub) == 2
+                        and isinstance(sub[1], (list, tuple))
+                        and len(sub[1]) >= 1
+                        and isinstance(sub[1][0], str)
+                    ):
+                        txt = sub[1][0].strip()
+                        if not txt:
+                            continue
+                        conf = float(sub[1][1]) if len(sub[1]) >= 2 else 0.95
+                        bbox = _poly_or_box_to_bbox(sub[0])
+                        boxes.append(
+                            OCRBox(
+                                text=txt,
+                                confidence=round(conf, 4),
+                                bbox=bbox,
+                                script=_detect_script(txt),
+                            )
+                        )
+        return boxes
+
+    def _extract_with_tesseract(
+        self,
+        image_input: str | Path | bytes | np.ndarray,
+    ) -> list[OCRBox]:
+        if self._tesseract_available is False:
+            return []
+        try:
+            import pytesseract  # type: ignore[import-not-found]
+        except ImportError:
+            self._tesseract_available = False
+            return []
+
+        pil_img = self._to_pil_image(image_input)
+        if pil_img is None:
+            return []
+
+        w, h = pil_img.size
+        if w < 24 or h < 16:
+            return []
+
+        rgb_arr = np.asarray(pil_img.convert("RGB"), dtype=np.uint8)
+        cache_key = hashlib.blake2b(rgb_arr.tobytes(), digest_size=16).digest()
+        cache = getattr(self, "_tess_cache", None)
+        if cache is None:
+            cache = {}
+            self._tess_cache = cache
+        if cache_key in cache:
+            return list(cache[cache_key])
+
+        cand_boxes = detect_banner_text_boxes(rgb_arr, min_width=12)
+        if not cand_boxes:
+            cache[cache_key] = []
+            return []
+
+        # Filter to candidate boxes that have real multi-character horizontal stroke transitions
+        gray = cv2.cvtColor(rgb_arr, cv2.COLOR_RGB2GRAY)
+        stroke_boxes: list[BBox] = []
+        for b in cand_boxes:
+            roi = gray[b.y : b.y + b.h, b.x : b.x + b.w]
+            if roi.size == 0:
+                continue
+            mid = roi[roi.shape[0] // 2, :]
+            transitions = int(np.sum(np.abs(np.diff(mid.astype(np.int16))) > 20))
+            if transitions >= 6:
+                stroke_boxes.append(b)
+        if not stroke_boxes:
+            cache[cache_key] = []
+            return []
+
+        crop_x0 = max(0, min(b.x for b in stroke_boxes) - 10)
+        crop_y0 = max(0, min(b.y for b in stroke_boxes) - 10)
+        crop_x1 = min(w, max(b.x + b.w for b in stroke_boxes) + 10)
+        crop_y1 = min(h, max(b.y + b.h for b in stroke_boxes) + 10)
+        cropped_pil = pil_img.crop((crop_x0, crop_y0, crop_x1, crop_y1))
+        cw, ch = cropped_pil.size
+
+        scale = 2 if (ch < 120 or cw < 320) else 1
+        work_img = (
+            cropped_pil.resize((cw * scale, ch * scale), Image.Resampling.BICUBIC)
+            if scale > 1
+            else cropped_pil
+        )
+
+        try:
+            data = pytesseract.image_to_data(
+                work_img, output_type=pytesseract.Output.DICT, config="--psm 6"
+            )
+            self._tesseract_available = True
+        except Exception:
+            self._tesseract_available = False
+            return []
+
+        line_groups: dict[tuple[int, int, int], list[tuple[str, float, int, int, int, int]]] = (
+            defaultdict(list)
+        )
+        n_items = len(data.get("text", ()))
+        for i in range(n_items):
+            word = str(data["text"][i]).strip()
+            if not word:
+                continue
+            try:
+                conf_raw = float(data["conf"][i])
+            except (ValueError, TypeError):
+                conf_raw = -1.0
+            if conf_raw < 0:
+                continue
+            key = (
+                int(data["block_num"][i]),
+                int(data["par_num"][i]),
+                int(data["line_num"][i]),
+            )
+            lx = crop_x0 + max(0, int(data["left"][i]) // scale)
+            ly = crop_y0 + max(0, int(data["top"][i]) // scale)
+            lw = max(1, int(data["width"][i]) // scale)
+            lh = max(1, int(data["height"][i]) // scale)
+            line_groups[key].append((word, conf_raw / 100.0, lx, ly, lw, lh))
+
+        boxes: list[OCRBox] = []
+        for items in line_groups.values():
+            line_text = " ".join(w_str for w_str, _, _, _, _, _ in items).strip()
+            if not _is_meaningful_ocr_line(line_text):
+                continue
+            mean_conf = sum(c for _, c, _, _, _, _ in items) / float(len(items))
+            if mean_conf < 0.35:
+                continue
+            x0 = min(x for _, _, x, _, _, _ in items)
+            y0 = min(y for _, _, _, y, _, _ in items)
+            x1 = max(x + bw for _, _, x, _, bw, _ in items)
+            y1 = max(y + bh for _, _, _, y, _, bh in items)
+            boxes.append(
+                OCRBox(
+                    text=line_text,
+                    confidence=round(mean_conf, 4),
+                    bbox=BBox(x=x0, y=y0, w=max(1, x1 - x0), h=max(1, y1 - y0)),
+                    script=_detect_script(line_text),
+                )
+            )
+        cache[cache_key] = list(boxes)
+        return boxes
+
+    @staticmethod
+    def _to_pil_image(source: str | Path | bytes | np.ndarray) -> Image.Image | None:
+        try:
+            if isinstance(source, np.ndarray):
+                return Image.fromarray(source)
+            if isinstance(source, (bytes, bytearray, memoryview)):
+                return Image.open(io.BytesIO(bytes(source))).copy()
+            if isinstance(source, (str, Path)):
+                p = Path(source)
+                if p.is_file():
+                    with Image.open(p) as im:
+                        return im.copy()
+        except Exception:
+            return None
+        return None
+
+
+default_ocr_engine = BannerOCREngine()
+
 
 def detect_banner_text_boxes(gray_img: np.ndarray, *, min_width: int = 16) -> tuple[BBox, ...]:
-    """Locate horizontal text-line bounding boxes using SIMD morphological gradients.
-
-    Works offline in < 3ms without requiring a 1.5GB deep OCR runtime.
-    Returns boxes sorted top-to-bottom, left-to-right (`BBox.__lt__`).
-    """
+    """Locate horizontal text-line bounding boxes using SIMD morphological gradients."""
     if gray_img.ndim == 3:
         gray_img = cv2.cvtColor(gray_img, cv2.COLOR_RGB2GRAY)
 
@@ -45,12 +455,10 @@ def detect_banner_text_boxes(gray_img: np.ndarray, *, min_width: int = 16) -> tu
     if h < 16 or w < 16:
         return ()
 
-    # Horizontal Sobel gradient highlights vertical glyph strokes
     grad_x = cv2.Sobel(gray_img, ddepth=cv2.CV_16S, dx=1, dy=0, ksize=3)
     abs_grad = cv2.convertScaleAbs(grad_x)
     _, thresh = cv2.threshold(abs_grad, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
 
-    # Close horizontal gaps between characters in a word/line
     kw = max(9, w // 25)
     kh = max(3, h // 80)
     kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (kw, kh))
@@ -60,49 +468,11 @@ def detect_banner_text_boxes(gray_img: np.ndarray, *, min_width: int = 16) -> tu
     boxes: list[BBox] = []
     for cnt in contours:
         bx, by, bw, bh = cv2.boundingRect(cnt)
-        # Filter out tiny noise specks and full-bleed borders
         if bw >= min_width and 4 <= bh <= int(h * 0.45) and bw >= bh:
             boxes.append(BBox(x=int(bx), y=int(by), w=int(bw), h=int(bh)))
 
     boxes.sort()
     return tuple(boxes)
-
-
-def _extract_ocr_texts(source_path: str, ocr_engine: Any) -> list[str]:
-    """Extract recognized strings from a pluggable OCR engine or callable."""
-    if ocr_engine is None:
-        return []
-    try:
-        raw_res = (
-            ocr_engine.ocr(source_path) if hasattr(ocr_engine, "ocr") else ocr_engine(source_path)
-        )
-    except Exception:
-        logger.warning("OCR engine failed on %s; continuing without OCR text", source_path)
-        return []
-
-    texts: list[str] = []
-    if not raw_res:
-        return texts
-
-    for item in raw_res:
-        if isinstance(item, str) and item.strip():
-            texts.append(item.strip())
-        elif isinstance(item, dict) and item.get("text"):
-            texts.append(str(item["text"]).strip())
-        elif isinstance(item, (list, tuple)):
-            # PaddleOCR format: [[ [x1,y1].. ], ("text", confidence)]
-            for sub in item:
-                if (
-                    isinstance(sub, (list, tuple))
-                    and len(sub) == 2
-                    and isinstance(sub[1], (list, tuple))
-                    and len(sub[1]) >= 1
-                    and isinstance(sub[1][0], str)
-                ):
-                    txt = sub[1][0].strip()
-                    if txt:
-                        texts.append(txt)
-    return texts
 
 
 def parse_banner_image(
@@ -111,12 +481,13 @@ def parse_banner_image(
     path: str = "image",
     alt: str | None = None,
     ocr_texts: Sequence[str] = (),
-    ocr_engine: Any = None,
+    ocr_engine: Any = "auto",
 ) -> ContentAST:
-    """Parse an image file or byte buffer into an `ImageNode` plus any OCR `TextNode`s.
+    """Parse an image file or byte buffer into an `ImageNode` plus OCR `TextNode`s.
 
-    Fault-tolerant: returns an empty `ContentAST` if the file does not exist
-    or is not a valid image raster.
+    By default (`ocr_engine="auto"`), runs `default_ocr_engine` (`PaddleOCR` PP-OCRv5
+    with automatic fallback to `Tesseract 5`) so text inside uploaded raster banners
+    flows automatically through Tier 1 and Tier 2 checks.
     """
     try:
         if isinstance(source, (str, Path)):
@@ -150,14 +521,28 @@ def parse_banner_image(
     )
     nodes: list[Node] = [img_node]
 
-    extracted_lines = list(ocr_texts)
+    ocr_boxes: list[OCRBox] = [
+        OCRBox(text=t.strip(), confidence=0.99, script=_detect_script(t))
+        for t in ocr_texts
+        if t.strip()
+    ]
     if ocr_engine is not None:
-        extracted_lines.extend(_extract_ocr_texts(asset_path, ocr_engine))
+        ocr_input: str | bytes = asset_path if Path(asset_path).is_file() else raw_bytes
+        ocr_boxes.extend(default_ocr_engine.extract(ocr_input, custom_engine=ocr_engine))
 
-    for idx, text in enumerate(extracted_lines):
-        cleaned = text.strip()
-        if cleaned:
-            nodes.append(TextNode.from_text(cleaned, path=f"{path}/ocr[{idx}]"))
+    for idx, box in enumerate(ocr_boxes):
+        cleaned = box.text.strip()
+        if not cleaned:
+            continue
+        if box.is_low_confidence or box.is_micro_height:
+            b = box.bbox
+            node_path = (
+                f"{path}/ocr_low_conf[{idx}]"
+                f"[conf={box.confidence:.2f},bbox={b.x}_{b.y}_{b.w}_{b.h},img_h={height}]"
+            )
+        else:
+            node_path = f"{path}/ocr[{idx}]"
+        nodes.append(TextNode.from_text(cleaned, path=node_path))
 
     return ContentAST(nodes=tuple(nodes))
 

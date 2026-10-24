@@ -102,19 +102,43 @@ def _bump_version(version: str) -> str:
 
 
 def _canon_to_yaml(canon: Canon) -> str:
+    term_list: list[dict[str, object]] = []
+    for t in canon.terminology:
+        t_item: dict[str, object] = {
+            "id": t.id,
+            "pattern_text": t.pattern_text,
+            "preferred": t.preferred,
+            "severity": t.severity,
+            "note": t.note,
+        }
+        if t.pos_constraint:
+            t_item["pos_constraint"] = t.pos_constraint
+        term_list.append(t_item)
+
+    fact_list: list[dict[str, object]] = []
+    for f in canon.facts:
+        f_item: dict[str, object] = {
+            "id": f.id,
+            "text": f.text,
+            "conditions": list(f.conditions),
+            "valid_until": f.valid_until,
+        }
+        if f.subject_product:
+            f_item["subject_product"] = f.subject_product
+        if f.metric_value:
+            f_item["metric_value"] = f.metric_value
+        if f.comparison_operator != "==":
+            f_item["comparison_operator"] = f.comparison_operator
+        if f.kfs_acceptance_validity_days is not None:
+            f_item["kfs_acceptance_validity_days"] = f.kfs_acceptance_validity_days
+        if f.substantiation_level != "finished_product_clinical":
+            f_item["substantiation_level"] = f.substantiation_level
+        fact_list.append(f_item)
+
     data = {
         "id": canon.id,
         "version": canon.version,
-        "terminology": [
-            {
-                "id": t.id,
-                "pattern_text": t.pattern_text,
-                "preferred": t.preferred,
-                "severity": t.severity,
-                "note": t.note,
-            }
-            for t in canon.terminology
-        ],
+        "terminology": term_list,
         "palette": [
             {
                 "id": c.id,
@@ -124,15 +148,7 @@ def _canon_to_yaml(canon: Canon) -> str:
             }
             for c in canon.palette
         ],
-        "facts": [
-            {
-                "id": f.id,
-                "text": f.text,
-                "conditions": list(f.conditions),
-                "valid_until": f.valid_until,
-            }
-            for f in canon.facts
-        ],
+        "facts": fact_list,
     }
     return yaml.safe_dump(data, sort_keys=False, allow_unicode=True)
 
@@ -263,6 +279,7 @@ def propose_canon_revision(
                 preferred=t.preferred,
                 severity=new_sev,
                 note=updated_note,
+                pos_constraint=t.pos_constraint,
             )
             new_terms.append(updated_term)
             revisions.append(
@@ -325,7 +342,6 @@ def propose_canon_revision(
             f.id,
             "Reviewers approved short-form claims when linked to full KFS schedule",
         )
-        # Relax the most frequently disputed trailing condition or record clarified scope
         old_conds = list(f.conditions)
         if len(old_conds) > 1:
             updated_conds = old_conds[:-1]

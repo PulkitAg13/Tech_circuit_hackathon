@@ -1,6 +1,12 @@
 """Multimodal content parsers producing immutable `ContentAST` instances."""
 
-from canongate.parsers.banner import detect_banner_text_boxes, parse_banner_image
+from canongate.parsers.banner import (
+    BannerOCREngine,
+    OCRBox,
+    default_ocr_engine,
+    detect_banner_text_boxes,
+    parse_banner_image,
+)
 from canongate.parsers.bundle import (
     BundleInput,
     BundleParser,
@@ -23,13 +29,16 @@ from canongate.parsers.tables import TableGrid, is_footnote_text, parse_markdown
 from canongate.parsers.text import parse_text
 
 __all__ = [
+    "BannerOCREngine",
     "BundleInput",
     "BundleParser",
     "LLMProviderConfig",
     "MultiProviderJsonLLM",
+    "OCRBox",
     "TableGrid",
     "create_llm_canon_extractor",
     "default_bundle_parser",
+    "default_ocr_engine",
     "denormalize_table_with_llm",
     "detect_banner_text_boxes",
     "is_complex_table",

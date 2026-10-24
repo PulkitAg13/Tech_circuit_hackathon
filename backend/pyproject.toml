@@ -18,6 +18,13 @@ dependencies = [
     "python-multipart>=0.0.12",
     "scikit-image>=0.24",
     "numpy>=2.0",
+    "scipy>=1.14.0",
+    "sympy>=1.13.0",
+    "z3-solver>=4.13.0",
+    "onnxruntime>=1.20.0",
+    "spacy>=3.8.0",
+    "rank-bm25>=0.2.2",
+    "pytesseract>=0.3.13",
     "opencv-python-headless>=4.10",
     "pillow>=10.4",
     "cryptography>=43.0",
@@ -41,6 +48,12 @@ dev = [
     "pyright>=1.1",
     "import-linter>=2.1",
     "syrupy>=4.7",
+]
+ml = [
+    "paddleocr>=3.0.0",
+    "paddlepaddle>=3.0.0",
+    "minicheck>=0.0.2",
+    "qasem>=0.2.0",
 ]
 
 [build-system]

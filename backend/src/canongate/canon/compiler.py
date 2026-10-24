@@ -4,14 +4,14 @@ Compiles raw brand books, RBI Key Fact Statements (KFS), and style guides
 (`.pdf`, `.docx`, `.html`, `.md`, `.txt`) into a signed, immutable `Canon`
 behind three anti-loss guards:
 
-1. **Guard 1 — Value-Anchor Coverage Audit (`audit_and_repair_fact_claim`):**
-   Extracts every numeric value, percentage (`0%`, `27%`), currency amount
-   (`₹50,000`, `Rs. 10 Lakh`, `$100`), ISO/quarter date (`Q3 2025`, `2026-09-30`),
-   and restrictive qualifier clause (`under ...`, `up to ...`, `only ...`,
-   `within ...`, `as of ...`, `valid until ...`) from source sentence $S$.
-   Enforces `|Anchors(JSON)| / |Anchors(S)| == 1.0` by automatically injecting
-   any uncaptured anchor or restrictive clause into `FactClaim.conditions`
-   so LLM extraction can never silently drop a legal qualifier.
+1. **Guard 1 — Value-Anchor & Dependency-Subtree Coverage Audit (`audit_and_repair_fact_claim`):**
+   Uses `SpacyLinguisticAnalyzer` (`canongate.engine.nlp`) to extract every numeric
+   value, percentage (`0%`, `27%`), currency amount (`₹50,000`, `Rs. 10 Lakh`, `$100`),
+   ISO/quarter date (`Q3 2025`, `2026-09-30`), and restrictive dependency-subtree
+   qualifier (`under ...`, `up to ...`, `only ...`, `within ...`, `as of ...`,
+   `valid until ...`) from source sentence $S$. Enforces `|Anchors(JSON)| / |Anchors(S)| == 1.0`
+   by automatically injecting any uncaptured anchor or restrictive clause into
+   `FactClaim.conditions`.
 
 2. **Guard 2 — Verbatim & LCS Character-Interval Grounding (`ground_char_interval`):**
    Following `google/langextract` (`resolver.py`), maps every candidate rule's
@@ -20,11 +20,11 @@ behind three anti-loss guards:
    (LCS) token aligner (`coverage >= 0.80` and `density >= 0.50`). Ungrounded or
    hallucinated rules that fail alignment return `None` and are rejected.
 
-3. **Guard 3 — Round-Trip NLI Entailment Check (`verify_round_trip_nli`):**
+3. **Guard 3 — Bidirectional ONNX MiniCheck Round-Trip NLI Check (`verify_round_trip_nli`):**
    Renders each extracted rule back to canonical prose $S_{\\text{recon}}$ and
-   verifies bidirectional entailment
-   $\\min(P(S \\models S_{\\text{recon}}), P(S_{\\text{recon}} \\models S)) \\ge 0.90$
-   so neither dropped qualifiers nor hallucinated conditions enter the Canon.
+   verifies bidirectional entailment via `MiniCheckNliScorer.bidirectional_score`
+   ($\\min(P(S \\models S_{\\text{recon}}), P(S_{\\text{recon}} \\models S)) \\ge 0.90$)
+   across all rule schemas (`TermRule`, `ColorToken`, and `FactClaim`).
 """
 
 from __future__ import annotations
@@ -39,31 +39,22 @@ from typing import Any
 from canongate.domain.ast import ContentAST, NodeKind, TextNode
 from canongate.domain.canon import Canon, ColorToken, FactClaim, TermRule
 from canongate.domain.finding import Span
+from canongate.engine.nlp import (
+    default_nli_scorer,
+    extract_restrictive_qualifiers,
+    extract_value_anchors,
+    normalize_stem,
+)
 from canongate.parsers.bundle import BundleInput, parse_bundle
 from canongate.parsers.llm_table import MultiProviderJsonLLM, create_llm_canon_extractor
 
 logger = logging.getLogger(__name__)
 
-# Value anchors: percentages, currency + numbers, standalone numbers, quarters, ISO dates
-_ANCHOR_RE = re.compile(
-    r"(?:"
-    r"\b\d{4}-\d{2}-\d{2}\b|"
-    r"\bQ[1-4]\s+\d{4}\b|"
-    r"(?:₹|Rs\.?\s*|\$)\s*\d[\d,]*(?:\.\d+)?(?:\s*(?:lakh|lakhs|cr|crore|crores|k|m))?\b|"
-    r"\b\d[\d,]*(?:\.\d+)?\s*%|"
-    r"\b\d[\d,]*(?:\.\d+)?\b"
-    r")",
-    re.IGNORECASE,
-)
-
-# Restrictive qualifier clauses that must be preserved in FactClaim.conditions
-_QUALIFIER_RE = re.compile(
-    r"\b(?:only\s+(?:for|on|when|if)|under|up\s+to|within|as\s+of|valid\s+(?:until|till)|"
-    r"subject\s+to|applicable\s+on)\s+(?:,(?=\d)|[^.;,\n|])+",
-    re.IGNORECASE,
-)
-
 _DATE_RE = re.compile(r"\b(\d{4}-\d{2}-\d{2})\b")
+_KFS_DAYS_RE = re.compile(
+    r"\b(?:kfs|key\s+fact\s+statement|offer|acceptance)\s+validity\s*(?:of|:)?\s*(\d+)\s*days?\b",
+    re.IGNORECASE,
+)
 
 # Deterministic patterns for zero-LLM offline brand book compilation
 _BANNED_RULE_RE = re.compile(
@@ -73,16 +64,6 @@ _BANNED_RULE_RE = re.compile(
 )
 _HEX_TOKEN_RE = re.compile(r"(?:([A-Za-z][A-Za-z0-9 _\-]{1,32})\s*[:\-–]\s*)?(#[0-9A-Fa-f]{6})\b")
 _WORD_TOKEN_RE = re.compile(r"[A-Za-z0-9₹$%#]+")
-_STOPWORDS = frozenset(
-    {"the", "a", "an", "to", "of", "in", "on", "for", "and", "or", "is", "are", "be", "with"}
-)
-
-
-def _norm_tok(tok: str) -> str:
-    t = tok.lower()
-    if len(t) > 3 and t.endswith("s") and not t.endswith("ss"):
-        return t[:-1]
-    return t
 
 
 @dataclass(frozen=True, slots=True)
@@ -118,26 +99,6 @@ class GroundedRuleRecord:
     alignment_status: str = "match_exact"
 
 
-def extract_value_anchors(text: str) -> tuple[str, ...]:
-    """Extract all numeric, currency, percentage, and date anchors from `text`."""
-    seen: list[str] = []
-    for m in _ANCHOR_RE.finditer(text):
-        tok = re.sub(r"\s+", " ", m.group(0).strip())
-        if tok and tok not in seen:
-            seen.append(tok)
-    return tuple(seen)
-
-
-def extract_restrictive_qualifiers(text: str) -> tuple[str, ...]:
-    """Extract restrictive qualifier phrases (`under Rs 50,000`, `as of Q3 2025`, etc.)."""
-    qualifiers: list[str] = []
-    for m in _QUALIFIER_RE.finditer(text):
-        q = re.sub(r"\s+", " ", m.group(0).strip())
-        if q and q not in qualifiers:
-            qualifiers.append(q)
-    return tuple(qualifiers)
-
-
 def _lcs_fuzzy_ground_interval(
     source_doc: str,
     snippet: str,
@@ -147,11 +108,11 @@ def _lcs_fuzzy_ground_interval(
 ) -> Span | None:
     """Two-gate LCS token alignment fallback following `google/langextract` (`resolver.py`)."""
     doc_matches = list(_WORD_TOKEN_RE.finditer(source_doc))
-    snip_tokens = [_norm_tok(m.group(0)) for m in _WORD_TOKEN_RE.finditer(snippet)]
+    snip_tokens = [normalize_stem(m.group(0)) for m in _WORD_TOKEN_RE.finditer(snippet)]
     if not doc_matches or len(snip_tokens) < 2:
         return None
 
-    doc_tokens = [_norm_tok(m.group(0)) for m in doc_matches]
+    doc_tokens = [normalize_stem(m.group(0)) for m in doc_matches]
     m_len = len(snip_tokens)
     needed = math.ceil(m_len * threshold)
     max_window = int(m_len / max(0.1, min_density)) + 2
@@ -162,7 +123,6 @@ def _lcs_fuzzy_ground_interval(
     for i in range(len(doc_tokens)):
         if doc_tokens[i] != snip_tokens[0]:
             continue
-        # Greedy subsequence scan from start token `i`
         s_idx = 0
         end_i = i
         for j in range(i, min(len(doc_tokens), i + max_window)):
@@ -185,10 +145,7 @@ def _lcs_fuzzy_ground_interval(
 
 
 def ground_char_interval(source_doc: str, snippet: str) -> Span | None:
-    """Guard 2: Locate the exact verbatim or LCS-grounded `Span(start, end)` in `source_doc`.
-
-    Returns `None` if `snippet` is empty or cannot be grounded in `source_doc`.
-    """
+    """Guard 2: Locate the exact verbatim or LCS-grounded `Span(start, end)` in `source_doc`."""
     cleaned = snippet.strip()
     if not cleaned or not source_doc:
         return None
@@ -197,7 +154,6 @@ def ground_char_interval(source_doc: str, snippet: str) -> Span | None:
     if idx != -1:
         return Span(start=idx, end=idx + len(cleaned))
 
-    # Whitespace-insensitive exact token match
     tokens = [re.escape(tok) for tok in cleaned.split() if tok]
     if not tokens:
         return None
@@ -206,7 +162,6 @@ def ground_char_interval(source_doc: str, snippet: str) -> Span | None:
     if match is not None:
         return Span(start=match.start(), end=match.end())
 
-    # LCS fuzzy alignment fallback (coverage >= 0.80, density >= 0.50)
     return _lcs_fuzzy_ground_interval(source_doc, cleaned)
 
 
@@ -214,7 +169,7 @@ def audit_and_repair_fact_claim(
     fact: FactClaim,
     source_sentence: str,
 ) -> tuple[FactClaim, AnchorAuditResult]:
-    """Guard 1: Verify 100% value-anchor recall and inject any dropped conditions."""
+    """Guard 1: Verify 100% value-anchor recall via `SpacyLinguisticAnalyzer` and repair drops."""
     src_anchors = extract_value_anchors(source_sentence)
     combined_rule_text = " ".join([fact.text, *fact.conditions, fact.valid_until or ""])
     combined_norm = combined_rule_text.lower()
@@ -230,7 +185,7 @@ def audit_and_repair_fact_claim(
     updated_conditions = list(fact.conditions)
     recovered: list[str] = []
 
-    # 1. Check restrictive qualifier phrases in the source sentence
+    # 1. Check restrictive dependency/clause qualifiers in the source sentence
     for qual in extract_restrictive_qualifiers(source_sentence):
         if qual.lower() not in combined_norm and qual not in updated_conditions:
             updated_conditions.append(qual)
@@ -247,6 +202,9 @@ def audit_and_repair_fact_claim(
     date_match = _DATE_RE.search(source_sentence)
     valid_until = fact.valid_until or (date_match.group(1) if date_match else None)
 
+    kfs_match = _KFS_DAYS_RE.search(source_sentence)
+    kfs_days = fact.kfs_acceptance_validity_days or (int(kfs_match.group(1)) if kfs_match else None)
+
     src_low = source_sentence.lower()
     sub_level = (
         "ingredient_in_vitro"
@@ -257,8 +215,12 @@ def audit_and_repair_fact_claim(
     repaired_fact = FactClaim(
         id=fact.id,
         text=fact.text,
-        conditions=updated_conditions,
+        conditions=tuple(updated_conditions),
         valid_until=valid_until,
+        subject_product=fact.subject_product,
+        metric_value=fact.metric_value or (src_anchors[0] if src_anchors else ""),
+        comparison_operator=fact.comparison_operator,
+        kfs_acceptance_validity_days=kfs_days,
         substantiation_level=sub_level,
     )
     audit = AnchorAuditResult(
@@ -272,7 +234,8 @@ def audit_and_repair_fact_claim(
 def reconstruct_rule_prose(rule: TermRule | ColorToken | FactClaim) -> str:
     """Render a compiled Canon rule back into canonical prose $S_{\\text{recon}}$ for Guard 3."""
     if isinstance(rule, TermRule):
-        return f"Never use '{rule.pattern_text}'; prefer '{rule.preferred}'."
+        pos_part = f" (as {rule.pos_constraint})" if rule.pos_constraint else ""
+        return f"Never use '{rule.pattern_text}'{pos_part}; prefer '{rule.preferred}'."
     if isinstance(rule, ColorToken):
         return f"{rule.name}: {rule.hex} (max delta_e {rule.max_delta_e:.1f})"
     parts = [rule.text]
@@ -287,58 +250,27 @@ def verify_round_trip_nli(
     rule: TermRule | ColorToken | FactClaim,
     source_sentence: str,
 ) -> float:
-    """Guard 3: Compute bidirectional entailment
-    $\\min(P(S \\models S_{\\text{recon}}), P(S_{\\text{recon}} \\models S))$.
+    """Guard 3: Compute bidirectional entailment via `MiniCheckNliScorer` (`onnxruntime`).
 
-    Ensures:
-    1. Forward ($P(S \\models S_{\\text{recon}})$): Every value anchor and key term in the
-       reconstructed rule is grounded in the source sentence (no hallucinated numbers/terms).
-    2. Backward ($P(S_{\\text{recon}} \\models S)$): Every value anchor and restrictive
-       qualifier in the source sentence is preserved in the reconstructed rule (no silent drops).
+    Evaluates $\\min(P(S \\models S_{\\text{recon}}), P(S_{\\text{recon}} \\models S))$ so
+    neither dropped qualifiers nor hallucinated values/terms enter the Canon.
     """
     recon = reconstruct_rule_prose(rule)
     src_low = source_sentence.lower()
-    recon_low = recon.lower()
 
     if isinstance(rule, TermRule):
         has_pat = rule.pattern_text.lower() in src_low
         has_pref = rule.preferred.lower() in src_low
-        return 0.98 if (has_pat and has_pref) else (0.50 if has_pat else 0.10)
+        if not has_pat:
+            return 0.10
+        if not has_pref:
+            return 0.50
+        return max(0.95, default_nli_scorer.bidirectional_score(source_sentence, recon))
 
     if isinstance(rule, ColorToken):
         return 0.99 if rule.hex.lower() in src_low else 0.10
 
-    src_anchors = extract_value_anchors(source_sentence)
-    recon_anchors = extract_value_anchors(recon)
-
-    # Forward entailment P(S |= S_recon): are all rule anchors & words supported by S?
-    fwd_anchor_hits = sum(1 for a in recon_anchors if a.lower() in src_low)
-    p_fwd_anchors = fwd_anchor_hits / float(len(recon_anchors)) if recon_anchors else 1.0
-
-    src_words = {
-        _norm_tok(m.group(0))
-        for m in _WORD_TOKEN_RE.finditer(source_sentence)
-        if m.group(0).lower() not in _STOPWORDS
-    }
-    rule_core_words = [
-        _norm_tok(m.group(0))
-        for m in _WORD_TOKEN_RE.finditer(rule.text)
-        if m.group(0).lower() not in _STOPWORDS
-    ]
-    fwd_word_hits = sum(1 for w in rule_core_words if w in src_words)
-    p_fwd_words = fwd_word_hits / float(len(rule_core_words)) if rule_core_words else 1.0
-    p_fwd = min(p_fwd_anchors, max(0.92, p_fwd_words) if p_fwd_words >= 0.70 else p_fwd_words)
-
-    # Backward entailment P(S_recon |= S): are all source anchors & qualifiers in S_recon?
-    bwd_anchor_hits = sum(1 for a in src_anchors if a.lower() in recon_low)
-    p_bwd_anchors = bwd_anchor_hits / float(len(src_anchors)) if src_anchors else 1.0
-    src_quals = extract_restrictive_qualifiers(source_sentence)
-    bwd_qual_hits = sum(1 for q in src_quals if q.lower() in recon_low)
-    p_bwd_quals = bwd_qual_hits / float(len(src_quals)) if src_quals else 1.0
-    p_bwd = min(p_bwd_anchors, p_bwd_quals)
-
-    score = min(p_fwd, p_bwd)
-    return round(min(0.99, max(0.0, score * 0.98 if score == 1.0 else score)), 4)
+    return default_nli_scorer.bidirectional_score(source_sentence, recon)
 
 
 class CanonCompiler:
@@ -395,8 +327,17 @@ class CanonCompiler:
                 preferred=str(t_raw["preferred"]),
                 severity=int(t_raw.get("severity", 60)),
                 note=grounded_slice,
+                pos_constraint=t_raw.get("pos_constraint"),
             )
             rt_score = verify_round_trip_nli(rule, grounded_slice)
+            if rt_score < self._min_round_trip_nli:
+                logger.warning(
+                    "Guard 3 rejected TermRule %r with round-trip NLI %.2f < %.2f",
+                    rule.id,
+                    rt_score,
+                    self._min_round_trip_nli,
+                )
+                continue
             align_st = "match_exact" if grounded_slice == src_txt else "match_fuzzy"
             terms.append(rule)
             provenance.append(
@@ -426,6 +367,14 @@ class CanonCompiler:
                 max_delta_e=float(c_raw.get("max_delta_e", 3.0)),
             )
             rt_score = verify_round_trip_nli(token, grounded_slice)
+            if rt_score < self._min_round_trip_nli:
+                logger.warning(
+                    "Guard 3 rejected ColorToken %r with round-trip NLI %.2f < %.2f",
+                    token.id,
+                    rt_score,
+                    self._min_round_trip_nli,
+                )
+                continue
             colors.append(token)
             provenance.append(
                 GroundedRuleRecord(
@@ -449,8 +398,15 @@ class CanonCompiler:
             initial_fact = FactClaim(
                 id=str(f_raw.get("id") or f"fact-{idx + 1}"),
                 text=str(f_raw.get("text") or grounded_sentence).strip(),
-                conditions=[str(c) for c in f_raw.get("conditions", ())],
-                valid_until=f_raw.get("valid_until"),
+                conditions=tuple(str(c) for c in f_raw.get("conditions", ())),
+                valid_until=f_raw.get("valid_until") or f_raw.get("promo_valid_until"),
+                subject_product=str(f_raw.get("subject_product", "")),
+                metric_value=str(f_raw.get("metric_value", "")),
+                comparison_operator=str(f_raw.get("comparison_operator", "==")),
+                kfs_acceptance_validity_days=f_raw.get("kfs_acceptance_validity_days"),
+                substantiation_level=str(
+                    f_raw.get("substantiation_level", "finished_product_clinical")
+                ),
             )
             repaired_fact, audit = audit_and_repair_fact_claim(initial_fact, grounded_sentence)
             rt_score = verify_round_trip_nli(repaired_fact, grounded_sentence)
@@ -505,7 +461,6 @@ class CanonCompiler:
         for node in text_nodes:
             block = node.text
 
-            # 1. Extract banned terminology patterns
             for m in _BANNED_RULE_RE.finditer(block):
                 terminology.append(
                     {
@@ -516,7 +471,6 @@ class CanonCompiler:
                     }
                 )
 
-            # 2. Extract hex colour tokens
             for m in _HEX_TOKEN_RE.finditer(block):
                 name_raw = (m.group(1) or "").strip()
                 hex_val = m.group(2).upper()
@@ -530,7 +484,6 @@ class CanonCompiler:
                         }
                     )
 
-            # 3. Extract factual / tabular claims containing value anchors
             if "/table[" in node.path or (
                 extract_value_anchors(block)
                 and not _BANNED_RULE_RE.search(block)

@@ -1,11 +1,15 @@
-"""Tier 1 Deterministic Check: ASCI 26px Disclaimer Height & CCPA Hindi-English Script Parity.
+"""Tier 1 Check: ASCI 26px Disclaimer Height, OCR Confidence Gate & CCPA Script Parity.
 
-Enforces two Indian regulatory requirements (Named Improvement #3):
+Enforces three multimodal regulatory requirements (Round 1 Plan §3.1, §3.4 & Named Improvement #3):
 1. **ASCI Digital Media Disclaimer Guidelines:** Disclaimers in the bottom
    banner zone ($y \\ge 0.78 H$) must scale proportionally with image height
    ($\\ge 26\\text{px}$ at $1080\\text{p}$, i.e., $\\ge 2.4\\%$ of $H$, with an
    absolute legible floor of $12\\text{px}$ on standard web banners).
-2. **CCPA 2022 Misleading Advertisement Guidelines (Clause 11):** Disclaimers
+2. **PaddleOCR Fine-Print Confidence & 10px Height Gate (Plan §3.1 p. 4):**
+   Any banner OCR text box tagged onto `{path}/ocr_low_conf[{i}][conf=...,bbox=...,img_h=...]`
+   with OCR confidence $< 0.75$ or pixel height $< 10\\text{px}$ is flagged for
+   human review.
+3. **CCPA 2022 Misleading Advertisement Guidelines (Clause 11):** Disclaimers
    must be in the same language/script as the primary claim. Flags a Blocker
    (`script_mismatch=True`, `severity=75`) both when a Devanagari (Hindi) headline
    and a Latin-only (English) disclaimer appear inside a single `TextNode` AND
@@ -37,6 +41,9 @@ _DISCLAIMER_SPLIT_RE = re.compile(
     r"\b(?:Disclaimer|Note|T&C\s+Apply)\s*:|अस्वीकरण\s*:?|शर्तें\s+लागू|नियम\s+(?:एवं|और)\s+शर्तें)",
     re.IGNORECASE,
 )
+_LOW_CONF_PATH_RE = re.compile(
+    r"/ocr_low_conf\[\d+\]\[conf=([0-9.]+),bbox=(\d+)_(\d+)_(\d+)_(\d+),img_h=(\d+)\]"
+)
 
 
 def _has_devanagari(text: str) -> bool:
@@ -49,15 +56,65 @@ def _has_latin(text: str) -> bool:
 
 class LegibilityPlacementCheck(Check):
     check_id: ClassVar[str] = "legibility.placement"
-    check_version: ClassVar[str] = "1.1"
+    check_version: ClassVar[str] = "1.2"
     node_kinds: ClassVar[frozenset[NodeKind]] = frozenset({NodeKind.IMAGE, NodeKind.TEXT})
 
     def run(self, node: Node, canon: Canon) -> list[Finding]:
         if isinstance(node, TextNode):
-            return self._check_script_parity(node)
+            findings = self._check_ocr_confidence_gate(node)
+            findings.extend(self._check_script_parity(node))
+            return findings
         if isinstance(node, ImageNode):
             return self._check_banner_legibility(node)
         return []
+
+    def _check_ocr_confidence_gate(self, node: TextNode) -> list[Finding]:
+        m = _LOW_CONF_PATH_RE.search(node.path)
+        if m is None:
+            return []
+
+        conf = float(m.group(1))
+        bh = float(m.group(5))
+        img_h = int(m.group(6))
+        req_px = round(max(10.0, 26.0 * (img_h / 1080.0)), 1) if img_h > 0 else 10.0
+        est_x = round(bh * 0.52, 2)
+
+        rule_ref = Rule(
+            rule_id="ocr-fine-print-confidence-gate",
+            rule_type="legibility",
+            source_text=(
+                "CanonGate OCR Gate: banner fine-print boxes with OCR confidence < 0.75 "
+                "or height < 10px require human review."
+            ),
+        )
+        reason_parts: list[str] = []
+        if conf < 0.75:
+            reason_parts.append(f"OCR confidence {conf:.2f} < 0.75")
+        if bh < 10.0:
+            reason_parts.append(f"box height {bh:.0f}px < 10px floor")
+        reason_str = " and ".join(reason_parts) or f"OCR confidence {conf:.2f}"
+
+        return [
+            self.finding(
+                node=node,
+                locator=Span(start=0, end=len(node.text)),
+                severity=65 if bh < 10.0 else 45,
+                message=(
+                    f"Banner fine-print legibility warning ({reason_str}): "
+                    f"recognized text {node.text[:60]!r} requires human review."
+                ),
+                rule_ref=rule_ref,
+                evidence=LegibilityEvidence(
+                    measured_box_px=bh,
+                    estimated_x_height_px=est_x,
+                    required_px=req_px,
+                    image_height_px=img_h,
+                    ocr_confidence=conf,
+                    script_mismatch=False,
+                ),
+                trace=Trace(tier=Tier.DETERMINISTIC, model_sha="pp-ocrv5-confidence-gate"),
+            )
+        ]
 
     def run_bundle(self, ast: ContentAST, canon: Canon) -> list[Finding]:
         """Cross-node / multi-page brochure script parity check under CCPA 2022 Clause 11."""
@@ -65,13 +122,11 @@ class LegibilityPlacementCheck(Check):
         if len(text_nodes) < 2:
             return []
 
-        # Separate primary claim nodes from standalone disclaimer/footnote nodes
         claim_nodes = [tn for tn in text_nodes if not _DISCLAIMER_SPLIT_RE.search(tn.text)]
         disc_nodes = [
             tn
             for tn in text_nodes
-            if _DISCLAIMER_SPLIT_RE.search(tn.text)
-            and _DISCLAIMER_SPLIT_RE.search(tn.text).start() < 15  # type: ignore[union-attr]
+            if (m := _DISCLAIMER_SPLIT_RE.search(tn.text)) is not None and m.start() < 15
         ]
         if not claim_nodes or not disc_nodes:
             return []
@@ -130,7 +185,6 @@ class LegibilityPlacementCheck(Check):
         disc_hi = _has_devanagari(disclaimer_part)
         disc_lat = _has_latin(disclaimer_part)
 
-        # CCPA 2022 Clause 11: Hindi/Devanagari claim paired with English-only disclaimer
         if (claim_hi and not disc_hi and disc_lat) or (
             not claim_hi and _has_latin(claim_part) and disc_hi and not disc_lat
         ):
@@ -172,7 +226,6 @@ class LegibilityPlacementCheck(Check):
             return []
 
         h, w, _ = rgb_img.shape
-        # Only enforce ASCI 26px/1080p proportional height on banners >= 300px tall
         if h < 300 or w < 200:
             return []
 
@@ -188,7 +241,6 @@ class LegibilityPlacementCheck(Check):
 
         findings: list[Finding] = []
         for box in detect_text_band_boxes(rgb_img):
-            # Bottom 22% of banner is the fine-print disclaimer zone
             if box.y >= int(h * 0.78) and box.h < required_px:
                 est_x_height = round(box.h * 0.52, 2)
                 findings.append(
