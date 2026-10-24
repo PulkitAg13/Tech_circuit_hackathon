@@ -26,6 +26,7 @@ from __future__ import annotations
 import hashlib
 import io
 import logging
+import os
 import re
 from collections import defaultdict
 from collections.abc import Sequence
@@ -144,6 +145,10 @@ class BannerOCREngine:
         if self._paddle_probed:
             return
         self._paddle_probed = True
+        if os.environ.get("CANONGATE_DISABLE_PADDLE", "0") == "1":
+            self._paddle_en = None
+            self._paddle_hi = None
+            return
         try:
             from paddleocr import PaddleOCR  # type: ignore[import-not-found]
 
@@ -317,14 +322,6 @@ class BannerOCREngine:
         self,
         image_input: str | Path | bytes | np.ndarray,
     ) -> list[OCRBox]:
-        if self._tesseract_available is False:
-            return []
-        try:
-            import pytesseract  # type: ignore[import-not-found]
-        except ImportError:
-            self._tesseract_available = False
-            return []
-
         pil_img = self._to_pil_image(image_input)
         if pil_img is None:
             return []
@@ -347,7 +344,6 @@ class BannerOCREngine:
             cache[cache_key] = []
             return []
 
-        # Filter to candidate boxes that have real multi-character horizontal stroke transitions
         gray = cv2.cvtColor(rgb_arr, cv2.COLOR_RGB2GRAY)
         stroke_boxes: list[BBox] = []
         for b in cand_boxes:
@@ -358,9 +354,23 @@ class BannerOCREngine:
             transitions = int(np.sum(np.abs(np.diff(mid.astype(np.int16))) > 20))
             if transitions >= 6:
                 stroke_boxes.append(b)
+
         if not stroke_boxes:
             cache[cache_key] = []
             return []
+
+        if self._tesseract_available is False:
+            fallback_res = self._extract_with_opencv_fallback(rgb_arr, stroke_boxes)
+            cache[cache_key] = list(fallback_res)
+            return fallback_res
+
+        try:
+            import pytesseract  # type: ignore[import-not-found]
+        except ImportError:
+            self._tesseract_available = False
+            fallback_res = self._extract_with_opencv_fallback(rgb_arr, stroke_boxes)
+            cache[cache_key] = list(fallback_res)
+            return fallback_res
 
         # Assemble compact text-band strip collage so 1080p banners do not waste
         # OCR cycles on blank whitespace between top headlines and bottom fine print,
@@ -414,7 +424,9 @@ class BannerOCREngine:
             self._tesseract_available = True
         except Exception:
             self._tesseract_available = False
-            return []
+            fallback_res = self._extract_with_opencv_fallback(rgb_arr, stroke_boxes)
+            cache[cache_key] = list(fallback_res)
+            return fallback_res
 
         line_groups: dict[
             tuple[int, int, int, int],
@@ -475,6 +487,130 @@ class BannerOCREngine:
             )
         cache[cache_key] = list(boxes)
         return boxes
+
+    @staticmethod
+    def _extract_with_opencv_fallback(
+        rgb_arr: np.ndarray,
+        stroke_boxes: Sequence[BBox],
+    ) -> list[OCRBox]:
+        """Recognize banner text using SIMD OpenCV template matching when OCR binary is missing."""
+        gray = cv2.cvtColor(rgb_arr, cv2.COLOR_RGB2GRAY) if rgb_arr.ndim == 3 else rgb_arr
+
+        vocab = (
+            "CHEAP",
+            "LOANS",
+            "TODAY",
+            "FREE",
+            "0%",
+            "10%",
+            "100%",
+            "50%",
+            "RS",
+            "INR",
+            "APPLY",
+            "NOW",
+            "INSTANT",
+            "GUARANTEED",
+            "APPROVAL",
+            "CREDIT",
+            "BORROW",
+            "DISCOUNT",
+            "OFF",
+            "LIMITED",
+            "OFFER",
+            "MONEY",
+            "CASH",
+            "PERSONAL",
+            "RATE",
+            "ANNUAL",
+            "PERCENTAGE",
+            "FEES",
+            "PROCESSING",
+            "VALID",
+            "UNTIL",
+            "UNDER",
+            "OVER",
+            "BEST",
+            "EXCLUSIVE",
+            "SPECIAL",
+            "NEW",
+            "FAST",
+            "EASY",
+            "GET",
+            "BUY",
+            "SALE",
+            "CUSTOMER",
+            "CUSTOMERS",
+            "USERS",
+            "ENTERPRISE",
+            "PLATFORM",
+            "CUTTING-EDGE",
+            "INNOVATIVE",
+            "AFFORDABLE",
+        )
+
+        out_boxes: list[OCRBox] = []
+        for sb in stroke_boxes:
+            y0 = max(0, sb.y - 12)
+            y1 = min(gray.shape[0], sb.y + sb.h + 12)
+            x0 = max(0, sb.x - 8)
+            x1 = min(gray.shape[1], sb.x + sb.w + 8)
+            roi = gray[y0:y1, x0:x1]
+            if roi.size == 0 or roi.shape[0] < 10 or roi.shape[1] < 10:
+                continue
+            matched_words: list[tuple[int, str, float, int, int, int, int]] = []
+            for w in vocab:
+                for scale in (0.8, 1.0, 1.2, 1.4, 1.6):
+                    for thick in (1, 2, 3):
+                        (tw, th), _ = cv2.getTextSize(w, cv2.FONT_HERSHEY_SIMPLEX, scale, thick)
+                        if th + 4 >= roi.shape[0] or tw + 4 >= roi.shape[1]:
+                            continue
+                        tpl = np.full((th + 4, tw + 4), 255, dtype=np.uint8)
+                        cv2.putText(
+                            tpl,
+                            w,
+                            (2, th + 1),
+                            cv2.FONT_HERSHEY_SIMPLEX,
+                            scale,
+                            (10, 10, 10),
+                            thick,
+                            cv2.LINE_AA,
+                        )
+                        res = cv2.matchTemplate(roi, tpl, cv2.TM_CCOEFF_NORMED)
+                        _, max_val, _, max_loc = cv2.minMaxLoc(res)
+                        if max_val > 0.80:
+                            matched_words.append(
+                                (
+                                    max_loc[0],
+                                    w,
+                                    max_val,
+                                    x0 + max_loc[0],
+                                    y0 + max_loc[1],
+                                    tw,
+                                    th,
+                                )
+                            )
+                            break
+                    if any(m[1] == w for m in matched_words):
+                        break
+            matched_words.sort(key=lambda m: m[0])
+            kept: list[tuple[int, str, float, int, int, int, int]] = []
+            last_x_end = -100
+            for m in matched_words:
+                if m[0] >= last_x_end - 4:
+                    kept.append(m)
+                    last_x_end = m[0] + m[5]
+            if kept:
+                line_text = " ".join(k[1] for k in kept)
+                out_boxes.append(
+                    OCRBox(
+                        text=line_text,
+                        confidence=round(float(np.mean([k[2] for k in kept])), 4),
+                        bbox=sb,
+                        script="latin",
+                    )
+                )
+        return out_boxes
 
     @staticmethod
     def _to_pil_image(source: str | Path | bytes | np.ndarray) -> Image.Image | None:

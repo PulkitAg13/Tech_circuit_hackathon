@@ -1,4 +1,4 @@
-import { useState, useEffect, type ChangeEvent, type FormEvent } from "react";
+import { useState, type ChangeEvent, type FormEvent } from "react";
 import { useNavigate } from "react-router-dom";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import {
@@ -15,7 +15,7 @@ import {
   compileCanon,
   type CompileCanonResponse,
 } from "../../api/client";
-import { useAuth } from "../auth/AuthContext";
+import { useAuth } from "../auth/useAuth";
 
 const STATUS_COLORS: Record<string, string> = {
   draft: "#6366f1",
@@ -80,24 +80,20 @@ export function DashboardPage() {
   const [calDeltaE, setCalDeltaE] = useState<number>(3.0);
   const [calStatusMsg, setCalStatusMsg] = useState("");
 
-  useEffect(() => {
-    if (canons.length > 0 && !canonId) {
-      setCanonId(canons[0].id);
-      setSelectedCanonId(canons[0].id);
-    }
-  }, [canons, canonId]);
+  const effectiveCanonId = canonId || (canons[0]?.id ?? "");
+  const effectiveSelectedCanonId = selectedCanonId || (canons[0]?.id ?? "");
 
   // Server state for canon governance
   const { data: frictionData = null } = useQuery({
-    queryKey: ["canonFriction", selectedCanonId],
-    queryFn: () => getCanonFriction(selectedCanonId),
-    enabled: !!selectedCanonId && activeTab === "governance",
+    queryKey: ["canonFriction", effectiveSelectedCanonId],
+    queryFn: () => getCanonFriction(effectiveSelectedCanonId),
+    enabled: !!effectiveSelectedCanonId && activeTab === "governance",
   });
 
   const { data: lintData = null } = useQuery({
-    queryKey: ["canonLint", selectedCanonId],
-    queryFn: () => getCanonLint(selectedCanonId),
-    enabled: !!selectedCanonId && activeTab === "governance",
+    queryKey: ["canonLint", effectiveSelectedCanonId],
+    queryFn: () => getCanonLint(effectiveSelectedCanonId),
+    enabled: !!effectiveSelectedCanonId && activeTab === "governance",
   });
 
   // Mutations
@@ -132,8 +128,8 @@ export function DashboardPage() {
     onSuccess: (summary) => {
       setCalStatusMsg(`Activated ${summary.id} v${summary.version} (${summary.hash.slice(0, 10)}…)`);
       queryClient.invalidateQueries({ queryKey: ["canons"] });
-      queryClient.invalidateQueries({ queryKey: ["canonFriction", selectedCanonId] });
-      queryClient.invalidateQueries({ queryKey: ["canonLint", selectedCanonId] });
+      queryClient.invalidateQueries({ queryKey: ["canonFriction", effectiveSelectedCanonId] });
+      queryClient.invalidateQueries({ queryKey: ["canonLint", effectiveSelectedCanonId] });
     },
     onError: (err: any) => {
       setError(err.message || "Failed to apply Canon v1.1 PR");
@@ -142,7 +138,7 @@ export function DashboardPage() {
 
   const calibrateMutation = useMutation({
     mutationFn: () =>
-      calibrateCanonRule(selectedCanonId, {
+      calibrateCanonRule(effectiveSelectedCanonId, {
         rule_id: calRuleId,
         severity: calSeverity,
         max_delta_e: calDeltaE,
@@ -152,7 +148,7 @@ export function DashboardPage() {
         `Calibrated '${calRuleId}' in ${res.canon_id}: v${res.previous_version} → v${res.new_version}`
       );
       queryClient.invalidateQueries({ queryKey: ["canons"] });
-      queryClient.invalidateQueries({ queryKey: ["canonLint", selectedCanonId] });
+      queryClient.invalidateQueries({ queryKey: ["canonLint", effectiveSelectedCanonId] });
     },
     onError: (err: any) => {
       setError(err.message || "Failed to calibrate rule");
@@ -199,8 +195,8 @@ export function DashboardPage() {
   }
 
   function handleProposePr() {
-    if (!selectedCanonId) return;
-    proposePrMutation.mutate(selectedCanonId);
+    if (!effectiveSelectedCanonId) return;
+    proposePrMutation.mutate(effectiveSelectedCanonId);
   }
 
   function handleCompileCanon(e: FormEvent) {
@@ -273,7 +269,7 @@ export function DashboardPage() {
                   <label htmlFor="create-canon">Canon</label>
                   <select
                     id="create-canon"
-                    value={canonId}
+                    value={effectiveCanonId}
                     onChange={(e) => setCanonId(e.target.value)}
                   >
                     {canons.map((c) => (
@@ -362,7 +358,7 @@ export function DashboardPage() {
             <div className="section-header">
               <h2>🛡️ Canon Governance, Friction Telemetry & v1.1 PR Generator</h2>
               <select
-                value={selectedCanonId}
+                value={effectiveSelectedCanonId}
                 onChange={(e) => loadCanonGovernance(e.target.value)}
               >
                 {canons.map((c) => (

@@ -129,7 +129,7 @@ class SmtConstraintSolver:
                 solver = z3.Solver(ctx=ctx)
                 solver.add(x > 0)
                 solver.add(x <= draft_val)
-                solver.add(z3.Not(x <= canon_val))
+                solver.add(z3.Not(x <= canon_val, ctx=ctx))
                 solver.add(x >= canon_val + 0.5 * (draft_val - canon_val))
                 if solver.check() == z3.sat:
                     model = solver.model()
@@ -189,7 +189,7 @@ class SmtConstraintSolver:
                 solver = z3.Solver(ctx=ctx)
                 solver.add(x > 0)
                 solver.add(x >= draft_val)
-                solver.add(z3.Not(x >= canon_val))
+                solver.add(z3.Not(x >= canon_val, ctx=ctx))
                 if solver.check() == z3.sat:
                     return True, 0.5 * (draft_val + canon_val), "z3-smt-v4"
                 return False, 0.0, "z3-smt-v4"
@@ -232,7 +232,7 @@ class SmtConstraintSolver:
                 t = z3.Int("epoch_day", ctx=ctx)
                 solver = z3.Solver(ctx=ctx)
                 solver.add(t <= d_ord)
-                solver.add(z3.Not(t <= c_ord))
+                solver.add(z3.Not(t <= c_ord, ctx=ctx))
                 if solver.check() == z3.sat:
                     return True, draft_iso, "z3-smt-v4"
                 return False, "", "z3-smt-v4"
@@ -268,7 +268,7 @@ class SmtConstraintSolver:
                 net_mult = (1.0 - claimed_pct / 100.0) * (1.0 + gst_pct / 100.0)
                 exact_eff = round((1.0 - net_mult) * 100.0, 2)
                 solver.add(d_eff == exact_eff)
-                solver.add(z3.Not(d_eff >= claimed_pct))
+                solver.add(z3.Not(d_eff >= claimed_pct, ctx=ctx))
                 if solver.check() == z3.sat:
                     return True, exact_eff, "z3-smt-v4"
                 return False, exact_eff, "z3-smt-v4"

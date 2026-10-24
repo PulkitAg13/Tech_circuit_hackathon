@@ -1,5 +1,5 @@
 import { useState, type FormEvent } from "react";
-import { useAuth } from "./AuthContext";
+import { useAuth } from "./useAuth";
 import { login as apiLogin, register as apiRegister } from "../../api/client";
 
 export function LoginPage() {

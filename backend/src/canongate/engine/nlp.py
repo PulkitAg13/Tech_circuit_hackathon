@@ -394,15 +394,26 @@ class SpacyLinguisticAnalyzer:
         if self._spacy_checked:
             return self._spacy_nlp
         self._spacy_checked = True
+        if os.environ.get("CANONGATE_DISABLE_SPACY", "0") == "1":
+            return None
         try:
+            import importlib.util
+
+            available_model = next(
+                (
+                    m
+                    for m in ("en_core_web_sm", "en_core_web_md")
+                    if importlib.util.find_spec(m) is not None
+                ),
+                None,
+            )
+            if available_model is None:
+                return None
+
             import spacy  # type: ignore[import-not-found]
 
-            for model_name in ("en_core_web_sm", "en_core_web_md"):
-                try:
-                    self._spacy_nlp = spacy.load(model_name, disable=["ner"])
-                    return self._spacy_nlp
-                except Exception:
-                    continue
+            self._spacy_nlp = spacy.load(available_model, disable=["ner"])
+            return self._spacy_nlp
         except Exception:
             pass
         return None
@@ -1121,6 +1132,8 @@ class MiniCheckNliScorer:
         if self._sessions_initialized:
             return
         self._sessions_initialized = True
+        if os.environ.get("CANONGATE_DISABLE_ONNX", "0") == "1":
+            return
         try:
             import onnxruntime as ort  # type: ignore[import-not-found]
 

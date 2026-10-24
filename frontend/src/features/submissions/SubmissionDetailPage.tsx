@@ -24,7 +24,7 @@ import {
   type ImageNodeMetaDto,
   type SubmissionCommentDto,
 } from "../../api/client";
-import { useAuth } from "../auth/AuthContext";
+import { useAuth } from "../auth/useAuth";
 import { createProseMirrorFindingsPlugin } from "./FindingHighlightsExtension";
 
 const findingsPluginKey = new PluginKey("canongateFindings");
@@ -59,7 +59,7 @@ const VERDICT_COLORS: Record<string, string> = {
  * linearized table rows never get stripped as malformed HTML tags by Tiptap,
  * keeping ProseMirror UTF-16 offsets 1-to-1 with backend `TextNode.text`.
  */
-export function escapeHtmlBlock(raw: string): string {
+function escapeHtmlBlock(raw: string): string {
   return raw
     .replace(/&/g, "&amp;")
     .replace(/</g, "&lt;")
@@ -73,7 +73,7 @@ export function escapeHtmlBlock(raw: string): string {
  * aligns 1-to-1 with `submission.paragraph_node_ids` (including linearized
  * Markdown table rows produced by `parse_markdown_text` on the backend).
  */
-export function resolveEditorTextBlocks(submission: Submission): string[] {
+function resolveEditorTextBlocks(submission: Submission): string[] {
   if (submission.text_blocks && submission.text_blocks.length > 0) {
     return submission.text_blocks;
   }
@@ -543,7 +543,7 @@ export function SubmissionDetailPage() {
         editor.commands.setContent(html);
       }
     }
-  }, [editor, submission?.id, submission?.raw_content]);
+  }, [editor, submission]);
 
   useEffect(() => {
     if (!editor || !submission) return;
@@ -553,7 +553,7 @@ export function SubmissionDetailPage() {
       selectedRowId,
     });
     editor.view.dispatch(tr);
-  }, [editor, submission?.id, findings, selectedRowId]);
+  }, [editor, submission, findings, selectedRowId]);
 
   useEffect(() => {
     if (!editor) return;

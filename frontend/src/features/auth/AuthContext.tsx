@@ -1,16 +1,6 @@
-import { createContext, useContext, useState, type ReactNode } from "react";
+import { useState, type ReactNode } from "react";
 import type { TokenResponse } from "../../api/client";
-
-interface AuthState {
-  token: string | null;
-  username: string | null;
-  role: string | null;
-  isAuthenticated: boolean;
-  login: (data: TokenResponse) => void;
-  logout: () => void;
-}
-
-const AuthContext = createContext<AuthState | null>(null);
+import { AuthContext } from "./context";
 
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [token, setToken] = useState<string | null>(() => localStorage.getItem("cg_token"));
@@ -42,10 +32,4 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       {children}
     </AuthContext.Provider>
   );
-}
-
-export function useAuth() {
-  const ctx = useContext(AuthContext);
-  if (!ctx) throw new Error("useAuth must be used within AuthProvider");
-  return ctx;
 }

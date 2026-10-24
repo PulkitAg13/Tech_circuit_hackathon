@@ -26,7 +26,7 @@ for (const cmd of commands) {
     execSync(cmd, { cwd: backendDir, env, stdio: "inherit" });
     generated = true;
     break;
-  } catch (e) {
+  } catch {
     // try next
   }
 }
