@@ -15,6 +15,32 @@ except Exception:
         from pydantic import BaseModel as _BaseSettings  # type: ignore[assignment]
 
 
+def _load_env_file() -> None:
+    candidates = (
+        Path(".env"),
+        Path("../.env"),
+        Path(__file__).resolve().parents[4] / ".env",
+    )
+    for candidate in candidates:
+        if candidate.is_file():
+            try:
+                for line in candidate.read_text(encoding="utf-8").splitlines():
+                    line = line.strip()
+                    if not line or line.startswith("#") or "=" not in line:
+                        continue
+                    k, _, v = line.partition("=")
+                    k = k.strip()
+                    v = v.strip().strip("'\"")
+                    if k and k not in os.environ:
+                        os.environ[k] = v
+            except Exception:
+                pass
+            break
+
+
+_load_env_file()
+
+
 class Settings(_BaseSettings):
     model_config = {"env_prefix": "CANONGATE_", "env_file": ".env", "extra": "ignore"}
 
@@ -61,5 +87,13 @@ class Settings(_BaseSettings):
         for field_name in fields:
             env_key = f"CANONGATE_{field_name.upper()}"
             if env_key in os.environ and field_name not in values:
-                env_overrides[field_name] = os.environ[env_key]
+                val: Any = os.environ[env_key]
+                if isinstance(val, str) and val.startswith(("[", "{")) and val.endswith(("]", "}")):
+                    try:
+                        import json
+
+                        val = json.loads(val)
+                    except Exception:
+                        pass
+                env_overrides[field_name] = val
         super().__init__(**{**env_overrides, **values})
