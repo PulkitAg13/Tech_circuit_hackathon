@@ -1,6 +1,7 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
 import { AuthProvider, useAuth } from "./features/auth/AuthContext";
+import { HomePage } from "./features/home/HomePage";
 import { LoginPage } from "./features/auth/LoginPage";
 import { DashboardPage } from "./features/submissions/DashboardPage";
 import { SubmissionDetailPage } from "./features/submissions/SubmissionDetailPage";
@@ -24,18 +25,27 @@ function AppRoutes() {
 
   return (
     <Routes>
+      {/* ── Public Product Home Page ── */}
+      <Route path="/" element={<HomePage />} />
+
+      {/* ── Auth / Sign In Page ── */}
       <Route
         path="/login"
-        element={isAuthenticated ? <Navigate to="/" replace /> : <LoginPage />}
+        element={isAuthenticated ? <Navigate to="/dashboard" replace /> : <LoginPage />}
       />
+
+      {/* ── Main Governance Console & Submissions ── */}
       <Route
-        path="/"
+        path="/dashboard"
         element={
           <ProtectedRoute>
             <DashboardPage />
           </ProtectedRoute>
         }
       />
+      <Route path="/app" element={<Navigate to="/dashboard" replace />} />
+
+      {/* ── Multimodal Review Studio ── */}
       <Route
         path="/submissions/:id"
         element={
@@ -44,6 +54,9 @@ function AppRoutes() {
           </ProtectedRoute>
         }
       />
+
+      {/* ── Fallback ── */}
+      <Route path="*" element={<Navigate to="/" replace />} />
     </Routes>
   );
 }

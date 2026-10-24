@@ -1,6 +1,6 @@
 /* API client for CanonGate backend */
 
-const API_BASE = "http://localhost:8000/api";
+const API_BASE = "/api";
 
 function getHeaders(): Record<string, string> {
   const headers: Record<string, string> = { "Content-Type": "application/json" };
@@ -44,6 +44,13 @@ export async function login(username: string, password: string): Promise<TokenRe
   return request<TokenResponse>("/auth/login", {
     method: "POST",
     body: JSON.stringify({ username, password }),
+  });
+}
+
+export async function switchRole(role: string): Promise<TokenResponse> {
+  return request<TokenResponse>("/auth/switch-role", {
+    method: "POST",
+    body: JSON.stringify({ role }),
   });
 }
 

@@ -7,7 +7,7 @@ import hashlib
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
-from canongate.api.deps import SessionDep, create_token
+from canongate.api.deps import CurrentUser, SessionDep, create_token
 from canongate.store.repos import create_user, get_user_by_username
 
 router = APIRouter(prefix="/auth", tags=["auth"])
@@ -28,6 +28,10 @@ class RegisterRequest(BaseModel):
 class LoginRequest(BaseModel):
     username: str
     password: str
+
+
+class SwitchRoleRequest(BaseModel):
+    role: str
 
 
 class TokenResponse(BaseModel):
@@ -64,3 +68,22 @@ async def login(req: LoginRequest, session: SessionDep) -> TokenResponse:
 
     token = create_token(user.username, user.role)
     return TokenResponse(token=token, username=user.username, role=user.role)
+
+
+@router.post("/switch-role", response_model=TokenResponse)
+async def switch_role(
+    req: SwitchRoleRequest,
+    current_user: CurrentUser,
+    session: SessionDep,
+) -> TokenResponse:
+    """Seamlessly switch the active persona/role for the current user session."""
+    if req.role not in ("creator", "reviewer", "admin"):
+        raise HTTPException(status_code=400, detail=f"Invalid role: {req.role}")
+
+    current_user.role = req.role
+    session.add(current_user)
+    await session.flush()
+
+    token = create_token(current_user.username, current_user.role)
+    return TokenResponse(token=token, username=current_user.username, role=current_user.role)
+

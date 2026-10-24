@@ -102,7 +102,7 @@ export function BannerBBoxOverlay({
   return (
     <section className="banner-overlay-section">
       <div className="section-header">
-        <h2>🖼️ Visual Creative Inspection (BBox Governance Overlay)</h2>
+        <h2>Visual Creative Inspection (BBox Governance Overlay)</h2>
         <span className="editor-subtext">
           Click any bounding box on the banner to inspect its CIEDE2000, WCAG 2.1, ASCI 26px, or Saliency evidence
         </span>
@@ -401,10 +401,26 @@ const EMPTY_VERSIONS: any[] = [];
 export function SubmissionDetailPage() {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
-  const { role } = useAuth();
+  const { role, username, switchPersona } = useAuth();
   const subId = Number(id);
 
   const queryClient = useQueryClient();
+  const [switchLoading, setSwitchLoading] = useState(false);
+
+  async function handleSwitchPersona(targetUsername: string, targetRole: string) {
+    setSwitchLoading(true);
+    setError("");
+    try {
+      await switchPersona(targetUsername, targetRole);
+      queryClient.invalidateQueries({ queryKey: ["submission", subId] });
+      queryClient.invalidateQueries({ queryKey: ["findings", subId] });
+      queryClient.invalidateQueries({ queryKey: ["submissions"] });
+    } catch (err: any) {
+      setError(err.message || "Failed to switch persona");
+    } finally {
+      setSwitchLoading(false);
+    }
+  }
 
   // TanStack Query for server state
   const { data: submission = null } = useQuery({
@@ -614,16 +630,56 @@ export function SubmissionDetailPage() {
   return (
     <div className="detail-page">
       <header className="detail-header">
-        <button className="btn-ghost" onClick={() => navigate("/")}>
-          ← Back
-        </button>
-        <h1>{submission.title}</h1>
-        <span
-          className="status-badge large"
-          style={{ backgroundColor: getStatusColor(submission.status) }}
-        >
-          {submission.status.replace(/_/g, " ")}
-        </span>
+        <div className="detail-header-left">
+          <button className="btn-ghost btn-sm" onClick={() => navigate("/dashboard")}>
+            ← Back to Queue
+          </button>
+          <div className="detail-title-group">
+            <span className="sub-canon-tag">{submission.canon_id}</span>
+            <h1 className="detail-heading">{submission.title}</h1>
+          </div>
+          <span
+            className="status-badge large"
+            style={{ backgroundColor: getStatusColor(submission.status) }}
+          >
+            {submission.status.replace(/_/g, " ")}
+          </span>
+        </div>
+
+        <div className="detail-header-right">
+          <div className="persona-switcher">
+            <span className="persona-label">Persona:</span>
+            <button
+              className={`role-switch-btn ${role === "creator" ? "active active-creator" : ""}`}
+              onClick={() => handleSwitchPersona("creative_lead", "creator")}
+              disabled={switchLoading}
+              title="Creator: Scan, triage, fix violations & submit"
+            >
+              Creator
+            </button>
+            <button
+              className={`role-switch-btn ${role === "reviewer" ? "active active-reviewer" : ""}`}
+              onClick={() => handleSwitchPersona("pulkit_manager", "reviewer")}
+              disabled={switchLoading}
+              title="Reviewer: Adjudicate warnings, approve or request changes"
+            >
+              Reviewer
+            </button>
+            <button
+              className={`role-switch-btn ${role === "admin" ? "active active-admin" : ""}`}
+              onClick={() => handleSwitchPersona("aritra_legal", "admin")}
+              disabled={switchLoading}
+              title="Legal Officer: Final publish sign-off & C2PA cert"
+            >
+              Legal Officer
+            </button>
+          </div>
+
+          <div className="user-profile-badge">
+            <span className="user-name">{username}</span>
+            <span className={`role-badge role-${role}`}>{role}</span>
+          </div>
+        </div>
       </header>
 
       {error && <p className="error-msg">{error}</p>}
@@ -655,7 +711,7 @@ export function SubmissionDetailPage() {
           onClick={handleScan}
           disabled={scanning}
         >
-          {scanning ? `Scanning... (${scanCount})` : "🔍 Run Scan"}
+          {scanning ? `Scanning... (${scanCount})` : "Run Scan"}
         </button>
 
         <div className="conformal-slider-box" title="Angelopoulos et al. Conformal Risk Control (controls max expected False Negative Rate α)">
@@ -681,32 +737,55 @@ export function SubmissionDetailPage() {
         )}
         {submission.status === "in_review" && (role === "reviewer" || role === "admin") && (
           <>
-            <button className="btn-success" onClick={() => handleWorkflow("approve")}>
-              ✓ Approve
+            <button
+              className="btn-success"
+              onClick={() => handleWorkflow("approve")}
+              disabled={blockerCount > 0}
+              title={blockerCount > 0 ? `Cannot approve: ${blockerCount} blocker(s) unresolved` : "Approve submission"}
+            >
+              {blockerCount > 0 ? `Approve Blocked (${blockerCount} Blockers)` : "Approve"}
             </button>
             <button className="btn-warning" onClick={() => handleWorkflow("request_changes")}>
-              ✎ Request Changes
+              Request Changes
             </button>
           </>
         )}
+        {submission.status === "in_review" && role === "creator" && (
+          <div className="persona-workflow-notice creator-notice">
+            <span>Awaiting Reviewer approval. Switch to Reviewer above to approve.</span>
+            <button className="btn-ghost btn-sm" onClick={() => handleWorkflow("recall")}>
+              Recall to Draft
+            </button>
+          </div>
+        )}
         {submission.status === "changes_requested" && (
           <button className="btn-accent" onClick={() => handleWorkflow("submit")}>
-            Resubmit
+            Resubmit for Review
           </button>
         )}
         {submission.status === "approved" && role === "admin" && (
           <button className="btn-success" onClick={() => handleWorkflow("publish")}>
-            🚀 Publish
+            Publish (Seal C2PA)
           </button>
         )}
+        {submission.status === "approved" && role !== "admin" && (
+          <div className="persona-workflow-notice admin-notice">
+            <span>Approved. Awaiting Legal Officer publication. Switch to Legal Officer above to publish.</span>
+          </div>
+        )}
+        {submission.status === "published" && (
+          <div className="persona-workflow-notice published-notice">
+            <span>Published &amp; Sealed. RFC 9162 Merkle log verified.</span>
+          </div>
+        )}
         <button className="btn-ghost" onClick={loadVersions}>
-          🕘 Revisions
+          Revisions
         </button>
         <button className="btn-ghost" onClick={loadAudit}>
-          📜 Audit Trail
+          Audit Trail
         </button>
         <button className="btn-ghost" onClick={handleExportCertificate}>
-          🔐 Export Certificate
+          Export Certificate
         </button>
       </div>
 
@@ -723,7 +802,7 @@ export function SubmissionDetailPage() {
       {/* Interactive ProseMirror Document Viewer with Inline Findings */}
       <section className="editor-section">
         <div className="section-header">
-          <h2>📄 Document Content (Interactive Governance View)</h2>
+          <h2>Document Content (Interactive Governance View)</h2>
           <span className="editor-subtext">
             Inline highlights indicate policy violations directly on the text (click a finding below to highlight)
           </span>
@@ -773,11 +852,11 @@ export function SubmissionDetailPage() {
                       title={`Tier: ${trace.tier}${trace.model_sha ? ` | SHA: ${trace.model_sha}` : ""}`}
                     >
                       {trace.tier === "deterministic"
-                        ? "⚙️"
+                        ? "Tier 1"
                         : trace.tier === "smt"
-                          ? "🧮"
-                          : "🤖"}{" "}
-                      {trace.tier}
+                          ? "SMT"
+                          : "Tier 2"}{" "}
+                      · {trace.tier}
                       {typeof trace.latency_ms === "number"
                         ? ` · ${trace.latency_ms.toFixed(1)}ms`
                         : ""}
@@ -789,7 +868,7 @@ export function SubmissionDetailPage() {
                 <EvidenceView evidence={f.payload?.evidence} />
                 {f.payload?.suggestion && (
                   <div className="suggestion">
-                    💡 {f.payload.suggestion.label}
+                    Recommendation: {f.payload.suggestion.label}
                   </div>
                 )}
                 <div className="finding-actions" onClick={(e) => e.stopPropagation()}>
@@ -837,18 +916,34 @@ export function SubmissionDetailPage() {
                             ? "Accept & Apply Fix"
                             : "Accept"}
                         </button>
-                        <button
-                          className="btn-sm btn-ghost"
-                          onClick={() => startReasonPrompt(f.row_id, "dismissed")}
-                        >
-                          Dismiss
-                        </button>
-                        <button
-                          className="btn-sm btn-warning"
-                          onClick={() => startReasonPrompt(f.row_id, "overridden")}
-                        >
-                          Override
-                        </button>
+                        {f.severity < 50 ? (
+                          role === "reviewer" || role === "admin" ? (
+                            <>
+                              <button
+                                className="btn-sm btn-ghost"
+                                onClick={() => startReasonPrompt(f.row_id, "dismissed")}
+                                title="Dismiss warning with written justification"
+                              >
+                                Dismiss
+                              </button>
+                              <button
+                                className="btn-sm btn-warning"
+                                onClick={() => startReasonPrompt(f.row_id, "overridden")}
+                                title="Override warning with written justification"
+                              >
+                                Override
+                              </button>
+                            </>
+                          ) : (
+                            <span className="role-restricted-hint" title="Only Reviewers and Legal Officers can dismiss or override warnings">
+                              (Reviewer override only)
+                            </span>
+                          )
+                        ) : (
+                          <span className="blocker-restricted-hint" title="Mandatory policy blocker: fix must be accepted or text revised">
+                            Policy Blocker (Must Fix)
+                          </span>
+                        )}
                       </>
                     )
                   ) : (
