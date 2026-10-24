@@ -10,10 +10,16 @@
 
 import { browserBackend, sha256Hex } from "./browserEngine";
 
-const BASE = "/api";
+export function getApiBase(): string {
+  if (typeof window !== "undefined" && localStorage.getItem("cg_api_base")) {
+    return localStorage.getItem("cg_api_base")!;
+  }
+  return "/api";
+}
 
 export function isStaticOrGitHubPages(): boolean {
   if (typeof window === "undefined") return false;
+  if (localStorage.getItem("cg_api_base")) return false;
   return (
     window.location.hostname.includes("github.io") ||
     window.location.protocol === "file:" ||
@@ -27,7 +33,10 @@ function getToken(): string | null {
 
 function authHeaders(): Record<string, string> {
   const token = getToken();
-  return token ? { Authorization: `Bearer ${token}` } : {};
+  return {
+    "Bypass-Tunnel-Reminder": "true",
+    ...(token ? { Authorization: `Bearer ${token}` } : {}),
+  };
 }
 
 async function request<T>(
@@ -38,8 +47,9 @@ async function request<T>(
     return handleBrowserRequest<T>(path, options);
   }
 
+  const base = getApiBase();
   try {
-    const res = await fetch(`${BASE}${path}`, {
+    const res = await fetch(`${base}${path}`, {
       ...options,
       headers: {
         "Content-Type": "application/json",
@@ -1072,8 +1082,9 @@ export function triggerScan(
 
   (async () => {
     try {
+      const base = getApiBase();
       const res = await fetch(
-        `${BASE}/submissions/${submissionId}/scan?alpha=${encodeURIComponent(alpha)}`,
+        `${base}/submissions/${submissionId}/scan?alpha=${encodeURIComponent(alpha)}`,
         {
           method: "POST",
           headers: authHeaders(),

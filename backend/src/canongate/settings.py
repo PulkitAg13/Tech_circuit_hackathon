@@ -62,7 +62,12 @@ class Settings(_BaseSettings):
     # Server
     host: str = "0.0.0.0"
     port: int = 8000
-    cors_origins: list[str] = ["http://localhost:5173", "http://127.0.0.1:5173"]
+    cors_origins: list[str] = [
+        "http://localhost:5173",
+        "http://127.0.0.1:5173",
+        "http://localhost:4173",
+        "https://meerpi.github.io",
+    ]
 
     # Auth
     jwt_secret: str = "dev-secret-change-me"
