@@ -81,9 +81,7 @@ venv = ".venv"
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "--import-mode=importlib -q"
-
-[tool.pytest-asyncio]
-mode = "auto"
+asyncio_mode = "auto"
 
 [tool.importlinter]
 root_packages = ["canongate"]
