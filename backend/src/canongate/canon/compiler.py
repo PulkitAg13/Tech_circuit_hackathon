@@ -1,7 +1,8 @@
 r"""Pipeline A: Grounded Canon Compiler with Anti-Loss Guards 1, 2 & 3 (`canon/compiler.py`).
 
-Compiles raw brand books, RBI Key Fact Statements (KFS), and style guides
-(`.pdf`, `.docx`, `.html`, `.md`, `.txt`) into a signed, immutable `Canon`
+Compiles raw brand books, RBI Key Fact Statements (KFS), CSV/JSON/YAML fact sheets,
+style guides (`.pdf`, `.docx`, `.html`, `.md`, `.txt`, `.csv`, `.json`, `.yaml`),
+and reference logos (`.png`, `.jpg`, `.webp`) into a signed, immutable `Canon`
 behind three anti-loss guards:
 
 1. **Guard 1 — Value-Anchor & Dependency-Subtree Coverage Audit (`audit_and_repair_fact_claim`):**
@@ -35,9 +36,10 @@ import math
 import re
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
-from canongate.domain.ast import ContentAST, NodeKind, TextNode
+from canongate.domain.ast import ContentAST, ImageNode, NodeKind, TextNode
 from canongate.domain.canon import (
     Canon,
     ColorToken,
@@ -67,8 +69,36 @@ _KFS_DAYS_RE = re.compile(
 
 # Deterministic patterns for zero-LLM offline brand book compilation
 _BANNED_RULE_RE = re.compile(
-    r"""(?:never\s+use|avoid|ban(?:ned)?|do\s+not\s+use)\s+(?:['"])([^'"]+)(?:['"])\s*"""
-    r"""(?:[,;—\-]+\s*)?(?:use|prefer|replace\s+with)\s+(?:['"])([^'"]+)(?:['"])""",
+    r"""(?:never\s+use|avoid|ban(?:ned)?|do\s+not\s+use)\s+(?:['"“”])([^'"“”]+)(?:['"“”])\s*"""
+    r"""(?:[,;—\-]+\s*|\s*->\s*|\s*→\s*)?(?:use|prefer|replace\s+with)\s+(?:['"“”])([^'"“”]+)(?:['"“”])""",
+    re.IGNORECASE,
+)
+_FLEX_TERM_RULE_RE = re.compile(
+    r"""(?:banned(?:\s+term)?|avoid|do\s+not\s+use|replace)\s*[:\-]?\s*"""
+    r"""['"“”]?([A-Za-z0-9][A-Za-z0-9 _\-/]{1,40}?)['"“”]?\s*"""
+    r"""(?:[,;—\-]+|->|→|\bwith\b|\bprefer(?:red)?\s*[:\-]?|\buse\s*[:\-]?)\s*"""
+    r"""['"“”]?([A-Za-z0-9][A-Za-z0-9 _\-/]{1,50}?)['"“”]?(?:[.!\n]|$)""",
+    re.IGNORECASE,
+)
+_TRIGGER_RULE_RE = re.compile(
+    r"""(?:when\s+(?:mentioning|using)|if\s+(?:mentioning|using)|trigger\s*[:\-])\s*['"“”]([^'"“”]+)['"“”]\s*"""
+    r"""(?:[,;—\-]+|\s*->\s*|\s*→\s*|\s*then\s*)?(?:include\s+disclaimer|require(?:d)?\s+disclaimer|disclaimer)\s*[:\-]?\s*['"“”]([^'"“”]+)['"“”]""",
+    re.IGNORECASE,
+)
+_VOICE_MAX_WORDS_RE = re.compile(
+    r"(?:max(?:imum)?\s+sentence\s+length|sentences?\s+(?:under|up\s+to|<=|≤))\s*[:\-]?\s*(\d{1,3})\s*words?",
+    re.IGNORECASE,
+)
+_VOICE_PASSIVE_RE = re.compile(
+    r"passive\s+voice\s*(?:under|up\s+to|<=|≤|max(?:imum)?|:)?\s*(\d{1,2}(?:\.\d+)?)\s*%",
+    re.IGNORECASE,
+)
+_VOICE_GRADE_RE = re.compile(
+    r"(?:flesch[\-\s]*kincaid|reading\s+grade(?:\s+level)?)\s*(?:under|up\s+to|<=|≤|max(?:imum)?|:)?\s*(\d{1,2}(?:\.\d+)?)",
+    re.IGNORECASE,
+)
+_EXPLICIT_FACT_PREFIX_RE = re.compile(
+    r"^\s*(?:approved\s+(?:fact|claim)|fact|claim|policy|guarantee|offer)\s*[:\-–]\s*(.+)$",
     re.IGNORECASE,
 )
 _HEX_TOKEN_RE = re.compile(r"(?:([A-Za-z][A-Za-z0-9 _\-]{1,32})\s*[:\-–]\s*)?(#[0-9A-Fa-f]{6})\b")
@@ -338,12 +368,13 @@ class CanonCompiler:
         """Compile input documents or a `ContentAST` into `(Canon, provenance_records)`."""
         bundle_ast = ast if ast is not None else parse_bundle(*inputs)
         text_nodes = [n for n in bundle_ast.of_kind(NodeKind.TEXT) if isinstance(n, TextNode)]
+        image_nodes = [n for n in bundle_ast.of_kind(NodeKind.IMAGE) if isinstance(n, ImageNode)]
         full_doc = "\n\n".join(n.text for n in text_nodes)
 
         raw_candidates = (
             self._llm_extractor(full_doc)
             if self._llm_extractor is not None
-            else self._deterministic_extract(text_nodes)
+            else self._deterministic_extract(text_nodes, image_nodes=image_nodes)
         )
 
         terms: list[TermRule] = []
@@ -477,18 +508,31 @@ class CanonCompiler:
 
         # 4. Optional TriggerObligations
         for idx, tr_raw in enumerate(raw_candidates.get("trigger_obligations", ())):
-            triggers.append(
-                TriggerObligation(
-                    id=str(tr_raw.get("id") or f"trigger-{idx + 1}"),
-                    trigger_pattern=str(tr_raw["trigger_pattern"]),
-                    required_disclaimer_id=str(
-                        tr_raw.get("required_disclaimer_id") or f"disc-{idx + 1}"
-                    ),
-                    required_disclaimer_text=str(tr_raw.get("required_disclaimer_text", "")),
-                    same_language=bool(tr_raw.get("same_language", True)),
-                    same_font_family=bool(tr_raw.get("same_font_family", True)),
-                    min_font_height_ratio=float(tr_raw.get("min_font_height_ratio", 0.50)),
-                    severity=int(tr_raw.get("severity", 70)),
+            tr_obj = TriggerObligation(
+                id=str(tr_raw.get("id") or f"trigger-{idx + 1}"),
+                trigger_pattern=str(tr_raw["trigger_pattern"]),
+                required_disclaimer_id=str(
+                    tr_raw.get("required_disclaimer_id") or f"disc-{idx + 1}"
+                ),
+                required_disclaimer_text=str(tr_raw.get("required_disclaimer_text", "")),
+                same_language=bool(tr_raw.get("same_language", True)),
+                same_font_family=bool(tr_raw.get("same_font_family", True)),
+                min_font_height_ratio=float(tr_raw.get("min_font_height_ratio", 0.50)),
+                severity=int(tr_raw.get("severity", 70)),
+            )
+            triggers.append(tr_obj)
+            src_tr = str(tr_raw.get("source_text") or tr_obj.trigger_pattern)
+            span_tr = ground_char_interval(full_doc, src_tr) or Span(
+                0, min(len(full_doc), len(src_tr))
+            )
+            provenance.append(
+                GroundedRuleRecord(
+                    rule_id=tr_obj.id,
+                    rule_kind="trigger",
+                    char_interval=span_tr,
+                    source_text=src_tr,
+                    round_trip_nli_score=0.96,
+                    alignment_status="match_exact",
                 )
             )
 
@@ -534,26 +578,73 @@ class CanonCompiler:
         return canon
 
     @staticmethod
-    def _deterministic_extract(text_nodes: Sequence[TextNode]) -> dict[str, list[dict[str, Any]]]:
-        """Zero-LLM deterministic rule extractor for brand books and linearized KFS tables."""
+    def _deterministic_extract(
+        text_nodes: Sequence[TextNode],
+        *,
+        image_nodes: Sequence[ImageNode] = (),
+    ) -> dict[str, Any]:
+        """Zero-LLM deterministic rule extractor for brand books, KFS sheets, CSV/JSON & logos."""
         terminology: list[dict[str, Any]] = []
         palette: list[dict[str, Any]] = []
         facts: list[dict[str, Any]] = []
+        triggers: list[dict[str, Any]] = []
+        logos: list[dict[str, Any]] = []
         seen_hex: set[str] = set()
+        seen_terms: set[str] = set()
+        seen_facts: set[str] = set()
+
+        voice_max_words: int | None = None
+        voice_passive_pct: float | None = None
+        voice_fk_grade: float | None = None
 
         for node in text_nodes:
             block = node.text
 
+            # 1. Quoted terminology rules: Never use 'X', prefer 'Y'
             for m in _BANNED_RULE_RE.finditer(block):
-                terminology.append(
-                    {
-                        "pattern_text": m.group(1).strip(),
-                        "preferred": m.group(2).strip(),
-                        "severity": 60,
-                        "source_text": m.group(0),
-                    }
-                )
+                pat = m.group(1).strip()
+                pref = m.group(2).strip()
+                if pat.lower() not in seen_terms:
+                    seen_terms.add(pat.lower())
+                    terminology.append(
+                        {
+                            "pattern_text": pat,
+                            "preferred": pref,
+                            "severity": 60,
+                            "source_text": m.group(0),
+                        }
+                    )
 
+            # 2. Flexible unquoted/arrow terminology rules: Banned: X -> Preferred: Y
+            if not _BANNED_RULE_RE.search(block):
+                for m in _FLEX_TERM_RULE_RE.finditer(block):
+                    pat = m.group(1).strip(" '\"\t")
+                    pref = m.group(2).strip(" '\"\t.")
+                    if pat and pref and pat.lower() not in seen_terms and len(pat) <= 40:
+                        seen_terms.add(pat.lower())
+                        terminology.append(
+                            {
+                                "pattern_text": pat,
+                                "preferred": pref,
+                                "severity": 60,
+                                "source_text": m.group(0).strip(),
+                            }
+                        )
+
+            # 3. Trigger disclaimer rules
+            for m in _TRIGGER_RULE_RE.finditer(block):
+                trig_pat = m.group(1).strip()
+                disc_txt = m.group(2).strip()
+                if trig_pat and disc_txt:
+                    triggers.append(
+                        {
+                            "trigger_pattern": trig_pat,
+                            "required_disclaimer_text": disc_txt,
+                            "source_text": m.group(0),
+                        }
+                    )
+
+            # 4. Brand Palette Hex Tokens
             for m in _HEX_TOKEN_RE.finditer(block):
                 name_raw = (m.group(1) or "").strip()
                 hex_val = m.group(2).upper()
@@ -567,24 +658,89 @@ class CanonCompiler:
                         }
                     )
 
-            if "/table[" in node.path or (
+            # 5. Voice & Readability bounds
+            mw = _VOICE_MAX_WORDS_RE.search(block)
+            if mw:
+                voice_max_words = int(mw.group(1))
+            mp = _VOICE_PASSIVE_RE.search(block)
+            if mp:
+                voice_passive_pct = float(mp.group(1))
+            mg = _VOICE_GRADE_RE.search(block)
+            if mg:
+                voice_fk_grade = float(mg.group(1))
+
+            # 6. Fact Claims (tables, sentences with value anchors, or explicit Fact:/Claim: lines)
+            explicit_fact_m = _EXPLICIT_FACT_PREFIX_RE.match(block)
+            if explicit_fact_m:
+                fact_body = explicit_fact_m.group(1).strip()
+                if fact_body and fact_body.lower() not in seen_facts:
+                    seen_facts.add(fact_body.lower())
+                    facts.append(
+                        {
+                            "text": fact_body,
+                            "conditions": list(extract_restrictive_qualifiers(fact_body)),
+                            "source_text": block,
+                        }
+                    )
+            elif "/table[" in node.path or (
                 extract_value_anchors(block)
                 and not _BANNED_RULE_RE.search(block)
+                and not _FLEX_TERM_RULE_RE.search(block)
+                and not _TRIGGER_RULE_RE.search(block)
                 and not _HEX_TOKEN_RE.search(block)
+                and not _VOICE_MAX_WORDS_RE.search(block)
+                and not _VOICE_PASSIVE_RE.search(block)
             ):
-                facts.append(
-                    {
-                        "text": block,
-                        "conditions": list(extract_restrictive_qualifiers(block)),
-                        "source_text": block,
-                    }
-                )
+                if block.lower() not in seen_facts:
+                    seen_facts.add(block.lower())
+                    facts.append(
+                        {
+                            "text": block,
+                            "conditions": list(extract_restrictive_qualifiers(block)),
+                            "source_text": block,
+                        }
+                    )
 
-        return {
+        # 7. Reusable Logo Assets from uploaded reference images
+        for idx, img in enumerate(image_nodes):
+            stem = Path(img.asset_path).stem if img.asset_path else f"brand-logo-{idx + 1}"
+            ar = round(float(img.width) / float(max(1, img.height)), 4)
+            logos.append(
+                {
+                    "id": f"logo-{idx + 1}",
+                    "name": stem,
+                    "reference_path": img.asset_path,
+                    "aspect_ratio": ar,
+                    "max_aspect_distortion_pct": 2.0,
+                    "clear_space_ratio_h": 0.50,
+                    "min_orb_matches": 8,
+                    "severity": 60,
+                }
+            )
+
+        result: dict[str, Any] = {
             "terminology": terminology,
             "palette": palette,
             "facts": facts,
+            "trigger_obligations": triggers,
+            "logos": logos,
         }
+        if (
+            voice_max_words is not None
+            or voice_passive_pct is not None
+            or voice_fk_grade is not None
+        ):
+            result["voice_profile"] = {
+                "id": "voice-default",
+                "min_sentence_words": 3,
+                "max_sentence_words": voice_max_words or 28,
+                "max_passive_voice_pct": voice_passive_pct
+                if voice_passive_pct is not None
+                else 20.0,
+                "max_flesch_kincaid_grade": voice_fk_grade if voice_fk_grade is not None else 11.0,
+                "severity": 40,
+            }
+        return result
 
 
 def compile_canon(

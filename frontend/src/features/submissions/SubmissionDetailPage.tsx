@@ -31,6 +31,12 @@ import {
 import { useAuth } from "../auth/context";
 import { codepointIndexToUtf16Offset } from "./FindingHighlightsExtension";
 
+const ROLE_DISPLAY: Record<string, string> = {
+  creator: "Creator · Stage 1",
+  reviewer: "Brand Manager · Stage 2",
+  admin: "Authorised Legal Reviewer · Stage 3",
+};
+
 // Role-gated workflow transitions matching backend/src/canongate/domain/workflow.py
 const WORKFLOW_ACTIONS: Record<
   string,
@@ -321,7 +327,7 @@ function extractBannerOverlays(
 export function SubmissionDetailPage() {
   const { id } = useParams<{ id: string }>();
   const submissionId = Number(id);
-  const { username, displayName, role, switchRole } = useAuth();
+  const { username, displayName, role, logout } = useAuth();
   const navigate = useNavigate();
 
   const [submission, setSubmission] = useState<Submission | null>(null);
@@ -330,7 +336,6 @@ export function SubmissionDetailPage() {
   const [versions, setVersions] = useState<SubmissionVersionItem[]>([]);
   const [comments, setComments] = useState<SubmissionCommentItem[]>([]);
   const [scanning, setScanning] = useState(false);
-  const [switchingRole, setSwitchingRole] = useState(false);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [filter, setFilter] = useState<
@@ -441,7 +446,15 @@ export function SubmissionDetailPage() {
         conformalAlpha,
       );
     }
-  }, [loading, submission, findings.length, scanning, submissionId, conformalAlpha, load]);
+  }, [
+    loading,
+    submission,
+    findings.length,
+    scanning,
+    submissionId,
+    conformalAlpha,
+    load,
+  ]);
 
   // Default Authorised Legal Reviewer (admin) to Claim-Only & Overrides view
   useEffect(() => {
@@ -578,21 +591,6 @@ export function SubmissionDetailPage() {
       setError((err as Error).message);
     } finally {
       setExportingCert(false);
-    }
-  }
-
-  async function handleSwitchRoleMode(
-    targetRole: "creator" | "reviewer" | "admin",
-  ) {
-    if (role === targetRole) return;
-    setSwitchingRole(true);
-    setError(null);
-    try {
-      await switchRole(targetRole);
-    } catch (err) {
-      setError((err as Error).message);
-    } finally {
-      setSwitchingRole(false);
     }
   }
 
@@ -757,10 +755,10 @@ export function SubmissionDetailPage() {
         </div>
 
         <div className="header-right">
-          {/* Authenticated User Identity Pill */}
+          {/* Authenticated User Identity & Locked RBAC Role Badge */}
           <div
             className="user-identity-pill"
-            title={`Signed in as ${displayName || username} (@${username})`}
+            title={`Authenticated as ${displayName || username} (@${username})`}
           >
             <span className="user-identity-avatar">
               {(displayName || username || "U").slice(0, 1).toUpperCase()}
@@ -773,37 +771,16 @@ export function SubmissionDetailPage() {
             </div>
           </div>
 
-          {/* RBAC Role Switcher */}
-          <div
-            className="persona-switcher-group"
-            title="Switch your active role view in the 4-stage workflow (preserves your signed-in identity)"
+          <span
+            className="status-badge status-approved"
+            style={{
+              padding: "0.36rem 0.72rem",
+              fontSize: "0.74rem",
+            }}
+            title="Role is bound to your signed-in account"
           >
-            <span className="persona-switcher-label">Role View:</span>
-            <button
-              type="button"
-              disabled={switchingRole}
-              className={`persona-chip ${role === "creator" ? "active" : ""}`}
-              onClick={() => handleSwitchRoleMode("creator")}
-            >
-              1 · Creator
-            </button>
-            <button
-              type="button"
-              disabled={switchingRole}
-              className={`persona-chip ${role === "reviewer" ? "active" : ""}`}
-              onClick={() => handleSwitchRoleMode("reviewer")}
-            >
-              2 · Brand Manager
-            </button>
-            <button
-              type="button"
-              disabled={switchingRole}
-              className={`persona-chip ${role === "admin" ? "active" : ""}`}
-              onClick={() => handleSwitchRoleMode("admin")}
-            >
-              3 · Legal Sign-Off
-            </button>
-          </div>
+            🔒 Role: {ROLE_DISPLAY[role || "creator"] ?? role}
+          </span>
 
           <button
             type="button"
@@ -936,24 +913,23 @@ export function SubmissionDetailPage() {
             ) : (
               <div className="role-handoff-hint">
                 <span>
-                  Current stage is owned by{" "}
-                  <strong>{activeStageObj.ownerLabel}</strong>.
+                  🔒 Stage {activeStageObj.num} requires{" "}
+                  <strong>{activeStageObj.ownerLabel}</strong> sign-off (signed
+                  in as <code>@{username}</code>).
                 </span>
                 {activeStageObj.ownerRole !== "published" && (
                   <button
                     type="button"
                     className="btn-secondary"
                     style={{ padding: "0.3rem 0.7rem", fontSize: "0.78rem" }}
-                    onClick={() =>
-                      handleSwitchRoleMode(
-                        activeStageObj.ownerRole as
-                          | "creator"
-                          | "reviewer"
-                          | "admin",
-                      )
-                    }
+                    onClick={() => {
+                      logout();
+                      navigate(
+                        `/login?role=${activeStageObj.ownerRole}&redirect=/submissions/${submissionId}`,
+                      );
+                    }}
                   >
-                    Switch to {activeStageObj.ownerLabel} View →
+                    Sign In with {activeStageObj.ownerLabel} Account →
                   </button>
                 )}
               </div>
@@ -1195,7 +1171,10 @@ export function SubmissionDetailPage() {
                 {textBlocks.length > 0 ? (
                   <div className="ProseMirror">
                     {textBlocks.map((block, idx) => (
-                      <p key={paragraphNodeIds[idx] ?? idx} style={{ margin: "0 0 0.85rem" }}>
+                      <p
+                        key={paragraphNodeIds[idx] ?? idx}
+                        style={{ margin: "0 0 0.85rem" }}
+                      >
                         {renderHighlightedBlock(
                           block,
                           paragraphNodeIds[idx],
@@ -1275,6 +1254,40 @@ export function SubmissionDetailPage() {
 
         {/* RIGHT PANE: Sticky Priority-Grouped Findings Sidebar */}
         <aside className="findings-pane">
+          {/* Confidentiality & AI / External Service Disclosure Banner */}
+          <div
+            className="card"
+            style={{
+              padding: "0.65rem 0.9rem",
+              marginBottom: "0.75rem",
+              background: "rgba(15, 118, 110, 0.05)",
+              border: "1px solid rgba(15, 118, 110, 0.24)",
+              fontSize: "0.76rem",
+              color: "#1e293b",
+            }}
+          >
+            <div
+              style={{
+                display: "flex",
+                justifyContent: "space-between",
+                alignItems: "center",
+                gap: "0.5rem",
+              }}
+            >
+              <strong>
+                🔒 Confidential Material Protection &amp; AI Disclosure
+              </strong>
+              <span className="tier-badge">DPDP 2025 Compliant</span>
+            </div>
+            <div style={{ marginTop: "0.22rem", color: "#475569" }}>
+              Raw documents, KFS tables, and banners never leave this container.
+              Every finding below discloses whether it used{" "}
+              <strong>Tier 1 Deterministic Math (Zero AI)</strong>,{" "}
+              <strong>Tier 2 Local NLI (MiniCheck-FT5 ONNX)</strong>, or{" "}
+              <strong>Tier 3 PII-Scrubbed Rewrite</strong>.
+            </div>
+          </div>
+
           <div className="findings-toolbar card">
             <div className="findings-filter-tabs">
               <button
@@ -1388,9 +1401,14 @@ export function SubmissionDetailPage() {
                         {isBlocker ? "BLOCKER" : "WARNING"} · S={f.severity}
                       </span>
                       <span className="check-id">{f.check_id}</span>
-                      {trace?.tier && (
-                        <span className="tier-badge">
-                          {trace.ai_used ? "AI-ASSISTED CHECK" : "EXACT RULE CHECK"}
+                      {trace && (
+                        <span
+                          className="tier-badge"
+                          title={`Tier: ${trace.tier} | AI Used: ${trace.ai_used ? "Yes" : "No"} | Model: ${trace.model_name ?? "Deterministic Math"} | External Service: ${trace.external_service ?? "None (100% Local)"}`}
+                        >
+                          {trace.ai_used
+                            ? `AI: ${trace.model_name ?? "Local NLI"} (${trace.external_service ?? "Local"})`
+                            : "TIER 1 · ZERO AI (100% LOCAL)"}
                         </span>
                       )}
                       {f.resolution !== "open" && (
@@ -1506,7 +1524,14 @@ export function SubmissionDetailPage() {
                           <strong>Suggested Rewrite:</strong>{" "}
                           {rewritePreviews[f.row_id].reverified
                             ? "✓ Verified against playbook rules"
-                            : "Ready for review"}
+                            : "Ready for review"}{" "}
+                          · Edit Distance:{" "}
+                          {(
+                            rewritePreviews[f.row_id].edit_distance_ratio * 100
+                          ).toFixed(1)}
+                          % · PII Masked:{" "}
+                          {rewritePreviews[f.row_id].pii_masked_count} ·
+                          Provider: {rewritePreviews[f.row_id].used_provider}
                         </div>
                         <div style={{ marginTop: "0.25rem" }}>
                           <code>
@@ -1565,18 +1590,19 @@ export function SubmissionDetailPage() {
                           </button>
                         )}
 
-                        {typeof f.payload?.locator?.start === "number" && typeof f.payload?.locator?.end === "number" && (
-                          <button
-                            type="button"
-                            className="btn-resolve"
-                            disabled={rewritingRowId === f.row_id}
-                            onClick={() => handleTier3Rewrite(f.row_id)}
-                          >
-                            {rewritingRowId === f.row_id
-                              ? "Generating..."
-                              : "✨ Suggest Rewrite"}
-                          </button>
-                        )}
+                        {typeof f.payload?.locator?.start === "number" &&
+                          typeof f.payload?.locator?.end === "number" && (
+                            <button
+                              type="button"
+                              className="btn-resolve"
+                              disabled={rewritingRowId === f.row_id}
+                              onClick={() => handleTier3Rewrite(f.row_id)}
+                            >
+                              {rewritingRowId === f.row_id
+                                ? "Generating..."
+                                : "✨ Suggest Rewrite"}
+                            </button>
+                          )}
 
                         {!isBlocker && (
                           <button

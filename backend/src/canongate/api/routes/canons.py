@@ -3,15 +3,18 @@
 from __future__ import annotations
 
 import base64
+import hashlib
 import json
 from collections import defaultdict
+from pathlib import Path
+from typing import Any
 
 import numpy as np
 from fastapi import APIRouter
 from pydantic import BaseModel
 
 from canongate.api.deps import SessionDep, get_canon, list_canon_ids, register_canon
-from canongate.api.routes.submissions import _parse_submission_ast
+from canongate.api.routes.submissions import _UPLOAD_DIR, _parse_submission_ast
 from canongate.canon.compiler import compile_canon
 from canongate.canon.impact import (
     _canon_to_yaml,
@@ -19,11 +22,17 @@ from canongate.canon.impact import (
     lint_canon,
     propose_canon_revision,
 )
-from canongate.domain.canon import Canon
+from canongate.domain.canon import (
+    Canon,
+    ColorToken,
+    FactClaim,
+    TermRule,
+    TriggerObligation,
+    VoiceProfile,
+)
 from canongate.engine.runner import run_checks_collect
 from canongate.ledger.friction import compute_rule_friction, krippendorff_alpha
 from canongate.parsers.bundle import BundleInput
-from canongate.parsers.llm_table import MultiProviderJsonLLM
 from canongate.store import repos
 
 router = APIRouter(prefix="/canons", tags=["canons"])
@@ -79,6 +88,16 @@ class RuleFrictionDto(BaseModel):
     proposed_action: str | None = None
 
 
+class RecurringCategoryBreakdownDto(BaseModel):
+    category: str
+    total_flags: int
+    open_count: int
+    resolved_count: int
+    overridden_count: int
+    top_rule_id: str
+    insight: str
+
+
 class CanonFrictionResponse(BaseModel):
     canon_id: str
     canon_version: str
@@ -86,6 +105,7 @@ class CanonFrictionResponse(BaseModel):
     total_findings: int
     rules: list[RuleFrictionDto]
     revision_recommendations: list[str]
+    category_breakdown: list[RecurringCategoryBreakdownDto] = []
 
 
 class RuleRevisionDiffDto(BaseModel):
@@ -145,11 +165,42 @@ class CompileCanonAttachmentDto(BaseModel):
     content_base64: str
 
 
+class CustomTermInputDto(BaseModel):
+    pattern_text: str
+    preferred: str
+    severity: int = 60
+
+
+class CustomFactInputDto(BaseModel):
+    text: str
+    conditions: list[str] = []
+    valid_until: str | None = None
+
+
+class CustomColorInputDto(BaseModel):
+    name: str
+    hex: str
+    max_delta_e: float = 3.0
+
+
+class CustomTriggerInputDto(BaseModel):
+    trigger_pattern: str
+    required_disclaimer_text: str
+    severity: int = 70
+
+
 class CompileCanonRequest(BaseModel):
     canon_id: str
     version: str = "1.0"
     raw_text: str = ""
     attachments: list[CompileCanonAttachmentDto] = []
+    custom_terms: list[CustomTermInputDto] = []
+    custom_facts: list[CustomFactInputDto] = []
+    custom_colors: list[CustomColorInputDto] = []
+    custom_triggers: list[CustomTriggerInputDto] = []
+    voice_max_words: int | None = None
+    voice_passive_pct: float | None = None
+    voice_fk_grade: float | None = None
     persist: bool = False
 
 
@@ -173,6 +224,9 @@ class CompileCanonResponse(BaseModel):
     term_count: int
     color_count: int
     fact_count: int
+    trigger_count: int = 0
+    logo_count: int = 0
+    has_voice_profile: bool = False
     yaml_preview: str
     provenance: list[GroundedRuleProvenanceDto]
 
@@ -188,7 +242,7 @@ def _extract_canon_rules(canon: Canon) -> list[CanonRuleItemDto]:
                     f"[Terminology] {t.id} — '{t.pattern_text}' → '{t.preferred}' (S={t.severity})"
                 ),
                 severity=t.severity,
-                source_text=getattr(t, "source_text", ""),
+                source_text=getattr(t, "source_text", "") or t.note,
             )
         )
     for c in canon.palette:
@@ -198,7 +252,7 @@ def _extract_canon_rules(canon: Canon) -> list[CanonRuleItemDto]:
                 rule_type="palette",
                 label=f"[Palette] {c.id} — {c.name or c.hex} ({c.hex}, ΔE00 ≤ {c.max_delta_e})",
                 max_delta_e=c.max_delta_e,
-                source_text=getattr(c, "source_text", ""),
+                source_text=getattr(c, "source_text", "") or f"{c.name}: {c.hex}",
             )
         )
     if canon.voice_profile is not None:
@@ -232,15 +286,17 @@ def _extract_canon_rules(canon: Canon) -> list[CanonRuleItemDto]:
                 severity=lg.severity,
                 max_aspect_distortion_pct=lg.max_aspect_distortion_pct,
                 clear_space_ratio_h=lg.clear_space_ratio_h,
-                source_text=getattr(lg, "source_text", ""),
+                source_text=getattr(lg, "source_text", "") or lg.reference_path,
             )
         )
     for f in canon.facts:
+        cond_str = f" [{'; '.join(f.conditions)}]" if f.conditions else ""
+        short_t = f.text[:56] + ("…" if len(f.text) > 56 else "")
         items.append(
             CanonRuleItemDto(
                 id=f.id,
                 rule_type="fact",
-                label=f"[Fact Claim] {f.id} — {f.text[:56]}{'…' if len(f.text) > 56 else ''}",
+                label=f"[Fact Claim] {f.id} — {short_t}{cond_str}",
                 source_text=getattr(f, "source_text", "") or f.text,
             )
         )
@@ -279,16 +335,65 @@ async def list_canons() -> list[CanonSummary]:
 
 @router.post("/compile", response_model=CompileCanonResponse, status_code=201)
 async def compile_brand_canon(req: CompileCanonRequest) -> CompileCanonResponse:
-    """Pipeline A endpoint: compile brand text/documents into a grounded Canon behind Guards 1-3."""
+    """Pipeline A: compile brand text/documents/assets into a grounded Canon behind Guards 1-3."""
     inputs: list[BundleInput] = []
+
+    # Synthesize any structured custom rules into canonical lines so they pass Guards 1-3
+    synthesized_lines: list[str] = []
     if req.raw_text.strip():
-        inputs.append(req.raw_text)
+        synthesized_lines.append(req.raw_text.strip())
+    for ct in req.custom_terms:
+        if ct.pattern_text.strip() and ct.preferred.strip():
+            synthesized_lines.append(
+                f"Never use '{ct.pattern_text.strip()}', prefer '{ct.preferred.strip()}'."
+            )
+    for cc in req.custom_colors:
+        hex_v = cc.hex.strip()
+        if hex_v:
+            if not hex_v.startswith("#"):
+                hex_v = f"#{hex_v}"
+            synthesized_lines.append(f"{cc.name.strip() or 'Brand Color'}: {hex_v.upper()}")
+    for cf in req.custom_facts:
+        if cf.text.strip():
+            c_part = (
+                f" ({'; '.join(c.strip() for c in cf.conditions if c.strip())})"
+                if cf.conditions
+                else ""
+            )
+            v_part = (
+                f" valid until {cf.valid_until.strip()}"
+                if cf.valid_until and cf.valid_until.strip()
+                else ""
+            )
+            synthesized_lines.append(f"Approved Fact: {cf.text.strip()}{c_part}{v_part}")
+    for ctr in req.custom_triggers:
+        pat = ctr.trigger_pattern.strip()
+        disc = ctr.required_disclaimer_text.strip()
+        if pat and disc:
+            synthesized_lines.append(f"Trigger: '{pat}' -> Disclaimer: '{disc}'")
+
+    if synthesized_lines:
+        inputs.append("\n\n".join(synthesized_lines))
+
     for att in req.attachments:
         try:
             raw_bytes = base64.b64decode(att.content_base64)
-            inputs.append((att.filename, raw_bytes))
+            ext = Path(att.filename).suffix.lower()
+            if ext in (".png", ".jpg", ".jpeg", ".webp"):
+                _UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
+                digest = hashlib.sha256(raw_bytes).hexdigest()[:12]
+                safe_stem = "".join(
+                    c if c.isalnum() or c in "-_" else "_" for c in Path(att.filename).stem
+                )[:36]
+                saved_path = _UPLOAD_DIR / f"logo_{safe_stem}_{digest}{ext}"
+                saved_path.write_bytes(raw_bytes)
+                inputs.append(saved_path)
+            else:
+                inputs.append((att.filename, raw_bytes))
         except Exception:
             continue
+
+    from canongate.parsers.llm_table import MultiProviderJsonLLM
 
     llm_client = MultiProviderJsonLLM()
     canon, provenance = compile_canon(
@@ -296,6 +401,107 @@ async def compile_brand_canon(req: CompileCanonRequest) -> CompileCanonResponse:
         canon_id=req.canon_id.strip() or "compiled-canon",
         version=req.version.strip() or "1.0",
         llm_client=llm_client if llm_client.is_enabled else None,
+    )
+
+    # Apply explicit custom overrides/additions if specified
+    extra_terms = list(canon.terminology)
+    existing_term_pats = {t.pattern_text.lower() for t in extra_terms}
+    for idx, ct in enumerate(req.custom_terms):
+        pat = ct.pattern_text.strip()
+        pref = ct.preferred.strip()
+        if pat and pref and pat.lower() not in existing_term_pats:
+            existing_term_pats.add(pat.lower())
+            extra_terms.append(
+                TermRule(
+                    id=f"term-custom-{idx + 1}",
+                    pattern_text=pat,
+                    preferred=pref,
+                    severity=ct.severity,
+                    note=f"Never use '{pat}', prefer '{pref}'.",
+                )
+            )
+
+    extra_colors = list(canon.palette)
+    existing_hex = {c.hex.upper() for c in extra_colors}
+    for idx, cc in enumerate(req.custom_colors):
+        hv = cc.hex.strip().upper()
+        if hv and not hv.startswith("#"):
+            hv = f"#{hv}"
+        if len(hv) == 7 and hv not in existing_hex:
+            existing_hex.add(hv)
+            extra_colors.append(
+                ColorToken(
+                    id=f"color-custom-{idx + 1}",
+                    hex=hv,
+                    name=cc.name.strip() or f"Brand Color {idx + 1}",
+                    max_delta_e=cc.max_delta_e,
+                )
+            )
+
+    extra_facts = list(canon.facts)
+    existing_fact_texts = {f.text.lower() for f in extra_facts}
+    for idx, cf in enumerate(req.custom_facts):
+        ft = cf.text.strip()
+        if ft and ft.lower() not in existing_fact_texts:
+            existing_fact_texts.add(ft.lower())
+            extra_facts.append(
+                FactClaim(
+                    id=f"fact-custom-{idx + 1}",
+                    text=ft,
+                    conditions=tuple(c.strip() for c in cf.conditions if c.strip()),
+                    valid_until=cf.valid_until.strip() if cf.valid_until else None,
+                )
+            )
+
+    extra_triggers = list(canon.trigger_obligations)
+    existing_trig_pats = {t.trigger_pattern.lower() for t in extra_triggers}
+    for idx, ctr in enumerate(req.custom_triggers):
+        tp = ctr.trigger_pattern.strip()
+        dt = ctr.required_disclaimer_text.strip()
+        if tp and dt and tp.lower() not in existing_trig_pats:
+            existing_trig_pats.add(tp.lower())
+            extra_triggers.append(
+                TriggerObligation(
+                    id=f"trigger-custom-{idx + 1}",
+                    trigger_pattern=tp,
+                    required_disclaimer_id=f"disc-custom-{idx + 1}",
+                    required_disclaimer_text=dt,
+                    severity=ctr.severity,
+                )
+            )
+
+    vp = canon.voice_profile
+    if (
+        req.voice_max_words is not None
+        or req.voice_passive_pct is not None
+        or req.voice_fk_grade is not None
+    ):
+        vp = VoiceProfile(
+            id="voice-custom",
+            min_sentence_words=3,
+            max_sentence_words=req.voice_max_words or (vp.max_sentence_words if vp else 28),
+            max_passive_voice_pct=(
+                req.voice_passive_pct
+                if req.voice_passive_pct is not None
+                else (vp.max_passive_voice_pct if vp else 20.0)
+            ),
+            max_flesch_kincaid_grade=(
+                req.voice_fk_grade
+                if req.voice_fk_grade is not None
+                else (vp.max_flesch_kincaid_grade if vp else 11.0)
+            ),
+            severity=40,
+        )
+
+    canon = Canon(
+        id=canon.id,
+        version=canon.version,
+        terminology=tuple(extra_terms),
+        palette=tuple(extra_colors),
+        facts=tuple(extra_facts),
+        trigger_obligations=tuple(extra_triggers),
+        voice_profile=vp,
+        logos=canon.logos,
     )
 
     register_canon(canon, persist_yaml=req.persist)
@@ -325,6 +531,9 @@ async def compile_brand_canon(req: CompileCanonRequest) -> CompileCanonResponse:
         term_count=len(canon.terminology),
         color_count=len(canon.palette),
         fact_count=len(canon.facts),
+        trigger_count=len(canon.trigger_obligations),
+        logo_count=len(canon.logos),
+        has_voice_profile=canon.voice_profile is not None,
         yaml_preview=_canon_to_yaml(canon),
         provenance=prov_dtos,
     )
@@ -355,11 +564,74 @@ async def get_canon_lint(canon_id: str) -> CanonLintResponse:
     )
 
 
+def _classify_finding_category(check_id: str) -> tuple[str, str]:
+    if check_id.startswith("claim."):
+        return (
+            "Facts & Promotional Claims",
+            (
+                "Repeated qualifier drops or expired offers — ensure creators "
+                "reference the approved KFS/product fact sheet."
+            ),
+        )
+    if check_id.startswith("terminology."):
+        return (
+            "Terminology & Brand Language",
+            (
+                "Frequent banned-term usage — share preferred replacement glossary "
+                "with agency and content writers."
+            ),
+        )
+    if check_id.startswith("voice."):
+        return (
+            "Tone & Readability",
+            (
+                "Long sentences or high passive-voice ratio — consider calibrating "
+                "sentence-length threshold if copy is technical."
+            ),
+        )
+    if check_id.startswith("visual."):
+        return (
+            "Visual & Logo Consistency",
+            "Off-palette hex drift or logo clear-space intrusion in promotional banners.",
+        )
+    if check_id.startswith("accessibility."):
+        return (
+            "Accessibility (WCAG 2.1 AA)",
+            "Low text-on-background contrast (< 4.5:1) or missing image alt text.",
+        )
+    if check_id.startswith("trigger.") or check_id.startswith("legibility."):
+        return (
+            "Statutory Disclaimers & Prominence",
+            (
+                "Missing trigger disclaimers or visually subordinated fine print "
+                "under CCPA 2022 rules."
+            ),
+        )
+    return (
+        "Security & Content Provenance",
+        "Hidden low-contrast text, Unicode confusables, or missing C2PA asset provenance.",
+    )
+
+
 def _aggregate_canon_friction(
     findings: list,
-) -> tuple[dict[str, dict[str, int]], dict[int, dict[int, int]]]:
+) -> tuple[
+    dict[str, dict[str, int]],
+    dict[int, dict[int, int]],
+    list[RecurringCategoryBreakdownDto],
+]:
     rule_stats: dict[str, dict[str, int]] = defaultdict(lambda: {"total": 0, "disputed": 0})
     reviewer_ratings: dict[int, dict[int, int]] = defaultdict(dict)
+    cat_stats: dict[str, dict[str, Any]] = defaultdict(
+        lambda: {
+            "total": 0,
+            "open": 0,
+            "resolved": 0,
+            "overridden": 0,
+            "rules": defaultdict(int),
+            "insight": "",
+        }
+    )
 
     for f in findings:
         rule_key = f.check_id
@@ -379,7 +651,34 @@ def _aggregate_canon_friction(
             is_disputed = f.resolution in ("overridden", "dismissed")
             reviewer_ratings[f.resolved_by][f.id] = 1 if is_disputed else 0
 
-    return rule_stats, reviewer_ratings
+        cat_name, cat_insight = _classify_finding_category(f.check_id)
+        entry = cat_stats[cat_name]
+        entry["total"] += 1
+        entry["insight"] = cat_insight
+        entry["rules"][rule_key] += 1
+        if f.resolution == "open":
+            entry["open"] += 1
+        elif f.resolution in ("overridden", "dismissed"):
+            entry["overridden"] += 1
+        else:
+            entry["resolved"] += 1
+
+    category_dtos: list[RecurringCategoryBreakdownDto] = []
+    for cat_name, st in sorted(cat_stats.items(), key=lambda x: x[1]["total"], reverse=True):
+        top_rule = max(st["rules"].items(), key=lambda x: x[1])[0] if st["rules"] else "—"
+        category_dtos.append(
+            RecurringCategoryBreakdownDto(
+                category=cat_name,
+                total_flags=st["total"],
+                open_count=st["open"],
+                resolved_count=st["resolved"],
+                overridden_count=st["overridden"],
+                top_rule_id=top_rule,
+                insight=st["insight"],
+            )
+        )
+
+    return rule_stats, reviewer_ratings, category_dtos
 
 
 @router.get("/{canon_id}/friction", response_model=CanonFrictionResponse)
@@ -387,10 +686,10 @@ async def get_canon_friction(
     canon_id: str,
     session: SessionDep,
 ) -> CanonFrictionResponse:
-    """Calculate Empirical Bayes Beta-Binomial guideline friction and Krippendorff's alpha."""
+    """Calculate Beta-Binomial friction, recurring categories, and Krippendorff's alpha."""
     canon = get_canon(canon_id)
     findings = await repos.get_findings_for_canon(session, canon_id)
-    rule_stats, reviewer_ratings = _aggregate_canon_friction(findings)
+    rule_stats, reviewer_ratings, category_breakdown = _aggregate_canon_friction(findings)
 
     rule_dtos: list[RuleFrictionDto] = []
     recommendations: list[str] = []
@@ -437,6 +736,7 @@ async def get_canon_friction(
         total_findings=len(findings),
         rules=rule_dtos,
         revision_recommendations=recommendations,
+        category_breakdown=category_breakdown,
     )
 
 
@@ -487,7 +787,7 @@ async def propose_canon_pr(
     params = req or CanonRevisionPrRequest()
     canon = get_canon(canon_id)
     findings = await repos.get_findings_for_canon(session, canon_id)
-    rule_stats, _ = _aggregate_canon_friction(findings)
+    rule_stats, _, _ = _aggregate_canon_friction(findings)
 
     friction_counts = {
         rule_id: (stats["total"], stats["disputed"]) for rule_id, stats in rule_stats.items()
@@ -553,7 +853,7 @@ async def apply_canon_pr(
     params = req or CanonRevisionPrRequest()
     canon = get_canon(canon_id)
     findings = await repos.get_findings_for_canon(session, canon_id)
-    rule_stats, _ = _aggregate_canon_friction(findings)
+    rule_stats, _, _ = _aggregate_canon_friction(findings)
     friction_counts = {
         rule_id: (stats["total"], stats["disputed"]) for rule_id, stats in rule_stats.items()
     }

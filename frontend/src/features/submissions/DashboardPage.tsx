@@ -19,9 +19,15 @@ import {
   type CanonRevisionPrResponse,
   type CalibrateCanonRuleResponse,
   type CompileCanonResponse,
+  type CustomTermInput,
+  type CustomFactInput,
+  type CustomColorInput,
+  type CustomTriggerInput,
 } from "../../api/client";
 import { useAuth } from "../auth/context";
 import { useNavigate, Link } from "react-router-dom";
+
+const CUSTOM_PLAYBOOK_VALUE = "__custom__";
 
 const ROLE_META: Record<
   string,
@@ -103,7 +109,7 @@ function getStageMeta(status: string) {
 }
 
 export function DashboardPage() {
-  const { username, displayName, role, switchRole, logout } = useAuth();
+  const { username, displayName, role, logout } = useAuth();
   const navigate = useNavigate();
 
   const [activeTab, setActiveTab] = useState<"submissions" | "governance">(
@@ -124,8 +130,20 @@ export function DashboardPage() {
   >([]);
   const [submitting, setSubmitting] = useState(false);
   const [deletingId, setDeletingId] = useState<number | null>(null);
-  const [switchingRole, setSwitchingRole] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  // Inline Custom Company Guidelines / Documents onboarding inside Campaign Submission Form
+  const [inlineCanonId, setInlineCanonId] = useState<string>("");
+  const [inlineCanonText, setInlineCanonText] = useState<string>("");
+  const [inlineCanonFiles, setInlineCanonFiles] = useState<
+    BundleAttachmentPayload[]
+  >([]);
+  const [inlineTerms, setInlineTerms] = useState<CustomTermInput[]>([]);
+  const [inlineFacts, setInlineFacts] = useState<CustomFactInput[]>([]);
+  const [inlineColors, setInlineColors] = useState<CustomColorInput[]>([]);
+  const [inlineTriggers, setInlineTriggers] = useState<CustomTriggerInput[]>(
+    [],
+  );
 
   // Brand Playbook (Canon) Studio state
   const [govCanonId, setGovCanonId] = useState<string>("");
@@ -151,12 +169,18 @@ export function DashboardPage() {
   const [calibrationResult, setCalibrationResult] =
     useState<CalibrateCanonRuleResponse | null>(null);
 
-  // Playbook Import state
+  // Playbook Studio Import state (Tab 2)
   const [compileId, setCompileId] = useState<string>("");
   const [compileText, setCompileText] = useState<string>("");
   const [compileAttachments, setCompileAttachments] = useState<
     BundleAttachmentPayload[]
   >([]);
+  const [studioTerms, setStudioTerms] = useState<CustomTermInput[]>([]);
+  const [studioFacts, setStudioFacts] = useState<CustomFactInput[]>([]);
+  const [studioColors, setStudioColors] = useState<CustomColorInput[]>([]);
+  const [studioTriggers, setStudioTriggers] = useState<CustomTriggerInput[]>(
+    [],
+  );
   const [compiling, setCompiling] = useState(false);
   const [compileResult, setCompileResult] =
     useState<CompileCanonResponse | null>(null);
@@ -330,12 +354,19 @@ export function DashboardPage() {
   async function handleCompileCanon(e: FormEvent) {
     e.preventDefault();
     const targetId = compileId.trim();
+    const hasCustomRules =
+      studioTerms.length > 0 ||
+      studioFacts.length > 0 ||
+      studioColors.length > 0 ||
+      studioTriggers.length > 0;
     if (
       !targetId ||
-      (!compileText.trim() && compileAttachments.length === 0)
+      (!compileText.trim() &&
+        compileAttachments.length === 0 &&
+        !hasCustomRules)
     ) {
       setError(
-        "Please provide a Playbook ID and either guideline text or an uploaded document.",
+        "Please provide a Playbook ID and either company guideline text, an uploaded document/logo, or structured rules.",
       );
       return;
     }
@@ -348,11 +379,21 @@ export function DashboardPage() {
         compileAttachments,
         "1.0",
         false,
+        {
+          custom_terms: studioTerms,
+          custom_facts: studioFacts,
+          custom_colors: studioColors,
+          custom_triggers: studioTriggers,
+        },
       );
       setCompileResult(res);
       setCompileId("");
       setCompileText("");
       setCompileAttachments([]);
+      setStudioTerms([]);
+      setStudioFacts([]);
+      setStudioColors([]);
+      setStudioTriggers([]);
       await refresh();
       handleSelectGovCanon(res.canon_id);
     } catch (err) {
@@ -370,13 +411,55 @@ export function DashboardPage() {
       );
       return;
     }
+
     setSubmitting(true);
     setError(null);
     try {
+      let targetCanonId = selectedCanon;
+
+      // If the user chose "+ Upload / Define Custom Company Guidelines & Facts" inline:
+      if (selectedCanon === CUSTOM_PLAYBOOK_VALUE) {
+        const cleanId =
+          inlineCanonId
+            .trim()
+            .toLowerCase()
+            .replace(/[^a-z0-9-_]+/g, "-") || "company-custom-playbook";
+        const hasInlineRules =
+          inlineTerms.length > 0 ||
+          inlineFacts.length > 0 ||
+          inlineColors.length > 0 ||
+          inlineTriggers.length > 0;
+        if (
+          !inlineCanonText.trim() &&
+          inlineCanonFiles.length === 0 &&
+          !hasInlineRules
+        ) {
+          setError(
+            "Please upload your company guideline/fact-sheet files, paste your company rules/facts, or add structured rules below.",
+          );
+          setSubmitting(false);
+          return;
+        }
+        const compiled = await compileBrandCanon(
+          cleanId,
+          inlineCanonText,
+          inlineCanonFiles,
+          "1.0",
+          false,
+          {
+            custom_terms: inlineTerms,
+            custom_facts: inlineFacts,
+            custom_colors: inlineColors,
+            custom_triggers: inlineTriggers,
+          },
+        );
+        targetCanonId = compiled.canon_id;
+      }
+
       const sub = await createSubmission(
         title.trim() || "Untitled Campaign",
         rawContent,
-        selectedCanon,
+        targetCanonId,
         [],
         uploadedAttachments,
       );
@@ -392,6 +475,13 @@ export function DashboardPage() {
       setTitle("");
       setRawContent("");
       setUploadedAttachments([]);
+      setInlineCanonId("");
+      setInlineCanonText("");
+      setInlineCanonFiles([]);
+      setInlineTerms([]);
+      setInlineFacts([]);
+      setInlineColors([]);
+      setInlineTriggers([]);
       navigate(`/submissions/${sub.id}`);
     } catch (err) {
       setError((err as Error).message);
@@ -414,21 +504,6 @@ export function DashboardPage() {
       setError((err as Error).message);
     } finally {
       setDeletingId(null);
-    }
-  }
-
-  async function handleSwitchRoleMode(
-    targetRole: "creator" | "reviewer" | "admin",
-  ) {
-    if (role === targetRole) return;
-    setSwitchingRole(true);
-    setError(null);
-    try {
-      await switchRole(targetRole);
-    } catch (err) {
-      setError((err as Error).message);
-    } finally {
-      setSwitchingRole(false);
     }
   }
 
@@ -456,6 +531,13 @@ export function DashboardPage() {
     const loaded = await readFilesAsBase64(files);
     if (loaded.length > 0) {
       setUploadedAttachments((prev) => [...prev, ...loaded]);
+    }
+  }
+
+  async function handleInlineCanonFileSelect(files: FileList | null) {
+    const loaded = await readFilesAsBase64(files);
+    if (loaded.length > 0) {
+      setInlineCanonFiles((prev) => [...prev, ...loaded]);
     }
   }
 
@@ -532,16 +614,16 @@ export function DashboardPage() {
               }`}
               onClick={() => setActiveTab("governance")}
             >
-              Brand Playbooks &amp; Rule Studio
+              Brand Playbooks, Insights &amp; Rule Studio
             </button>
           </nav>
         </div>
 
         <div className="header-right">
-          {/* Authenticated User Identity Pill */}
+          {/* Authenticated User Identity & Locked RBAC Role Badge */}
           <div
             className="user-identity-pill"
-            title={`Signed in as ${displayName || username} (@${username})`}
+            title={`Authenticated as ${displayName || username} (@${username}) — Assigned Role: ${currentRoleMeta.label}`}
           >
             <span className="user-identity-avatar">
               {(displayName || username || "U").slice(0, 1).toUpperCase()}
@@ -554,40 +636,28 @@ export function DashboardPage() {
             </div>
           </div>
 
-          {/* RBAC Role Switcher (Preserves signed-in username) */}
-          <div
-            className="persona-switcher-group"
-            title="Switch your active role in the 4-stage review workflow (keeps your signed-in identity)"
+          <span
+            className="status-badge status-approved"
+            style={{
+              padding: "0.38rem 0.78rem",
+              fontSize: "0.76rem",
+              letterSpacing: "0.02em",
+            }}
+            title="Your role is bound to your authenticated account for tamper-evident RBAC audit integrity"
           >
-            <span className="persona-switcher-label">Role View:</span>
-            <button
-              type="button"
-              disabled={switchingRole}
-              className={`persona-chip ${role === "creator" ? "active" : ""}`}
-              onClick={() => handleSwitchRoleMode("creator")}
-            >
-              1 · Creator
-            </button>
-            <button
-              type="button"
-              disabled={switchingRole}
-              className={`persona-chip ${role === "reviewer" ? "active" : ""}`}
-              onClick={() => handleSwitchRoleMode("reviewer")}
-            >
-              2 · Brand Manager
-            </button>
-            <button
-              type="button"
-              disabled={switchingRole}
-              className={`persona-chip ${role === "admin" ? "active" : ""}`}
-              onClick={() => handleSwitchRoleMode("admin")}
-            >
-              3 · Legal Sign-Off
-            </button>
-          </div>
+            🔒 Role: {currentRoleMeta.shortLabel}
+          </span>
 
-          <button type="button" onClick={logout} className="btn-ghost">
-            Sign out
+          <button
+            type="button"
+            onClick={() => {
+              logout();
+              navigate("/login");
+            }}
+            className="btn-ghost"
+            title="Sign out or switch to another team member's role account"
+          >
+            Switch Account / Sign Out
           </button>
         </div>
       </header>
@@ -630,6 +700,16 @@ export function DashboardPage() {
                   </p>
                 </div>
                 <div className="toolbar-actions-group">
+                  <button
+                    type="button"
+                    className="btn-secondary"
+                    onClick={() => {
+                      setShowForm(true);
+                      setSelectedCanon(CUSTOM_PLAYBOOK_VALUE);
+                    }}
+                  >
+                    📄 Upload Company Guidelines / Facts
+                  </button>
                   <button
                     type="button"
                     className="btn-primary"
@@ -738,11 +818,18 @@ export function DashboardPage() {
                   <div>
                     <h3>Submit Campaign Content for Pre-Publication Review</h3>
                     <p className="gov-panel-desc" style={{ marginBottom: 0 }}>
-                      Enter your marketing copy, pricing table, or HTML below,
-                      or attach `.docx`, `.pdf`, `.html`, `.md`, `.png`, or
-                      `.jpg` files to scan against your chosen Brand Playbook.
+                      Check your marketing copy, documents, or promotional
+                      banners against an existing Brand Playbook — or upload
+                      your company&apos;s own brand guidelines, product fact
+                      sheets, and logos right below for CanonGate to parse.
                     </p>
                   </div>
+                  <span
+                    className="tier-badge"
+                    title="All documents and images are parsed locally inside the container with zero external data leaks"
+                  >
+                    🔒 Confidential Local Parsing · DPDP Protected
+                  </span>
                 </div>
 
                 <div className="form-row" style={{ marginTop: "0.75rem" }}>
@@ -758,7 +845,36 @@ export function DashboardPage() {
                     />
                   </div>
                   <div className="form-group flex-1">
-                    <label htmlFor="sub-canon">Governing Brand Playbook</label>
+                    <div
+                      style={{
+                        display: "flex",
+                        justifyContent: "space-between",
+                        alignItems: "center",
+                      }}
+                    >
+                      <label htmlFor="sub-canon">Governing Brand Playbook</label>
+                      <button
+                        type="button"
+                        className="btn-ghost"
+                        style={{
+                          padding: "0.1rem 0.5rem",
+                          fontSize: "0.73rem",
+                          color: "#0f766e",
+                          fontWeight: 700,
+                        }}
+                        onClick={() =>
+                          setSelectedCanon(
+                            selectedCanon === CUSTOM_PLAYBOOK_VALUE
+                              ? canons[0]?.id || "indian-digital-lending"
+                              : CUSTOM_PLAYBOOK_VALUE,
+                          )
+                        }
+                      >
+                        {selectedCanon === CUSTOM_PLAYBOOK_VALUE
+                          ? "← Use Existing Playbook"
+                          : "+ Parse Custom Company Docs / Rules"}
+                      </button>
+                    </div>
                     <select
                       id="sub-canon"
                       value={selectedCanon}
@@ -771,13 +887,405 @@ export function DashboardPage() {
                           colours)
                         </option>
                       ))}
+                      <option value={CUSTOM_PLAYBOOK_VALUE}>
+                        + Upload / Define Custom Company Guidelines, Facts &amp;
+                        Logos (Parse Your Own Docs)
+                      </option>
                     </select>
                   </div>
                 </div>
 
+                {/* Inline Company Document & Guideline Onboarding Box */}
+                {selectedCanon === CUSTOM_PLAYBOOK_VALUE && (
+                  <div
+                    className="card"
+                    style={{
+                      background: "rgba(15, 118, 110, 0.04)",
+                      border: "1.5px solid rgba(15, 118, 110, 0.32)",
+                      padding: "1.1rem 1.25rem",
+                      marginBottom: "1rem",
+                      borderRadius: "14px",
+                    }}
+                  >
+                    <div
+                      className="gov-panel-header"
+                      style={{ marginBottom: "0.65rem" }}
+                    >
+                      <div>
+                        <h4
+                          style={{
+                            margin: 0,
+                            fontSize: "0.96rem",
+                            color: "#0f766e",
+                          }}
+                        >
+                          📄 Parse Your Company&apos;s Own Brand Guidelines,
+                          Approved Facts &amp; Assets
+                        </h4>
+                        <p
+                          className="gov-panel-desc"
+                          style={{ marginBottom: 0, fontSize: "0.8rem" }}
+                        >
+                          Upload your company&apos;s brand book (`.pdf`,
+                          `.docx`, `.md`, `.txt`), product/KFS fact sheets
+                          (`.csv`, `.json`, `.yaml`), or reference logo (`.png`,
+                          `.jpg`), or enter your rules directly. CanonGate will
+                          compile them behind Guards 1–3 and immediately check
+                          your campaign against them.
+                        </p>
+                      </div>
+                    </div>
+
+                    <div className="form-row">
+                      <div className="form-group flex-1">
+                        <label htmlFor="inline-canon-id">
+                          Company / Brand Playbook Identifier
+                        </label>
+                        <input
+                          id="inline-canon-id"
+                          type="text"
+                          value={inlineCanonId}
+                          onChange={(e) => setInlineCanonId(e.target.value)}
+                          placeholder="e.g. my-company-brand-v1"
+                          required
+                        />
+                      </div>
+                      <div className="form-group flex-1">
+                        <label htmlFor="inline-canon-files">
+                          Upload Company Guidelines, Fact Sheets or Reference
+                          Logos (`.pdf`, `.docx`, `.csv`, `.json`, `.yaml`,
+                          `.md`, `.png`, `.jpg`)
+                        </label>
+                        <input
+                          id="inline-canon-files"
+                          type="file"
+                          multiple
+                          accept=".pdf,.docx,.csv,.json,.yaml,.yml,.md,.txt,.html,.png,.jpg,.jpeg,.webp"
+                          onChange={(e) =>
+                            handleInlineCanonFileSelect(e.target.files)
+                          }
+                        />
+                        {inlineCanonFiles.length > 0 && (
+                          <div className="uploaded-files-pills">
+                            {inlineCanonFiles.map((att, idx) => (
+                              <span
+                                key={`${att.filename}-${idx}`}
+                                className="file-pill"
+                              >
+                                📄 {att.filename}
+                                <button
+                                  type="button"
+                                  style={{
+                                    marginLeft: "0.4rem",
+                                    border: "none",
+                                    background: "transparent",
+                                    cursor: "pointer",
+                                    color: "inherit",
+                                    fontWeight: 800,
+                                  }}
+                                  onClick={() =>
+                                    setInlineCanonFiles((prev) =>
+                                      prev.filter((_, i) => i !== idx),
+                                    )
+                                  }
+                                >
+                                  ✕
+                                </button>
+                              </span>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+                    </div>
+
+                    <div className="form-group" style={{ marginBottom: "0.75rem" }}>
+                      <label htmlFor="inline-canon-text">
+                        Paste Company Brand Guidelines, Approved Product Facts,
+                        Disclaimers &amp; Hex Colours
+                      </label>
+                      <textarea
+                        id="inline-canon-text"
+                        rows={4}
+                        value={inlineCanonText}
+                        onChange={(e) => setInlineCanonText(e.target.value)}
+                        placeholder={
+                          "Example company guidelines & facts to parse:\n" +
+                          "• Never use 'guaranteed returns', prefer 'historical target yield'.\n" +
+                          "• Approved Fact: 0% processing fee on loans under Rs 50,000 valid until 2026-12-31.\n" +
+                          "• Trigger: 'loan' -> Disclaimer: 'Subject to credit assessment and RBI KFS terms.'\n" +
+                          "• Brand Navy: #0F172A, Accent Teal: #0D9488. Max sentence length: 26 words."
+                        }
+                      />
+                    </div>
+
+                    {/* Quick Structured Rule Builders for Company Onboarding */}
+                    <div
+                      style={{
+                        display: "flex",
+                        flexWrap: "wrap",
+                        gap: "0.5rem",
+                        marginBottom: "0.5rem",
+                      }}
+                    >
+                      <button
+                        type="button"
+                        className="btn-secondary"
+                        style={{ fontSize: "0.76rem", padding: "0.3rem 0.65rem" }}
+                        onClick={() =>
+                          setInlineTerms((prev) => [
+                            ...prev,
+                            { pattern_text: "", preferred: "", severity: 60 },
+                          ])
+                        }
+                      >
+                        + Add Banned/Preferred Term
+                      </button>
+                      <button
+                        type="button"
+                        className="btn-secondary"
+                        style={{ fontSize: "0.76rem", padding: "0.3rem 0.65rem" }}
+                        onClick={() =>
+                          setInlineFacts((prev) => [
+                            ...prev,
+                            { text: "", conditions: [], valid_until: "" },
+                          ])
+                        }
+                      >
+                        + Add Approved Fact / Claim
+                      </button>
+                      <button
+                        type="button"
+                        className="btn-secondary"
+                        style={{ fontSize: "0.76rem", padding: "0.3rem 0.65rem" }}
+                        onClick={() =>
+                          setInlineColors((prev) => [
+                            ...prev,
+                            { name: "", hex: "#0F766E", max_delta_e: 3.5 },
+                          ])
+                        }
+                      >
+                        + Add Brand Colour Hex
+                      </button>
+                      <button
+                        type="button"
+                        className="btn-secondary"
+                        style={{ fontSize: "0.76rem", padding: "0.3rem 0.65rem" }}
+                        onClick={() =>
+                          setInlineTriggers((prev) => [
+                            ...prev,
+                            {
+                              trigger_pattern: "",
+                              required_disclaimer_text: "",
+                              severity: 70,
+                            },
+                          ])
+                        }
+                      >
+                        + Add Required Disclaimer Trigger
+                      </button>
+                    </div>
+
+                    {inlineTerms.map((t, idx) => (
+                      <div
+                        key={`it-${idx}`}
+                        className="form-row"
+                        style={{ marginTop: "0.4rem", alignItems: "center" }}
+                      >
+                        <input
+                          type="text"
+                          placeholder="Banned term (e.g. risk-free)"
+                          value={t.pattern_text}
+                          onChange={(e) =>
+                            setInlineTerms((prev) =>
+                              prev.map((item, i) =>
+                                i === idx
+                                  ? { ...item, pattern_text: e.target.value }
+                                  : item,
+                              ),
+                            )
+                          }
+                        />
+                        <input
+                          type="text"
+                          placeholder="Preferred replacement (e.g. capital-protected)"
+                          value={t.preferred}
+                          onChange={(e) =>
+                            setInlineTerms((prev) =>
+                              prev.map((item, i) =>
+                                i === idx
+                                  ? { ...item, preferred: e.target.value }
+                                  : item,
+                              ),
+                            )
+                          }
+                        />
+                        <button
+                          type="button"
+                          className="btn-ghost"
+                          onClick={() =>
+                            setInlineTerms((prev) =>
+                              prev.filter((_, i) => i !== idx),
+                            )
+                          }
+                        >
+                          ✕
+                        </button>
+                      </div>
+                    ))}
+
+                    {inlineFacts.map((f, idx) => (
+                      <div
+                        key={`if-${idx}`}
+                        className="form-row"
+                        style={{ marginTop: "0.4rem", alignItems: "center" }}
+                      >
+                        <input
+                          type="text"
+                          placeholder="Approved fact/claim (e.g. 0% processing fee on loans under Rs 50,000)"
+                          value={f.text}
+                          onChange={(e) =>
+                            setInlineFacts((prev) =>
+                              prev.map((item, i) =>
+                                i === idx
+                                  ? { ...item, text: e.target.value }
+                                  : item,
+                              ),
+                            )
+                          }
+                        />
+                        <input
+                          type="text"
+                          placeholder="Valid until YYYY-MM-DD (optional)"
+                          value={f.valid_until ?? ""}
+                          onChange={(e) =>
+                            setInlineFacts((prev) =>
+                              prev.map((item, i) =>
+                                i === idx
+                                  ? { ...item, valid_until: e.target.value }
+                                  : item,
+                              ),
+                            )
+                          }
+                        />
+                        <button
+                          type="button"
+                          className="btn-ghost"
+                          onClick={() =>
+                            setInlineFacts((prev) =>
+                              prev.filter((_, i) => i !== idx),
+                            )
+                          }
+                        >
+                          ✕
+                        </button>
+                      </div>
+                    ))}
+
+                    {inlineColors.map((c, idx) => (
+                      <div
+                        key={`ic-${idx}`}
+                        className="form-row"
+                        style={{ marginTop: "0.4rem", alignItems: "center" }}
+                      >
+                        <input
+                          type="text"
+                          placeholder="Colour name (e.g. Brand Primary)"
+                          value={c.name}
+                          onChange={(e) =>
+                            setInlineColors((prev) =>
+                              prev.map((item, i) =>
+                                i === idx
+                                  ? { ...item, name: e.target.value }
+                                  : item,
+                              ),
+                            )
+                          }
+                        />
+                        <input
+                          type="text"
+                          placeholder="Hex code (e.g. #0F766E)"
+                          value={c.hex}
+                          onChange={(e) =>
+                            setInlineColors((prev) =>
+                              prev.map((item, i) =>
+                                i === idx
+                                  ? { ...item, hex: e.target.value }
+                                  : item,
+                              ),
+                            )
+                          }
+                        />
+                        <button
+                          type="button"
+                          className="btn-ghost"
+                          onClick={() =>
+                            setInlineColors((prev) =>
+                              prev.filter((_, i) => i !== idx),
+                            )
+                          }
+                        >
+                          ✕
+                        </button>
+                      </div>
+                    ))}
+
+                    {inlineTriggers.map((tr, idx) => (
+                      <div
+                        key={`itr-${idx}`}
+                        className="form-row"
+                        style={{ marginTop: "0.4rem", alignItems: "center" }}
+                      >
+                        <input
+                          type="text"
+                          placeholder="Trigger keyword (e.g. APR or cashback)"
+                          value={tr.trigger_pattern}
+                          onChange={(e) =>
+                            setInlineTriggers((prev) =>
+                              prev.map((item, i) =>
+                                i === idx
+                                  ? { ...item, trigger_pattern: e.target.value }
+                                  : item,
+                              ),
+                            )
+                          }
+                        />
+                        <input
+                          type="text"
+                          placeholder="Required disclaimer text"
+                          value={tr.required_disclaimer_text}
+                          onChange={(e) =>
+                            setInlineTriggers((prev) =>
+                              prev.map((item, i) =>
+                                i === idx
+                                  ? {
+                                      ...item,
+                                      required_disclaimer_text: e.target.value,
+                                    }
+                                  : item,
+                              ),
+                            )
+                          }
+                        />
+                        <button
+                          type="button"
+                          className="btn-ghost"
+                          onClick={() =>
+                            setInlineTriggers((prev) =>
+                              prev.filter((_, i) => i !== idx),
+                            )
+                          }
+                        >
+                          ✕
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                )}
+
                 <div className="form-group">
                   <label htmlFor="sub-content">
-                    Campaign Copy / Markdown Pricing Table / HTML Content
+                    Campaign Copy / Markdown Pricing Table / HTML Content to
+                    Review
                   </label>
                   <textarea
                     id="sub-content"
@@ -790,14 +1298,15 @@ export function DashboardPage() {
 
                 <div className="form-group">
                   <label htmlFor="sub-files">
-                    Attach Documents or Promotional Banners (`.docx`, `.pdf`,
-                    `.html`, `.md`, `.png`, `.jpg`)
+                    Attach Campaign Documents, Tables or Promotional Banners
+                    (`.docx`, `.pdf`, `.html`, `.md`, `.csv`, `.json`, `.png`,
+                    `.jpg`)
                   </label>
                   <input
                     id="sub-files"
                     type="file"
                     multiple
-                    accept=".docx,.pdf,.html,.htm,.md,.txt,.png,.jpg,.jpeg,.webp"
+                    accept=".docx,.pdf,.html,.htm,.md,.txt,.csv,.json,.png,.jpg,.jpeg,.webp"
                     onChange={(e) => handleFileSelect(e.target.files)}
                   />
                   {uploadedAttachments.length > 0 && (
@@ -855,8 +1364,10 @@ export function DashboardPage() {
                     disabled={submitting}
                   >
                     {submitting
-                      ? "Scanning & Opening Review Studio..."
-                      : "Create & Open in Split-Screen Review Studio →"}
+                      ? "Parsing & Running Pre-Publication Checks..."
+                      : selectedCanon === CUSTOM_PLAYBOOK_VALUE
+                        ? "Compile Company Playbook & Open Review Studio →"
+                        : "Create & Open in Split-Screen Review Studio →"}
                   </button>
                 </div>
               </form>
@@ -928,7 +1439,7 @@ export function DashboardPage() {
               <div className="empty-state card">
                 <p>
                   {submissions.length === 0
-                    ? "Your campaign queue is currently empty. Use the form above to submit your first campaign copy, document, or banner for pre-publication review."
+                    ? "Your campaign queue is currently empty. Use the form above to submit your first campaign copy, document, or banner — or upload your company's own brand guidelines and fact sheets."
                     : "No campaigns match the selected workflow stage filter."}
                 </p>
                 {stageFilter !== "all" && (
@@ -1025,15 +1536,18 @@ export function DashboardPage() {
             )}
           </>
         ) : (
-          /* Brand Playbooks & Rule Studio */
+          /* Brand Playbooks, Governance Insights & Rule Studio */
           <div className="governance-studio">
             <div className="toolbar">
               <div>
-                <h2>Brand Playbooks, Rule Calibration &amp; Friction Insights</h2>
+                <h2>
+                  Brand Playbooks, Recurring Mistake Insights &amp; Rule Studio
+                </h2>
                 <p className="gov-subtitle">
-                  Inspect active brand playbooks, calibrate rule severities and
-                  visual tolerances, and review automated v1.1 rule improvements
-                  based on team override patterns.
+                  Import or define your company&apos;s brand guidelines,
+                  approved facts, terminology, and reusable logo assets; track
+                  recurring issues across campaigns; and calibrate rule
+                  thresholds.
                 </p>
               </div>
               <div className="form-group" style={{ minWidth: "280px" }}>
@@ -1085,6 +1599,15 @@ export function DashboardPage() {
                 </div>
                 <div className="canon-metric-box">
                   <span className="canon-metric-val">
+                    {(activeCanonSummary.trigger_count ?? 0) +
+                      (activeCanonSummary.logo_count ?? 0)}
+                  </span>
+                  <span className="canon-metric-lbl">
+                    Disclaimers &amp; Logo Assets
+                  </span>
+                </div>
+                <div className="canon-metric-box">
+                  <span className="canon-metric-val">
                     {frictionReport
                       ? `${(frictionReport.krippendorff_alpha * 100).toFixed(0)}%`
                       : "100%"}
@@ -1094,65 +1617,152 @@ export function DashboardPage() {
               </div>
             )}
 
+            {/* Active Playbook Rules & Assets Explorer */}
+            {activeCanonSummary?.rules &&
+              activeCanonSummary.rules.length > 0 && (
+                <div
+                  className="card gov-panel"
+                  style={{ marginBottom: "1.25rem" }}
+                >
+                  <div className="gov-panel-header">
+                    <div>
+                      <h3>
+                        Active Rules, Approved Facts &amp; Reusable Assets in{" "}
+                        <code>{activeCanonSummary.id}</code>
+                      </h3>
+                      <p className="gov-panel-desc" style={{ marginBottom: 0 }}>
+                        Every rule below is grounded to its source document and
+                        enforced automatically during pre-publication campaign
+                        reviews.
+                      </p>
+                    </div>
+                    <span className="sub-canon-tag">
+                      SHA-256: {activeCanonSummary.hash.slice(0, 12)}…
+                    </span>
+                  </div>
+                  <table className="slot-diff-table">
+                    <thead>
+                      <tr>
+                        <th>Rule ID</th>
+                        <th>Category</th>
+                        <th>Enforced Rule / Approved Fact Summary</th>
+                        <th>Source Guideline / Reference</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {activeCanonSummary.rules.map((r) => (
+                        <tr key={r.id}>
+                          <td>
+                            <code>{r.id}</code>
+                          </td>
+                          <td>
+                            <span className="tier-badge">
+                              {r.rule_type.toUpperCase()}
+                            </span>
+                          </td>
+                          <td>{r.label}</td>
+                          <td style={{ fontSize: "0.78rem", color: "#475569" }}>
+                            {r.source_text || "—"}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+
             {govLoading ? (
               <div className="loading-state">
                 Loading playbook rules and review insights...
               </div>
             ) : (
               <div className="gov-panels-grid">
-                {/* Panel 1: Guideline Consistency Check */}
+                {/* Panel 1: Recurring Problems & Category Insights Over Time */}
                 <div className="card gov-panel">
                   <div className="gov-panel-header">
-                    <h3>1. Playbook Consistency Check</h3>
-                    {lintReport && (
-                      <span
-                        className={`status-badge ${
-                          lintReport.is_valid
-                            ? "status-approved"
-                            : "status-changes_requested"
-                        }`}
-                      >
-                        {lintReport.is_valid
-                          ? "VALID PLAYBOOK"
-                          : `${lintReport.issues.length} ISSUE(S)`}
-                      </span>
-                    )}
+                    <h3>1. Recurring Problems &amp; Governance Insights</h3>
+                    <span className="sub-canon-tag">
+                      {frictionReport?.total_findings ?? 0} total findings
+                      tracked
+                    </span>
                   </div>
                   <p className="gov-panel-desc">
-                    Verifies that your playbook has no duplicate rule IDs,
-                    contradictory terminology replacements, or overlapping brand
-                    colours.
+                    Aggregates repeated compliance mistakes across campaigns by
+                    category (Claims, Terminology, Tone, Visuals, Accessibility,
+                    and Disclaimers) to highlight where teams need guidance or
+                    rules need clarification.
                   </p>
-                  {lintReport && lintReport.issues.length === 0 ? (
-                    <div className="gov-clean-box">
-                      ✓ All terminology rules, approved claims, and colour
-                      tokens in <strong>{lintReport.canon_id}</strong> (v
-                      {lintReport.canon_version}) are consistent and conflict-free.
-                    </div>
+
+                  {frictionReport?.category_breakdown &&
+                  frictionReport.category_breakdown.length > 0 ? (
+                    <table className="slot-diff-table">
+                      <thead>
+                        <tr>
+                          <th>Category</th>
+                          <th>Flags</th>
+                          <th>Resolved</th>
+                          <th>Overridden</th>
+                          <th>Top Triggered Rule &amp; Actionable Insight</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {frictionReport.category_breakdown.map((cat) => (
+                          <tr key={cat.category}>
+                            <td>
+                              <strong>{cat.category}</strong>
+                            </td>
+                            <td>{cat.total_flags}</td>
+                            <td>{cat.resolved_count}</td>
+                            <td>{cat.overridden_count}</td>
+                            <td style={{ fontSize: "0.77rem" }}>
+                              <code>{cat.top_rule_id}</code> — {cat.insight}
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
                   ) : (
-                    <ul className="gov-issue-list">
-                      {lintReport?.issues.map((iss, idx) => (
-                        <li key={idx} className="gov-issue-item">
-                          <strong>[{iss.kind.toUpperCase()}]</strong>{" "}
-                          {iss.message} (<code>{iss.rule_ids.join(", ")}</code>)
-                        </li>
-                      ))}
-                    </ul>
+                    <div className="gov-clean-box">
+                      No recurring mistakes recorded yet for{" "}
+                      <strong>{govCanonId}</strong>. As campaigns are scanned
+                      against this playbook, recurring category trends and
+                      top-violated rules appear here automatically.
+                    </div>
+                  )}
+
+                  {lintReport && (
+                    <div style={{ marginTop: "0.85rem" }}>
+                      <div className="gov-clean-box">
+                        {lintReport.is_valid ? (
+                          <>
+                            ✓ <strong>Playbook Consistency Verified:</strong>{" "}
+                            Zero duplicate rule IDs, circular terminology
+                            replacements, or overlapping brand colours in{" "}
+                            <strong>{lintReport.canon_id}</strong>.
+                          </>
+                        ) : (
+                          <>
+                            ⚠ <strong>Playbook Lint Issues:</strong>{" "}
+                            {lintReport.issues.map((i) => i.message).join("; ")}
+                          </>
+                        )}
+                      </div>
+                    </div>
                   )}
                 </div>
 
                 {/* Panel 2: Guideline Friction Insights */}
                 <div className="card gov-panel">
                   <div className="gov-panel-header">
-                    <h3>2. Guideline Friction &amp; Override Insights</h3>
+                    <h3>2. Unclear Rule Detector &amp; Override Friction</h3>
                     <span className="sub-canon-tag">
-                      {frictionReport?.total_findings ?? 0} total flags
+                      Empirical Bayes Friction(R_i)
                     </span>
                   </div>
                   <p className="gov-panel-desc">
-                    Identifies which brand rules are repeatedly overridden by
-                    creators or reviewers so you can clarify ambiguous wording
-                    or adjust severity.
+                    Identifies which specific rules are repeatedly overridden or
+                    disputed by creators and reviewers so you can auto-draft a
+                    v1.1 playbook clarification.
                   </p>
 
                   {frictionReport && frictionReport.rules.length > 0 ? (
@@ -1183,8 +1793,8 @@ export function DashboardPage() {
                               }
                             >
                               {r.needs_canon_revision
-                                ? "REVIEW RULE"
-                                : "HEALTHY"}
+                                ? "UNCLEAR · REVISE"
+                                : "CLEAR"}
                             </td>
                           </tr>
                         ))}
@@ -1193,9 +1803,9 @@ export function DashboardPage() {
                   ) : (
                     <div className="gov-clean-box">
                       No rule overrides recorded yet for{" "}
-                      <strong>{govCanonId}</strong>. As your team reviews
-                      campaigns and records overrides, rule friction metrics
-                      will appear here automatically.
+                      <strong>{govCanonId}</strong>. When a creator overrides a
+                      Warning with a justification, rule friction telemetry
+                      updates here automatically.
                     </div>
                   )}
 
@@ -1456,56 +2066,366 @@ export function DashboardPage() {
                 )}
               </div>
 
-              {/* Panel 5: Import New Brand Playbook */}
+              {/* Panel 5: Import or Define Company Brand Playbook, Facts & Reusable Assets */}
               <div className="card gov-panel">
                 <div className="gov-panel-header">
-                  <h3>5. Import New Brand Playbook</h3>
-                  <span className="sub-canon-tag">PDF / DOCX / Text</span>
+                  <h3>
+                    5. Import or Define Company Brand Guidelines, Facts &amp;
+                    Assets
+                  </h3>
+                  <span className="sub-canon-tag">
+                    PDF / DOCX / CSV / JSON / YAML / PNG
+                  </span>
                 </div>
                 <p className="gov-panel-desc">
-                  Create a new enforceable Brand Playbook from your brand
-                  guidelines, approved product fact sheets, and hex colour
-                  palette.
+                  Upload your company&apos;s brand guidelines (`.pdf`, `.docx`,
+                  `.md`), approved product/KFS fact sheets (`.csv`, `.json`,
+                  `.yaml`), and reusable reference logos (`.png`, `.jpg`), or
+                  define structured rules below.
                 </p>
                 <form
                   onSubmit={handleCompileCanon}
                   className="gov-compile-form"
                 >
                   <div className="form-group">
-                    <label htmlFor="compile-canon-id">Playbook Identifier</label>
+                    <label htmlFor="compile-canon-id">
+                      Company Playbook Identifier
+                    </label>
                     <input
                       id="compile-canon-id"
                       type="text"
                       value={compileId}
                       onChange={(e) => setCompileId(e.target.value)}
-                      placeholder="e.g. my-brand-playbook"
+                      placeholder="e.g. my-company-playbook"
                       required
                     />
                   </div>
                   <div className="form-group">
                     <label htmlFor="compile-raw-text">
-                      Brand Rules, Approved Claims &amp; Colour Hex Codes
+                      Brand Rules, Approved Claims, Disclaimers &amp; Colour Hex
+                      Codes
                     </label>
                     <textarea
                       id="compile-raw-text"
                       rows={4}
                       value={compileText}
                       onChange={(e) => setCompileText(e.target.value)}
-                      placeholder="Example: Never use 'cheap', prefer 'affordable'. Primary Blue: #1A73E8. Approved Claim: 0% processing fee on loans under Rs 50,000 valid until 2026-09-30."
+                      placeholder={
+                        "Example:\n" +
+                        "Never use 'cheap', prefer 'affordable'.\n" +
+                        "Primary Blue: #1A73E8.\n" +
+                        "Approved Fact: 0% processing fee on loans under Rs 50,000 valid until 2026-09-30.\n" +
+                        "Trigger: 'loan' -> Disclaimer: 'Subject to RBI KFS terms.'"
+                      }
                     />
                   </div>
                   <div className="form-group">
                     <label htmlFor="compile-files">
-                      Or Upload Brand Book / Fact Sheet (`.pdf`, `.docx`, `.md`)
+                      Upload Brand Book, Fact Sheet or Reference Logo Assets
+                      (`.pdf`, `.docx`, `.csv`, `.json`, `.yaml`, `.md`, `.txt`,
+                      `.png`, `.jpg`)
                     </label>
                     <input
                       id="compile-files"
                       type="file"
                       multiple
-                      accept=".pdf,.docx,.md,.txt"
+                      accept=".pdf,.docx,.csv,.json,.yaml,.yml,.md,.txt,.html,.png,.jpg,.jpeg,.webp"
                       onChange={(e) => handleCompileFileSelect(e.target.files)}
                     />
+                    {compileAttachments.length > 0 && (
+                      <div className="uploaded-files-pills">
+                        {compileAttachments.map((att, idx) => (
+                          <span
+                            key={`${att.filename}-${idx}`}
+                            className="file-pill"
+                          >
+                            📄 {att.filename}
+                            <button
+                              type="button"
+                              style={{
+                                marginLeft: "0.4rem",
+                                border: "none",
+                                background: "transparent",
+                                cursor: "pointer",
+                                color: "inherit",
+                                fontWeight: 800,
+                              }}
+                              onClick={() =>
+                                setCompileAttachments((prev) =>
+                                  prev.filter((_, i) => i !== idx),
+                                )
+                              }
+                            >
+                              ✕
+                            </button>
+                          </span>
+                        ))}
+                      </div>
+                    )}
                   </div>
+
+                  {/* Structured Rule Quick-Add in Playbook Studio */}
+                  <div
+                    style={{
+                      display: "flex",
+                      flexWrap: "wrap",
+                      gap: "0.45rem",
+                      marginBottom: "0.65rem",
+                    }}
+                  >
+                    <button
+                      type="button"
+                      className="btn-secondary"
+                      style={{ fontSize: "0.74rem", padding: "0.28rem 0.6rem" }}
+                      onClick={() =>
+                        setStudioTerms((prev) => [
+                          ...prev,
+                          { pattern_text: "", preferred: "", severity: 60 },
+                        ])
+                      }
+                    >
+                      + Term Rule
+                    </button>
+                    <button
+                      type="button"
+                      className="btn-secondary"
+                      style={{ fontSize: "0.74rem", padding: "0.28rem 0.6rem" }}
+                      onClick={() =>
+                        setStudioFacts((prev) => [
+                          ...prev,
+                          { text: "", conditions: [], valid_until: "" },
+                        ])
+                      }
+                    >
+                      + Approved Fact
+                    </button>
+                    <button
+                      type="button"
+                      className="btn-secondary"
+                      style={{ fontSize: "0.74rem", padding: "0.28rem 0.6rem" }}
+                      onClick={() =>
+                        setStudioColors((prev) => [
+                          ...prev,
+                          { name: "", hex: "#1A73E8", max_delta_e: 3.0 },
+                        ])
+                      }
+                    >
+                      + Colour Token
+                    </button>
+                    <button
+                      type="button"
+                      className="btn-secondary"
+                      style={{ fontSize: "0.74rem", padding: "0.28rem 0.6rem" }}
+                      onClick={() =>
+                        setStudioTriggers((prev) => [
+                          ...prev,
+                          {
+                            trigger_pattern: "",
+                            required_disclaimer_text: "",
+                            severity: 70,
+                          },
+                        ])
+                      }
+                    >
+                      + Disclaimer Trigger
+                    </button>
+                  </div>
+
+                  {studioTerms.map((t, idx) => (
+                    <div
+                      key={`st-${idx}`}
+                      className="form-row"
+                      style={{ marginBottom: "0.4rem", alignItems: "center" }}
+                    >
+                      <input
+                        type="text"
+                        placeholder="Banned term"
+                        value={t.pattern_text}
+                        onChange={(e) =>
+                          setStudioTerms((prev) =>
+                            prev.map((item, i) =>
+                              i === idx
+                                ? { ...item, pattern_text: e.target.value }
+                                : item,
+                            ),
+                          )
+                        }
+                      />
+                      <input
+                        type="text"
+                        placeholder="Preferred replacement"
+                        value={t.preferred}
+                        onChange={(e) =>
+                          setStudioTerms((prev) =>
+                            prev.map((item, i) =>
+                              i === idx
+                                ? { ...item, preferred: e.target.value }
+                                : item,
+                            ),
+                          )
+                        }
+                      />
+                      <button
+                        type="button"
+                        className="btn-ghost"
+                        onClick={() =>
+                          setStudioTerms((prev) =>
+                            prev.filter((_, i) => i !== idx),
+                          )
+                        }
+                      >
+                        ✕
+                      </button>
+                    </div>
+                  ))}
+
+                  {studioFacts.map((f, idx) => (
+                    <div
+                      key={`sf-${idx}`}
+                      className="form-row"
+                      style={{ marginBottom: "0.4rem", alignItems: "center" }}
+                    >
+                      <input
+                        type="text"
+                        placeholder="Approved fact/claim"
+                        value={f.text}
+                        onChange={(e) =>
+                          setStudioFacts((prev) =>
+                            prev.map((item, i) =>
+                              i === idx
+                                ? { ...item, text: e.target.value }
+                                : item,
+                            ),
+                          )
+                        }
+                      />
+                      <input
+                        type="text"
+                        placeholder="Valid until YYYY-MM-DD"
+                        value={f.valid_until ?? ""}
+                        onChange={(e) =>
+                          setStudioFacts((prev) =>
+                            prev.map((item, i) =>
+                              i === idx
+                                ? { ...item, valid_until: e.target.value }
+                                : item,
+                            ),
+                          )
+                        }
+                      />
+                      <button
+                        type="button"
+                        className="btn-ghost"
+                        onClick={() =>
+                          setStudioFacts((prev) =>
+                            prev.filter((_, i) => i !== idx),
+                          )
+                        }
+                      >
+                        ✕
+                      </button>
+                    </div>
+                  ))}
+
+                  {studioColors.map((c, idx) => (
+                    <div
+                      key={`sc-${idx}`}
+                      className="form-row"
+                      style={{ marginBottom: "0.4rem", alignItems: "center" }}
+                    >
+                      <input
+                        type="text"
+                        placeholder="Colour name"
+                        value={c.name}
+                        onChange={(e) =>
+                          setStudioColors((prev) =>
+                            prev.map((item, i) =>
+                              i === idx
+                                ? { ...item, name: e.target.value }
+                                : item,
+                            ),
+                          )
+                        }
+                      />
+                      <input
+                        type="text"
+                        placeholder="#RRGGBB"
+                        value={c.hex}
+                        onChange={(e) =>
+                          setStudioColors((prev) =>
+                            prev.map((item, i) =>
+                              i === idx
+                                ? { ...item, hex: e.target.value }
+                                : item,
+                            ),
+                          )
+                        }
+                      />
+                      <button
+                        type="button"
+                        className="btn-ghost"
+                        onClick={() =>
+                          setStudioColors((prev) =>
+                            prev.filter((_, i) => i !== idx),
+                          )
+                        }
+                      >
+                        ✕
+                      </button>
+                    </div>
+                  ))}
+
+                  {studioTriggers.map((tr, idx) => (
+                    <div
+                      key={`str-${idx}`}
+                      className="form-row"
+                      style={{ marginBottom: "0.4rem", alignItems: "center" }}
+                    >
+                      <input
+                        type="text"
+                        placeholder="Trigger keyword"
+                        value={tr.trigger_pattern}
+                        onChange={(e) =>
+                          setStudioTriggers((prev) =>
+                            prev.map((item, i) =>
+                              i === idx
+                                ? { ...item, trigger_pattern: e.target.value }
+                                : item,
+                            ),
+                          )
+                        }
+                      />
+                      <input
+                        type="text"
+                        placeholder="Required disclaimer text"
+                        value={tr.required_disclaimer_text}
+                        onChange={(e) =>
+                          setStudioTriggers((prev) =>
+                            prev.map((item, i) =>
+                              i === idx
+                                ? {
+                                    ...item,
+                                    required_disclaimer_text: e.target.value,
+                                  }
+                                : item,
+                            ),
+                          )
+                        }
+                      />
+                      <button
+                        type="button"
+                        className="btn-ghost"
+                        onClick={() =>
+                          setStudioTriggers((prev) =>
+                            prev.filter((_, i) => i !== idx),
+                          )
+                        }
+                      >
+                        ✕
+                      </button>
+                    </div>
+                  ))}
+
                   <button
                     type="submit"
                     className="btn-primary"
@@ -1513,7 +2433,7 @@ export function DashboardPage() {
                   >
                     {compiling
                       ? "Compiling Brand Playbook..."
-                      : "Import & Activate Playbook"}
+                      : "Import & Activate Company Playbook"}
                   </button>
                 </form>
 
@@ -1523,12 +2443,33 @@ export function DashboardPage() {
                     style={{ marginTop: "0.75rem" }}
                   >
                     <div>
-                      ✓ Imported Playbook{" "}
+                      ✓ Compiled &amp; Activated Playbook{" "}
                       <strong>{compileResult.canon_id}</strong> (
                       {compileResult.term_count} terms,{" "}
                       {compileResult.color_count} colours,{" "}
-                      {compileResult.fact_count} approved facts)
+                      {compileResult.fact_count} approved facts,{" "}
+                      {compileResult.trigger_count ?? 0} triggers,{" "}
+                      {compileResult.logo_count ?? 0} logos)
                     </div>
+                    {compileResult.provenance.length > 0 && (
+                      <div style={{ marginTop: "0.5rem", fontSize: "0.76rem" }}>
+                        <strong>
+                          Guards 1–3 Grounding Provenance (
+                          {compileResult.provenance.length} rules verified):
+                        </strong>
+                        <ul style={{ margin: "0.3rem 0 0 1.1rem", padding: 0 }}>
+                          {compileResult.provenance.slice(0, 6).map((p) => (
+                            <li key={p.rule_id}>
+                              <code>{p.rule_id}</code> [{p.start}:{p.end}] —
+                              Anchor Recall:{" "}
+                              {(p.effective_anchor_recall * 100).toFixed(0)}%,
+                              Round-Trip NLI:{" "}
+                              {(p.round_trip_nli_score * 100).toFixed(0)}%
+                            </li>
+                          ))}
+                        </ul>
+                      </div>
+                    )}
                   </div>
                 )}
               </div>

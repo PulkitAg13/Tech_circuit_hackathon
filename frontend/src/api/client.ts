@@ -142,6 +142,16 @@ export interface RuleFriction {
   proposed_action: string | null;
 }
 
+export interface RecurringCategoryBreakdown {
+  category: string;
+  total_flags: number;
+  open_count: number;
+  resolved_count: number;
+  overridden_count: number;
+  top_rule_id: string;
+  insight: string;
+}
+
 export interface CanonFrictionResponse {
   canon_id: string;
   canon_version: string;
@@ -149,6 +159,7 @@ export interface CanonFrictionResponse {
   total_findings: number;
   rules: RuleFriction[];
   revision_recommendations: string[];
+  category_breakdown?: RecurringCategoryBreakdown[];
 }
 
 export interface RuleRevisionDiff {
@@ -265,6 +276,40 @@ export interface GroundedRuleProvenance {
   alignment_status: string;
 }
 
+export interface CustomTermInput {
+  pattern_text: string;
+  preferred: string;
+  severity?: number;
+}
+
+export interface CustomFactInput {
+  text: string;
+  conditions?: string[];
+  valid_until?: string | null;
+}
+
+export interface CustomColorInput {
+  name: string;
+  hex: string;
+  max_delta_e?: number;
+}
+
+export interface CustomTriggerInput {
+  trigger_pattern: string;
+  required_disclaimer_text: string;
+  severity?: number;
+}
+
+export interface CompileCanonExtraOptions {
+  custom_terms?: CustomTermInput[];
+  custom_facts?: CustomFactInput[];
+  custom_colors?: CustomColorInput[];
+  custom_triggers?: CustomTriggerInput[];
+  voice_max_words?: number;
+  voice_passive_pct?: number;
+  voice_fk_grade?: number;
+}
+
 export interface CompileCanonResponse {
   canon_id: string;
   version: string;
@@ -272,6 +317,9 @@ export interface CompileCanonResponse {
   term_count: number;
   color_count: number;
   fact_count: number;
+  trigger_count?: number;
+  logo_count?: number;
+  has_voice_profile?: boolean;
   yaml_preview: string;
   provenance: GroundedRuleProvenance[];
 }
@@ -282,6 +330,7 @@ export function compileBrandCanon(
   attachments: BundleAttachmentPayload[] = [],
   version = "1.0",
   persist = false,
+  extra: CompileCanonExtraOptions = {},
 ): Promise<CompileCanonResponse> {
   return request("/canons/compile", {
     method: "POST",
@@ -291,6 +340,7 @@ export function compileBrandCanon(
       raw_text: rawText,
       attachments,
       persist,
+      ...extra,
     }),
   });
 }
@@ -323,8 +373,6 @@ export interface Submission {
   image_paths?: string[];
   image_nodes?: ImageNodeMeta[];
 }
-
-export type FindingResponse = FindingItem;
 
 export interface FindingItem {
   row_id: number;

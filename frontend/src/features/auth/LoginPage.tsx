@@ -1,6 +1,6 @@
-import { useState, type FormEvent } from "react";
+import { useState, useEffect, type FormEvent } from "react";
 import { useAuth } from "./context";
-import { useNavigate, Link } from "react-router-dom";
+import { useNavigate, useSearchParams, Link } from "react-router-dom";
 import {
   ShieldCheck,
   Lock,
@@ -20,8 +20,8 @@ const ROLE_OPTIONS = [
   },
   {
     value: "reviewer",
-    label: "Brand Manager (Canon & Brand Review)",
-    desc: "Ingests & calibrates Brand Canons, reviews revision diffs & overrides, and approves brand compliance.",
+    label: "Brand Manager (Playbook & Brand Review)",
+    desc: "Ingests & calibrates Brand Playbooks, reviews revision diffs & overrides, and approves brand compliance.",
   },
   {
     value: "admin",
@@ -33,17 +33,20 @@ const ROLE_OPTIONS = [
 const DEMO_ACCOUNTS = [
   {
     username: "creative_lead",
-    label: "Creator Demo",
+    role: "creator",
+    label: "1 · Creator Account (@creative_lead)",
     roleBadge: "Creator",
   },
   {
     username: "brand_manager",
-    label: "Brand Manager Demo",
+    role: "reviewer",
+    label: "2 · Brand Manager (@brand_manager)",
     roleBadge: "Brand Manager",
   },
   {
     username: "legal_counsel",
-    label: "Legal Reviewer Demo",
+    role: "admin",
+    label: "3 · Legal Reviewer (@legal_counsel)",
     roleBadge: "Legal Sign-Off",
   },
 ] as const;
@@ -51,6 +54,9 @@ const DEMO_ACCOUNTS = [
 export function LoginPage() {
   const { login, register } = useAuth();
   const navigate = useNavigate();
+  const [searchParams] = useSearchParams();
+  const requestedRole = searchParams.get("role");
+  const redirectPath = searchParams.get("redirect") || "/dashboard";
 
   // Sign In state
   const [signInUsername, setSignInUsername] = useState("");
@@ -67,13 +73,24 @@ export function LoginPage() {
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
 
+  useEffect(() => {
+    if (requestedRole) {
+      const matched = DEMO_ACCOUNTS.find((a) => a.role === requestedRole);
+      if (matched) {
+        setSignInUsername(matched.username);
+        setSignInPassword("demoPassword123!");
+      }
+      setSignUpRole(requestedRole);
+    }
+  }, [requestedRole]);
+
   async function handleSignIn(e: FormEvent) {
     e.preventDefault();
     setError(null);
     setLoading(true);
     try {
       await login(signInUsername.trim(), signInPassword);
-      navigate("/dashboard");
+      navigate(redirectPath);
     } catch (err) {
       setError((err as Error).message);
     } finally {
@@ -92,7 +109,7 @@ export function LoginPage() {
         signUpRole,
         signUpName.trim() || signUpUsername.trim(),
       );
-      navigate("/dashboard");
+      navigate(redirectPath);
     } catch (err) {
       setError((err as Error).message);
     } finally {
@@ -226,8 +243,9 @@ export function LoginPage() {
             </span>
             <h1 className="sliding-form-title">Sign In</h1>
             <p className="sliding-form-subtitle">
-              Authenticate to review multimodal campaigns, calibrate Brand
-              Canons, and verify cryptographic audit trails
+              Each account is bound to its assigned role (Creator, Brand
+              Manager, or Authorised Legal Reviewer) for tamper-evident RBAC
+              accountability
             </p>
 
             {error && !isRightPanelActive && (
@@ -265,7 +283,7 @@ export function LoginPage() {
 
             <div className="demo-accounts-bar">
               <span className="demo-accounts-label">
-                Quick-Fill Evaluation Persona:
+                Select Role Account to Sign In:
               </span>
               <div className="demo-accounts-chips">
                 {DEMO_ACCOUNTS.map((acct) => (
@@ -276,7 +294,7 @@ export function LoginPage() {
                       signInUsername === acct.username ? "active" : ""
                     }`}
                     onClick={() => fillDemoAccount(acct.username)}
-                    title={`Fill seeded credentials for @${acct.username} (${acct.roleBadge})`}
+                    title={`Fill credentials for @${acct.username} (${acct.roleBadge})`}
                   >
                     {acct.label}
                   </button>
@@ -324,7 +342,7 @@ export function LoginPage() {
               <div className="overlay-badge">4-STAGE COLLABORATIVE GATE</div>
               <h2 className="sliding-overlay-title">New to CanonGate?</h2>
               <p className="sliding-overlay-text">
-                Create an account and choose your role — Creator, Brand
+                Create an account and choose your assigned role — Creator, Brand
                 Manager, or Authorised Legal Reviewer — to collaborate on
                 pre-publication governance.
               </p>
