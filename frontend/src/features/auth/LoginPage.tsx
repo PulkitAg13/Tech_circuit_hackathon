@@ -75,12 +75,19 @@ export function LoginPage() {
 
   useEffect(() => {
     if (requestedRole) {
-      const matched = DEMO_ACCOUNTS.find((a) => a.role === requestedRole);
-      if (matched) {
-        setSignInUsername(matched.username);
-        setSignInPassword("demoPassword123!");
-      }
-      setSignUpRole(requestedRole);
+      let active = true;
+      void Promise.resolve().then(() => {
+        if (!active) return;
+        const matched = DEMO_ACCOUNTS.find((a) => a.role === requestedRole);
+        if (matched) {
+          setSignInUsername(matched.username);
+          setSignInPassword("demoPassword123!");
+        }
+        setSignUpRole(requestedRole);
+      });
+      return () => {
+        active = false;
+      };
     }
   }, [requestedRole]);
 
