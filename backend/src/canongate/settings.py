@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -16,7 +17,11 @@ except Exception:
 
 
 def _load_env_file() -> None:
-    if os.environ.get("PYTEST_CURRENT_TEST"):
+    if (
+        os.environ.get("PYTEST_CURRENT_TEST")
+        or "pytest" in sys.modules
+        or any("pytest" in arg for arg in sys.argv)
+    ):
         return
     candidates = (
         Path(".env"),

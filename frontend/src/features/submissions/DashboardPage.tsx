@@ -242,6 +242,7 @@ export function DashboardPage() {
 
   useEffect(() => {
     let active = true;
+    setSubmissions([]);
     void Promise.resolve().then(() => {
       if (active) {
         refresh();
@@ -250,7 +251,7 @@ export function DashboardPage() {
     return () => {
       active = false;
     };
-  }, [refresh]);
+  }, [refresh, username, role]);
 
   const loadGovernanceTelemetry = useCallback(async (canonId: string) => {
     if (!canonId) return;
@@ -1533,9 +1534,10 @@ export function DashboardPage() {
                       >
                         <span>
                           Bundle #{s.id} ·{" "}
+                          {`${s.text_blocks?.length ?? 0} text block(s)`}
                           {s.image_nodes && s.image_nodes.length > 0
-                            ? `${s.image_nodes.length} banner(s)`
-                            : `${s.text_blocks?.length ?? 1} text block(s)`}
+                            ? ` · ${s.image_nodes.length} visual asset(s)`
+                            : ""}
                         </span>
                         <span
                           style={{

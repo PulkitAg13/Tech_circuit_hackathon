@@ -34,6 +34,7 @@ logger = logging.getLogger(__name__)
 _PARA_SPLIT = re.compile(r"\n{2,}")
 _BORDERLESS_ROW_RE = re.compile(r"\S+\s{2,}\S+")
 _PDF_MEDIA_DIR = Path("/tmp/.canongate_pdf_media")
+_MAX_PDF_EMBEDDED_IMAGES = 6
 
 
 def _is_white_color(color: Any) -> bool:
@@ -110,8 +111,12 @@ def _extract_pdf_embedded_images(raw_bytes: bytes) -> list[Node]:
         _PDF_MEDIA_DIR.mkdir(parents=True, exist_ok=True)
         seen_digests: set[str] = set()
         for page in reader.pages:
+            if len(seen_digests) >= _MAX_PDF_EMBEDDED_IMAGES:
+                break
             images = getattr(page, "images", None) or ()
             for img_file in images:
+                if len(seen_digests) >= _MAX_PDF_EMBEDDED_IMAGES:
+                    break
                 blob = getattr(img_file, "data", b"")
                 if not blob or len(blob) < 128:
                     continue
@@ -121,7 +126,7 @@ def _extract_pdf_embedded_images(raw_bytes: bytes) -> list[Node]:
                 try:
                     with Image.open(io.BytesIO(blob)) as im:
                         w, h = im.size
-                        if w < 32 or h < 32:
+                        if w < 64 or h < 48:
                             continue
                         rgb_im = im.convert("RGB")
                         out_path = _PDF_MEDIA_DIR / f"{digest}_pdf_img.png"

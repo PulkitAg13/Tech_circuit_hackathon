@@ -317,10 +317,47 @@ async def upload_submission_bundle(
     return await create_submission(req, session, user)
 
 
+def _can_user_access_submission(user: CurrentUser, sub: Any) -> bool:
+    """Enforce strict account and workflow-stage isolation across user accounts.
+
+    - A user always sees campaigns they personally created (`sub.creator_id == user.id`).
+    - Creator accounts (`role == 'creator'`) are strictly isolated to their own account
+      and NEVER see another account's campaigns.
+    - Unsubmitted Stage 1 drafts (`status in ('draft', 'changes_requested')`) are
+      private to the Creator account that uploaded them and NEVER leak into another
+      user's Brand Manager or Legal Reviewer queue until submitted (`status == 'in_review'`).
+    - Brand Managers (`reviewer`) and Legal Reviewers (`admin`) only see other accounts'
+      campaigns once those campaigns have been explicitly submitted into review
+      (`status in ('in_review', 'approved', 'published')`).
+    """
+    sub_creator_id = getattr(sub, "creator_id", None)
+    user_id = getattr(user, "id", None)
+    if sub_creator_id is not None and user_id is not None and int(sub_creator_id) == int(user_id):
+        return True
+
+    role = str(getattr(user, "role", "creator")).lower()
+    status = str(getattr(sub, "status", "draft")).lower()
+
+    if role == "creator":
+        return False
+
+    if status in ("draft", "changes_requested"):
+        return False
+
+    if role in ("reviewer", "admin"):
+        return status in ("in_review", "approved", "published")
+
+    return False
+
+
 @router.get("", response_model=list[SubmissionResponse])
-async def list_submissions(session: SessionDep, user: CurrentUser) -> list[SubmissionResponse]:
+async def list_submissions(
+    session: SessionDep,
+    user: CurrentUser,
+) -> list[SubmissionResponse]:
     subs = await repos.list_submissions(session)
-    return [_to_response(s) for s in subs]
+    visible = [s for s in subs if _can_user_access_submission(user, s)]
+    return [_to_response(s) for s in visible]
 
 
 @router.get("/{submission_id}", response_model=SubmissionResponse)
@@ -332,6 +369,14 @@ async def get_submission(
     sub = await repos.get_submission(session, submission_id)
     if not sub:
         raise HTTPException(status_code=404, detail="Submission not found")
+    if (
+        str(getattr(user, "role", "")).lower() == "creator"
+        and int(getattr(sub, "creator_id", -1)) != int(getattr(user, "id", -2))
+    ):
+        raise HTTPException(
+            status_code=403,
+            detail="Access denied: this campaign belongs to another Creator account",
+        )
     return _to_response(sub)
 
 
@@ -341,7 +386,18 @@ async def remove_submission(
     session: SessionDep,
     user: CurrentUser,
 ) -> dict[str, Any]:
-    """Delete a submission bundle from the workspace queue."""
+    """Delete a submission bundle from the workspace queue (owner or admin only)."""
+    sub = await repos.get_submission(session, submission_id)
+    if not sub:
+        raise HTTPException(status_code=404, detail="Submission not found")
+    if (
+        int(getattr(sub, "creator_id", -1)) != int(getattr(user, "id", -2))
+        and str(getattr(user, "role", "")).lower() != "admin"
+    ):
+        raise HTTPException(
+            status_code=403,
+            detail="You can only delete campaigns uploaded by your own account",
+        )
     if hasattr(repos, "delete_submission"):
         deleted = await repos.delete_submission(session, submission_id)
         if not deleted:
