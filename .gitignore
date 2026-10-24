@@ -13,3 +13,5 @@ node_modules/
 *.egg-info/
 .DS_Store
 *.zip
+test-results/
+playwright-report/
