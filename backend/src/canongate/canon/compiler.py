@@ -323,7 +323,9 @@ class CanonCompiler:
         llm_client: MultiProviderJsonLLM | None = None,
         min_round_trip_nli: float = 0.90,
     ) -> None:
-        self._llm_extractor = llm_extractor or create_llm_canon_extractor(llm_client)
+        self._llm_extractor = llm_extractor or (
+            create_llm_canon_extractor(llm_client) if llm_client is not None else None
+        )
         self._min_round_trip_nli = min_round_trip_nli
 
     def compile(

@@ -23,6 +23,7 @@ from canongate.domain.canon import Canon
 from canongate.engine.runner import run_checks_collect
 from canongate.ledger.friction import compute_rule_friction, krippendorff_alpha
 from canongate.parsers.bundle import BundleInput
+from canongate.parsers.llm_table import MultiProviderJsonLLM
 from canongate.store import repos
 
 router = APIRouter(prefix="/canons", tags=["canons"])
@@ -289,10 +290,12 @@ async def compile_brand_canon(req: CompileCanonRequest) -> CompileCanonResponse:
         except Exception:
             continue
 
+    llm_client = MultiProviderJsonLLM()
     canon, provenance = compile_canon(
         *inputs,
         canon_id=req.canon_id.strip() or "compiled-canon",
         version=req.version.strip() or "1.0",
+        llm_client=llm_client if llm_client.is_enabled else None,
     )
 
     register_canon(canon, persist_yaml=req.persist)
