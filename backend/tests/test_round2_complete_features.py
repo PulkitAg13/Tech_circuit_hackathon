@@ -518,6 +518,23 @@ class TestRound2CompleteFeatures(unittest.TestCase):
                     canons_route.CanonRevisionPrRequest(),
                 )
                 self.assertEqual(applied.id, "api-test-canon")
+
+                from canongate.api.routes import auth as auth_route
+
+                async def _fake_flush():
+                    pass
+
+                fake_db_session = SimpleNamespace(
+                    add=lambda u: None,
+                    flush=_fake_flush,
+                )
+                switched = await auth_route.switch_role(
+                    auth_route.SwitchRoleRequest(role="reviewer"),
+                    fake_user,  # type: ignore[arg-type]
+                    fake_db_session,  # type: ignore[arg-type]
+                )
+                self.assertEqual(switched.role, "reviewer")
+                self.assertEqual(fake_user.role, "reviewer")
             finally:
                 subs_route.repos = orig_subs_repos
                 canons_route.repos = orig_canons_repos

@@ -8,6 +8,8 @@ export interface AuthState {
   isAuthenticated: boolean;
   login: (data: TokenResponse) => void;
   logout: () => void;
+  switchPersona: (targetUsername: string, targetRole: string) => Promise<void>;
 }
+
 
 export const AuthContext = createContext<AuthState | null>(null);
