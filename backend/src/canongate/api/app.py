@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
@@ -9,18 +10,48 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from canongate.settings import Settings
 from canongate.store import init_db
+from canongate.store.db import async_session
+from canongate.store.repos import create_user, get_user_by_username
 
 _settings = Settings()
+
+_DEFAULT_DEMO_USERS = (
+    ("creative_lead", "Agency Creative Lead", "creator", "demoPassword123!"),
+    ("brand_manager", "Brand Governance Manager", "reviewer", "demoPassword123!"),
+    ("legal_counsel", "Authorised Legal Reviewer", "admin", "demoPassword123!"),
+    ("pulkit_manager", "Pulkit Agrawal (Brand Manager)", "reviewer", "demoPassword123!"),
+    ("aritra_legal", "Aritra Mahanty (Legal Reviewer)", "admin", "demoPassword123!"),
+)
+
+
+async def _seed_default_users() -> None:
+    """Ensure starter evaluation accounts exist on a fresh database."""
+    async with async_session() as session, session.begin():
+        for uname, dname, role, pw in _DEFAULT_DEMO_USERS:
+            existing = await get_user_by_username(session, uname)
+            if not existing:
+                pw_hash = hashlib.sha256(pw.encode()).hexdigest()
+                await create_user(
+                    session,
+                    username=uname,
+                    display_name=dname,
+                    role=role,
+                    password_hash=pw_hash,
+                )
+
+
+async def _startup_init() -> None:
+    await init_db()
+    await _seed_default_users()
+    from canongate.api.deps import _load_all_canons
+
+    _load_all_canons()
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Startup: create tables + warm canon cache."""
-    await init_db()
-    # Warm the canon cache
-    from canongate.api.deps import _load_all_canons
-
-    _load_all_canons()
+    """Startup: create tables, seed starter accounts, and warm canon cache."""
+    await _startup_init()
     yield
 
 
@@ -31,6 +62,10 @@ def create_app() -> FastAPI:
         version="0.1.0",
         lifespan=lifespan,
     )
+
+    @app.on_event("startup")
+    async def _on_startup() -> None:
+        await _startup_init()
 
     # CORS
     app.add_middleware(

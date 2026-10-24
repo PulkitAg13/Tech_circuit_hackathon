@@ -1,10 +1,12 @@
 """Tests for the text parser."""
 
+import unittest
+
 from canongate.domain.ast import NodeKind
 from canongate.parsers.text import parse_text
 
 
-class TestTextParser:
+class TestTextParser(unittest.TestCase):
     def test_single_paragraph(self):
         ast = parse_text("Hello world")
         assert len(ast) == 1

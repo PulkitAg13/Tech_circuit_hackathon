@@ -2,13 +2,15 @@
 
 from __future__ import annotations
 
+import base64
 import datetime as dt
+import hashlib
+import hmac
+import json
 from pathlib import Path
-from typing import Annotated
+from typing import Annotated, Any
 
-import jwt
 from fastapi import Depends, Header, HTTPException
-from sqlalchemy.ext.asyncio import AsyncSession
 
 from canongate.canon.impact import _canon_to_yaml
 from canongate.canon.loader import load_canon
@@ -16,7 +18,11 @@ from canongate.domain.canon import Canon
 from canongate.settings import Settings
 from canongate.store.db import async_session
 from canongate.store.repos import get_user_by_username
-from canongate.store.tables import UserRow
+
+try:
+    import jwt as _pyjwt
+except ImportError:
+    _pyjwt = None  # type: ignore[assignment]
 
 _settings = Settings()
 
@@ -40,10 +46,10 @@ def _load_all_canons() -> None:
     canon_dir = _resolve_canon_dir()
     if not canon_dir.exists():
         return
-    for p in canon_dir.glob("*.yaml"):
+    for p in sorted(canon_dir.glob("*.yaml")):
         canon = load_canon(p)
         _canon_cache[canon.id] = canon
-    for p in canon_dir.glob("*.yml"):
+    for p in sorted(canon_dir.glob("*.yml")):
         canon = load_canon(p)
         _canon_cache[canon.id] = canon
 
@@ -81,21 +87,64 @@ def list_canon_ids() -> list[str]:
 # ── Database session ─────────────────────────────────────────────────
 
 
-async def get_session() -> AsyncSession:  # type: ignore[misc]
+async def get_session():
     async with async_session() as session, session.begin():
         yield session  # type: ignore[misc]
 
 
-SessionDep = Annotated[AsyncSession, Depends(get_session)]
+SessionDep = Annotated[Any, Depends(get_session)]
 
 
-# ── JWT Auth ─────────────────────────────────────────────────────────
+# ── JWT Auth (PyJWT with RFC 7519 HS256 stdlib fallback) ─────────────
 
 
-def _decode_token(token: str) -> dict:
+def _b64url_encode(data: bytes) -> str:
+    return base64.urlsafe_b64encode(data).rstrip(b"=").decode("ascii")
+
+
+def _b64url_decode(s: str) -> bytes:
+    pad = "=" * ((4 - len(s) % 4) % 4)
+    return base64.urlsafe_b64decode((s + pad).encode("ascii"))
+
+
+def _encode_hs256_jwt(payload: dict[str, Any], secret: str) -> str:
+    header = {"alg": "HS256", "typ": "JWT"}
+    h_b64 = _b64url_encode(json.dumps(header, separators=(",", ":")).encode("utf-8"))
+    body = dict(payload)
+    if isinstance(body.get("exp"), dt.datetime):
+        body["exp"] = int(body["exp"].timestamp())
+    p_b64 = _b64url_encode(json.dumps(body, separators=(",", ":")).encode("utf-8"))
+    signing_input = f"{h_b64}.{p_b64}".encode("ascii")
+    sig = hmac.new(secret.encode("utf-8"), signing_input, hashlib.sha256).digest()
+    return f"{h_b64}.{p_b64}.{_b64url_encode(sig)}"
+
+
+def _decode_hs256_jwt(token: str, secret: str) -> dict[str, Any]:
+    parts = token.split(".")
+    if len(parts) != 3:
+        raise ValueError("Malformed JWT token")
+    h_b64, p_b64, s_b64 = parts
+    signing_input = f"{h_b64}.{p_b64}".encode("ascii")
+    expected_sig = hmac.new(secret.encode("utf-8"), signing_input, hashlib.sha256).digest()
+    actual_sig = _b64url_decode(s_b64)
+    if not hmac.compare_digest(expected_sig, actual_sig):
+        raise ValueError("Invalid JWT signature")
+    claims = json.loads(_b64url_decode(p_b64).decode("utf-8"))
+    exp = claims.get("exp")
+    if isinstance(exp, (int, float)) and dt.datetime.now(dt.UTC).timestamp() > exp:
+        raise ValueError("Token has expired")
+    return claims
+
+
+def _decode_token(token: str) -> dict[str, Any]:
+    if _pyjwt is not None:
+        try:
+            return _pyjwt.decode(token, _settings.jwt_secret, algorithms=[_settings.jwt_algorithm])
+        except _pyjwt.InvalidTokenError as e:
+            raise HTTPException(status_code=401, detail=f"Invalid token: {e}") from None
     try:
-        return jwt.decode(token, _settings.jwt_secret, algorithms=[_settings.jwt_algorithm])
-    except jwt.InvalidTokenError as e:
+        return _decode_hs256_jwt(token, _settings.jwt_secret)
+    except Exception as e:
         raise HTTPException(status_code=401, detail=f"Invalid token: {e}") from None
 
 
@@ -105,13 +154,15 @@ def create_token(username: str, role: str) -> str:
         "role": role,
         "exp": dt.datetime.now(dt.UTC) + dt.timedelta(minutes=_settings.jwt_expire_minutes),
     }
-    return jwt.encode(payload, _settings.jwt_secret, algorithm=_settings.jwt_algorithm)
+    if _pyjwt is not None:
+        return _pyjwt.encode(payload, _settings.jwt_secret, algorithm=_settings.jwt_algorithm)
+    return _encode_hs256_jwt(payload, _settings.jwt_secret)
 
 
 async def get_current_user(
     session: SessionDep,
-    authorization: Annotated[str | None, Header()] = None,
-) -> UserRow:
+    authorization: str | None = Header(default=None),
+):
     if not authorization:
         raise HTTPException(status_code=401, detail="Missing Authorization header")
 
@@ -126,4 +177,4 @@ async def get_current_user(
     return user
 
 
-CurrentUser = Annotated[UserRow, Depends(get_current_user)]
+CurrentUser = Annotated[Any, Depends(get_current_user)]

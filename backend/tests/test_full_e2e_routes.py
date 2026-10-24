@@ -120,7 +120,8 @@ def _ensure_route_runtime_shims() -> None:
                 cache[c.id] = c
 
             deps_mod.list_canon_ids = list_canon_ids  # type: ignore[attr-defined]
-            deps_mod.register_canon = register_canon  # type: ignore[attr-defined]
+            deps_mod.register_canon = register_canon
+            deps_mod.create_token = lambda u, r: f"tok-{u}-{r}"  # type: ignore[attr-defined]
             sys.modules["canongate.api.deps"] = deps_mod
 
     if "canongate.store.repos" not in sys.modules:

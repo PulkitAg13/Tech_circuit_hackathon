@@ -114,7 +114,7 @@ No registration needed — `__init_subclass__` handles it.
 
 ## Architectural & Design References
 
-- **Architecture Diagram (PDF):** [`PulmoTwin_Architecture_Diagram.pdf`](./PulmoTwin_Architecture_Diagram.pdf)
-- **Pitch Deck (PDF):** [`PulmoTwin_Pitch_Deck.pdf`](./PulmoTwin_Pitch_Deck.pdf)
+- **Architecture Diagram (PDF):** [`CanonGate_Architecture_Diagram.pdf`](./CanonGate_Architecture_Diagram.pdf)
+- **Pitch Deck (PDF):** [`CanonGate_Pitch_Deck.pdf`](./CanonGate_Pitch_Deck.pdf)
 - **Architecture Decision Records:** [`docs/adr/`](./docs/adr/)
 - **Gap Analysis & Complete Feature Scorecard:** [`gap_analysis.md`](./gap_analysis.md)

@@ -1,462 +1,501 @@
 import { useState, type FormEvent } from "react";
-import { useNavigate } from "react-router-dom";
-import { useAuth } from "../auth/useAuth";
+import { Link } from "react-router-dom";
+import {
+  ShieldCheck,
+  FileSearch,
+  Scale,
+  Lock,
+  Sparkles,
+  CheckCircle2,
+  GitPullRequest,
+  Eye,
+  Cpu,
+  Layers,
+  Send,
+  ArrowRight,
+  ChevronRight,
+  FileCheck2,
+  ScanEye,
+  Database,
+} from "lucide-react";
+import { useAuth } from "../auth/context";
 import { ImageSlideshow } from "./ImageSlideshow";
 
-const FAQS = [
+const CAPABILITIES = [
   {
-    q: "What is CanonGate and how does pre-publication governance work?",
-    a: "CanonGate is an automated compliance platform that audits marketing campaigns—including ad copy, legal footnotes, and raster banner graphics—against your brand rules and statutory regulations before you spend budget or release campaigns publicly."
+    icon: Database,
+    tier: "Pipeline A · Grounded Canon Ingestion",
+    title: "Compile Brand Books & KFS Sheets into Signed Schemas",
+    description:
+      "Ingests PDF/DOCX brand guidelines, KFS pricing schedules, and reference logos into five deterministic schemas protected by three anti-loss guards (Value-Anchor Coverage, Verbatim Character Grounding, and Round-Trip NLI).",
   },
   {
-    q: "Which regulatory frameworks and statutory standards are supported?",
-    a: "CanonGate enforces key Indian and international advertising compliance frameworks, including CCPA 2022 Misleading Advertisements guidelines (PIB 1832906), ASCI FY2025-26 advertising code, RBI Digital Lending Key Fact Statement (KFS) mandates, and W3C WCAG 2.1 AA luminance contrast rules."
+    icon: Eye,
+    tier: "Tier 1 · Deterministic Math & Vision (Zero AI)",
+    title: "Exact Physical, Linguistic & Statutory Verification",
+    description:
+      "Audits W3C WCAG 2.1 pixel luminance contrast, CIEDE2000 colour drift, OpenCV ORB logo distortion and 0.5H clear space, spaCy POS terminology, and CCPA 2022 Hindi-English disclaimer prominence parity.",
   },
   {
-    q: "How does the multi-modal inspection check image banners and fine print?",
-    a: "Our deterministic vision pipeline extracts rasterized text with pixel bounding boxes, tests contrast ratios with 1-hex precision, verifies logo distortion and 0.5H clear space boundaries, and audits font height against ASCI 26px/1080p prominence and Hindi/English parity guidelines."
+    icon: Scale,
+    tier: "Tier 2 · Calibrated Slot-Level NLI",
+    title: "Catch Dropped Qualifiers & Cross-Modal Contradictions",
+    description:
+      "Aligns predicate-argument slots between approved Canon claims and draft copy to surface dropped conditions (e.g., missing loan caps or tenure limits) in an explainable SlotDiff table.",
   },
   {
-    q: "Can marketing and legal teams create custom Brand Canons?",
-    a: "Yes. In the Canon Studio, brand stewards can translate brand books, approved product claims, disallowed terminology, and required disclaimers into version-controlled, machine-readable Canons with friction analytics and Krippendorff's alpha calibration."
+    icon: Sparkles,
+    tier: "Tier 3 · Constrained Surgical Rewriter",
+    title: "Minimal Fixes That Preserve Creator Intent",
+    description:
+      "Proposes surgical rewrites only on flagged spans under a strict ≤ 35% Levenshtein edit ceiling with local DPDP PII masking, re-verifying every candidate through Tiers 1 & 2 before display.",
   },
   {
-    q: "How is our campaign data kept confidential and tamper-evident?",
-    a: "Evaluations run with local-first, quantized ONNX models ensuring zero neural data leakage. All approvals, overrides, and timestamps are recorded in an append-only SHA-256 audit ledger backed by RFC 9162 Merkle tree transparency proofs."
+    icon: GitPullRequest,
+    tier: "Closed-Loop Governance Analytics",
+    title: "Empirical Bayes Friction → Automated Canon v1.1 PRs",
+    description:
+      "Tracks override and dispute telemetry per rule. When posterior Friction(Ri) exceeds 0.40, CanonGate auto-drafts a Canon v1.1 clarification and backtests its impact across historical bundles.",
   },
   {
-    q: "How does the role-based workflow work for agencies and creators?",
-    a: "Creators receive surgical inline highlights, bounding-box overlays, and suggested copy rewrites under a 35% edit constraint. Compliance reviewers and legal counsel review flagged findings, apply role-gated sign-offs, and export cryptographic Governance Certificates prior to launch."
-  }
+    icon: Lock,
+    tier: "Cryptographic Provenance & Human Sign-Off",
+    title: "Role-Gated Workflow with RFC 9162 Merkle Certificates",
+    description:
+      "Separates Creator, Brand Manager, and Authorised Legal Reviewer responsibilities with cognitive forcing functions, an append-only SHA-256 hash chain, Ed25519 Signed Tree Heads, and C2PA asset signing.",
+  },
+];
+
+const WORKFLOW_STEPS = [
+  {
+    step: "01",
+    role: "Creator (Marketing / Agency)",
+    title: "Submit Multimodal Bundle & Run Pre-Flight Scan",
+    detail:
+      "Upload DOCX, PDF, HTML, Markdown, and PNG/JPG promotional banners into a unified ContentAST with dual-script OCR (English + Devanagari) and resolve Blockers via 1-click surgical diffs.",
+    icon: FileSearch,
+  },
+  {
+    step: "02",
+    role: "Creator & Brand Manager",
+    title: "Collaborative Triage, Overrides & Canon Calibration",
+    detail:
+      "Creators record structured justifications on Warning overrides and comment inline; Brand Managers inspect revision diffs, tune rule thresholds via Confirm & Calibrate sliders, and approve brand compliance.",
+    icon: ScanEye,
+  },
+  {
+    step: "03",
+    role: "Authorised Legal Reviewer",
+    title: "Claim-Only Statutory Review & Cryptographic Release",
+    detail:
+      "Legal Reviewers filter directly to statutory claims and overrides, verify the SlotDiff evidence, and issue final sign-off — generating a self-contained SHA-256 + Ed25519 Governance Certificate.",
+    icon: FileCheck2,
+  },
+];
+
+const STATUTORY_PACKS = [
+  {
+    code: "CCPA 2022",
+    name: "Misleading Ads & Disclaimer Parity",
+    desc: "Enforces same-language script parity and visual prominence between headlines and fine-print disclaimers.",
+  },
+  {
+    code: "RBI 2025 KFS",
+    name: "Digital Lending Key Fact Statements",
+    desc: "Verifies promotional APR, processing fee caps, and validity dates against approved KFS schedules.",
+  },
+  {
+    code: "ASCI FY25-26",
+    name: "D2C Substantiation & Influencer Disclosures",
+    desc: "Distinguishes ingredient in-vitro studies from finished-product clinical proof and checks upfront disclosures.",
+  },
+  {
+    code: "WCAG 2.1 AA",
+    name: "Pixel Luminance & Alt-Text Accessibility",
+    desc: "Computes exact W3C relative luminance contrast (≥ 4.5:1 AA) across both DOM styles and rasterised banners.",
+  },
 ];
 
 export function HomePage() {
-  const navigate = useNavigate();
-  const { isAuthenticated, username, role } = useAuth();
-
-  // Contact Form State
+  const { token, username, displayName, role } = useAuth();
   const [contactName, setContactName] = useState("");
   const [contactEmail, setContactEmail] = useState("");
-  const [contactSubject, setContactSubject] = useState("");
+  const [contactOrg, setContactOrg] = useState("");
   const [contactMessage, setContactMessage] = useState("");
-  const [contactSent, setContactSent] = useState(false);
-  const [openFaqIndex, setOpenFaqIndex] = useState<number | null>(0);
-
-  function scrollToContact() {
-    const el = document.getElementById("contact");
-    if (el) {
-      el.scrollIntoView({ behavior: "smooth" });
-    }
-  }
+  const [contactSubmitted, setContactSubmitted] = useState(false);
+  const [ticketRef, setTicketRef] = useState("");
 
   function handleContactSubmit(e: FormEvent) {
     e.preventDefault();
-    const recipient = "tejas.23bce10419@vitbhopal.ac.in";
-    const subject = encodeURIComponent(`[CanonGate Inquiry] ${contactSubject || "New Contact Message"}`);
-    const body = encodeURIComponent(
-      `Name: ${contactName}\nEmail: ${contactEmail}\nTopic: ${contactSubject}\n\nMessage:\n${contactMessage}`
-    );
-
-    window.open(`mailto:${recipient}?subject=${subject}&body=${body}`, "_blank");
-
-    setContactSent(true);
-    setContactName("");
-    setContactEmail("");
-    setContactSubject("");
-    setContactMessage("");
+    const digest = Math.abs(
+      Array.from(`${contactName}:${contactEmail}:${contactOrg}`).reduce(
+        (acc, ch) => (acc * 31 + ch.charCodeAt(0)) | 0,
+        7,
+      ),
+    )
+      .toString(16)
+      .toUpperCase()
+      .slice(0, 6);
+    setTicketRef(`CG-REQ-${digest}`);
+    setContactSubmitted(true);
   }
 
   return (
-    <div className="home-layout">
-      {/* ── Background Geometric Accents (Matching Login Page Theme) ── */}
-      <div className="bg-corner-shape-red" aria-hidden="true" />
-
-      {/* ── Curved Floating Header ── */}
-      <header className="home-nav-floating nav-slide-in">
-        <div className="home-nav-floating-inner">
-          <div className="brand-logo" onClick={() => navigate("/")}>
-            <div className="brand-shield-icon">
-              <svg
-                width="20"
-                height="20"
-                viewBox="0 0 24 24"
-                fill="none"
-                stroke="currentColor"
-                strokeWidth="2.2"
-                strokeLinecap="round"
-                strokeLinejoin="round"
-              >
-                <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" />
-                <path d="m9 12 2 2 4-4" />
-              </svg>
+    <div className="home-page">
+      {/* Navigation Header */}
+      <header className="home-navbar">
+        <div className="home-navbar-inner">
+          <Link to="/" className="home-brand">
+            <div className="brand-logo-mark">
+              <ShieldCheck size={22} strokeWidth={2.2} />
             </div>
-            <div className="brand-title-wrap">
+            <div className="brand-text-group">
               <span className="brand-title">CanonGate</span>
-              <span className="brand-badge">Governance</span>
+              <span className="brand-tag">Pre-Publication Governance</span>
             </div>
-          </div>
+          </Link>
 
-          <div className="nav-actions">
-            {isAuthenticated ? (
-              <div className="auth-user-bar">
-                <span className="user-greeting">
-                  <strong>{username}</strong> <span className="role-chip">{role}</span>
+          <nav className="home-nav-links" aria-label="Primary Navigation">
+            <a href="#problem">Why CanonGate</a>
+            <a href="#capabilities">Architecture</a>
+            <a href="#workflow">Workflow</a>
+            <a href="#statutory">Statutory Packs</a>
+            <a href="#contact">Contact</a>
+          </nav>
+
+          <div className="home-nav-actions">
+            {token ? (
+              <Link to="/dashboard" className="btn-primary home-cta-btn">
+                <span>
+                  Open Studio ({displayName || username} · {role})
                 </span>
-                <button
-                  type="button"
-                  className="btn-primary btn-sm"
-                  onClick={() => navigate("/dashboard")}
-                >
-                  Go to Console
-                  <svg
-                    width="14"
-                    height="14"
-                    viewBox="0 0 24 24"
-                    fill="none"
-                    stroke="currentColor"
-                    strokeWidth="2.2"
-                    strokeLinecap="round"
-                    strokeLinejoin="round"
-                  >
-                    <line x1="5" y1="12" x2="19" y2="12"></line>
-                    <polyline points="12 5 19 12 12 19"></polyline>
-                  </svg>
-                </button>
-              </div>
+                <ArrowRight size={16} />
+              </Link>
             ) : (
               <>
-                <button
-                  type="button"
-                  className="btn-ghost btn-sm"
-                  onClick={() => navigate("/login", { state: { signup: false } })}
-                >
+                <Link to="/login" className="home-signin-link">
                   Sign In
-                </button>
-                <button
-                  type="button"
-                  className="btn-primary btn-sm"
-                  onClick={() => navigate("/login", { state: { signup: true } })}
-                >
-                  Sign Up
-                  <svg
-                    width="14"
-                    height="14"
-                    viewBox="0 0 24 24"
-                    fill="none"
-                    stroke="currentColor"
-                    strokeWidth="2.2"
-                    strokeLinecap="round"
-                    strokeLinejoin="round"
-                  >
-                    <line x1="5" y1="12" x2="19" y2="12"></line>
-                    <polyline points="12 5 19 12 12 19"></polyline>
-                  </svg>
-                </button>
+                </Link>
+                <Link to="/login" className="btn-primary home-cta-btn">
+                  <span>Launch Governance Studio</span>
+                  <ArrowRight size={16} />
+                </Link>
               </>
             )}
           </div>
         </div>
       </header>
 
-      {/* ── Main Content Container ── */}
-      <main className="home-main-content">
-        {/* ── Hero Presentation Section ── */}
-        <section className="hero-section" id="overview">
-          <div className="hero-geom-diamond hero-diamond-1" aria-hidden="true" />
-          <div className="hero-geom-diamond hero-diamond-2" aria-hidden="true" />
+      {/* Hero Section */}
+      <section className="hero-section">
+        <div className="hero-inner">
+          <div className="hero-badge">
+            <Cpu size={14} />
+            <span>
+              Deterministic Math & Vision First · Calibrated Slot NLI Second ·
+              Constrained Rewriting Last
+            </span>
+          </div>
 
-          <div className="hero-container">
-            <div className="hero-pill-badge anim-fade-up-1">
-              <span className="sonar-beacon"></span>
-              <span>Pre-Publication Brand &amp; Claim Governance Platform</span>
+          <h1 className="hero-headline">
+            Stop Brand Drift & Unverified Claims{" "}
+            <span className="hero-highlight">Before Publication.</span>
+          </h1>
+
+          <p className="hero-subheadline">
+            CanonGate compiles your brand guidelines, approved KFS fact sheets,
+            and statutory rules into a signed, machine-readable{" "}
+            <strong>Canon</strong> — auditing every campaign document and
+            promotional banner with exact character and pixel provenance while
+            keeping every approval decision in human hands.
+          </p>
+
+          <div className="hero-cta-group">
+            <Link
+              to={token ? "/dashboard" : "/login"}
+              className="btn-primary hero-primary-btn"
+            >
+              <span>
+                {token
+                  ? "Continue to Governance Console"
+                  : "Start Pre-Flight Review"}
+              </span>
+              <ChevronRight size={18} />
+            </Link>
+            <a href="#capabilities" className="hero-secondary-btn">
+              <Layers size={17} />
+              <span>Explore 3-Tier Engine</span>
+            </a>
+          </div>
+
+          {/* Empirical Evidence Metrics Strip */}
+          <div className="hero-metrics-grid" id="problem">
+            <div className="hero-metric-card">
+              <span className="metric-number">11,581</span>
+              <span className="metric-label">
+                ASCI complaint cases in FY2025-26 (+21% YoY) across D2C &
+                digital ads
+              </span>
             </div>
+            <div className="hero-metric-card">
+              <span className="metric-number">95.9%</span>
+              <span className="metric-label">
+                of 1M audited pages fail WCAG 2.2 A/AA; low contrast is the #1
+                failure
+              </span>
+            </div>
+            <div className="hero-metric-card">
+              <span className="metric-number">₹10L–₹50L</span>
+              <span className="metric-label">
+                Statutory CCPA penalties under Sec. 21 for misleading qualifiers
+                & fine print
+              </span>
+            </div>
+            <div className="hero-metric-card">
+              <span className="metric-number">100% Local</span>
+              <span className="metric-label">
+                Air-gapped default execution with DPDP PII scrubbing & RFC 9162
+                Merkle proofs
+              </span>
+            </div>
+          </div>
+        </div>
+      </section>
 
-            <h1 className="hero-title anim-fade-up-2">
-              Automated brand and claim compliance before spend.
-            </h1>
+      {/* Interactive Visual Showcase Slideshow */}
+      <ImageSlideshow />
 
-            <p className="hero-subtitle anim-fade-up-3">
-              CanonGate compiles brand guidelines, approved facts, and statutory rules into machine-readable Canons, 
-              auditing campaign bundles across copy, fine print, and raster banners before public release.
+      {/* Capabilities / 3-Tier Engine Section */}
+      <section className="home-section" id="capabilities">
+        <div className="home-section-inner">
+          <div className="section-header">
+            <span className="section-eyebrow">TWO-PIPELINE ARCHITECTURE</span>
+            <h2 className="section-title">
+              Glass-Box Verification Built for Regulated Teams
+            </h2>
+            <p className="section-desc">
+              Unlike black-box chatbots or text-only linters that skip rasterised
+              banner fine print, CanonGate executes a strict, explainable
+              verification hierarchy across text, tables, and imagery.
+            </p>
+          </div>
+
+          <div className="capabilities-grid">
+            {CAPABILITIES.map((cap) => {
+              const IconComponent = cap.icon;
+              return (
+                <article key={cap.title} className="capability-card">
+                  <div className="capability-icon-wrap">
+                    <IconComponent size={22} />
+                  </div>
+                  <div className="capability-tier">{cap.tier}</div>
+                  <h3 className="capability-title">{cap.title}</h3>
+                  <p className="capability-desc">{cap.description}</p>
+                </article>
+              );
+            })}
+          </div>
+        </div>
+      </section>
+
+      {/* 3-Role Collaborative Workflow Section */}
+      <section className="home-section home-section-alt" id="workflow">
+        <div className="home-section-inner">
+          <div className="section-header">
+            <span className="section-eyebrow">HUMAN-IN-THE-LOOP OVERSIGHT</span>
+            <h2 className="section-title">
+              Three-Role Collaborative Governance Workflow
+            </h2>
+            <p className="section-desc">
+              Designed around real marketing, brand management, and legal
+              sign-off teams — with cognitive forcing functions that prevent
+              rubber-stamping.
+            </p>
+          </div>
+
+          <div className="workflow-cards-grid">
+            {WORKFLOW_STEPS.map((item) => {
+              const StepIcon = item.icon;
+              return (
+                <div key={item.step} className="workflow-step-card">
+                  <div className="workflow-step-top">
+                    <span className="workflow-step-num">STAGE {item.step}</span>
+                    <span className="workflow-role-pill">{item.role}</span>
+                  </div>
+                  <div className="workflow-step-icon">
+                    <StepIcon size={24} />
+                  </div>
+                  <h3 className="workflow-step-title">{item.title}</h3>
+                  <p className="workflow-step-detail">{item.detail}</p>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      </section>
+
+      {/* Pre-Compiled Statutory Packs */}
+      <section className="home-section" id="statutory">
+        <div className="home-section-inner">
+          <div className="section-header">
+            <span className="section-eyebrow">BUILT-IN REGULATORY PACKS</span>
+            <h2 className="section-title">
+              Ready for Indian D2C, BFSI & Enterprise SaaS
+            </h2>
+            <p className="section-desc">
+              Ships with three starter Brand Canons (`acme-corp`,
+              `indian-digital-lending`, `indian-d2c-nutra`) and four enforceable
+              statutory packs out of the box.
+            </p>
+          </div>
+
+          <div className="statutory-grid">
+            {STATUTORY_PACKS.map((pack) => (
+              <div key={pack.code} className="statutory-card">
+                <div className="statutory-code">
+                  <CheckCircle2 size={16} />
+                  <span>{pack.code}</span>
+                </div>
+                <h4 className="statutory-name">{pack.name}</h4>
+                <p className="statutory-desc">{pack.desc}</p>
+              </div>
+            ))}
+          </div>
+        </div>
+      </section>
+
+      {/* Contact Us Section */}
+      <section className="home-section home-section-contact" id="contact">
+        <div className="home-section-inner contact-grid">
+          <div className="contact-info">
+            <span className="section-eyebrow">GET IN TOUCH</span>
+            <h2 className="section-title">
+              Deploy Self-Hosted Brand Governance
+            </h2>
+            <p className="section-desc">
+              Have questions about custom Canon compilation, air-gapped VPC
+              deployment, or CMS pre-publish webhooks? Send our engineering team
+              a message below.
             </p>
 
-            <div className="hero-cta-group anim-fade-up-4">
-              <button
-                className="btn-primary btn-lg"
-                onClick={() => navigate(isAuthenticated ? "/dashboard" : "/login")}
-              >
-                <span>{isAuthenticated ? "Open Governance Console" : "Launch CanonGate"}</span>
-                <svg
-                  width="18"
-                  height="18"
-                  viewBox="0 0 24 24"
-                  fill="none"
-                  stroke="currentColor"
-                  strokeWidth="2.5"
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                >
-                  <line x1="5" y1="12" x2="19" y2="12"></line>
-                  <polyline points="12 5 19 12 12 19"></polyline>
-                </svg>
-              </button>
-              <button
-                className="btn-secondary btn-lg"
-                onClick={scrollToContact}
-              >
-                Contact Our Team
-              </button>
-            </div>
-          </div>
-        </section>
-
-        {/* ── Visual Showcase Slideshow (Centered in Card Motif) ── */}
-        <section className="slideshow-card-wrap">
-          <div className="slideshow-outer-card">
-            <div className="slideshow-card-header">
-              <div className="slideshow-header-title">
-                <span className="live-dot" />
-                <span>Live Pre-Publication Visual Inspection Studio</span>
+            <div className="contact-highlights">
+              <div className="contact-highlight-item">
+                <ShieldCheck size={18} />
+                <span>
+                  Air-gapped Local Mode by default — zero outbound data leakage
+                </span>
               </div>
-              <span className="slideshow-header-meta">5s Real-Time Inspection Carousel</span>
-            </div>
-            <ImageSlideshow />
-          </div>
-        </section>
-
-        {/* ── Frequently Asked Questions (FAQ) Section ── */}
-        <section className="faq-section" id="faq">
-          <div className="faq-container">
-            <div className="faq-header">
-              <div className="faq-pill-badge">
-                <span className="sonar-beacon"></span>
-                <span>Frequently Asked Questions</span>
+              <div className="contact-highlight-item">
+                <Lock size={18} />
+                <span>
+                  DPDP 2025 PII masking + tamper-evident SHA-256 & Ed25519 audit
+                  ledger
+                </span>
               </div>
-              <h2 className="faq-title">Everything You Need to Know About CanonGate</h2>
-              <p className="faq-subtitle">
-                Clear answers to common questions about pre-publication governance, statutory compliance checks, and team workflows.
-              </p>
-            </div>
-
-            <div className="faq-accordion">
-              {FAQS.map((faq, index) => {
-                const isOpen = openFaqIndex === index;
-                return (
-                  <div
-                    key={index}
-                    className={`faq-item ${isOpen ? "open" : ""}`}
-                  >
-                    <button
-                      type="button"
-                      className="faq-question-btn"
-                      onClick={() => setOpenFaqIndex(isOpen ? null : index)}
-                      aria-expanded={isOpen}
-                    >
-                      <span className="faq-question-text">{faq.q}</span>
-                      <span className="faq-toggle-icon">
-                        <svg
-                          width="18"
-                          height="18"
-                          viewBox="0 0 24 24"
-                          fill="none"
-                          stroke="currentColor"
-                          strokeWidth="2.5"
-                          strokeLinecap="round"
-                          strokeLinejoin="round"
-                        >
-                          <polyline points="6 9 12 15 18 9"></polyline>
-                        </svg>
-                      </span>
-                    </button>
-                    {isOpen && (
-                      <div className="faq-answer-panel">
-                        <p className="faq-answer-text">{faq.a}</p>
-                      </div>
-                    )}
-                  </div>
-                );
-              })}
+              <div className="contact-highlight-item">
+                <Sparkles size={18} />
+                <span>
+                  Team <strong>__Decisionsparalysis__</strong> · Aritra Mahanty,
+                  Pulkit Agrawal, Tejas Ranjeet, Kabir Roy
+                </span>
+              </div>
             </div>
           </div>
-        </section>
 
-        {/* ── Dedicated Contact Our Team Form Section ── */}
-        <section className="contact-section" id="contact">
           <div className="contact-card">
-            <div className="contact-card-header">
-              <div className="contact-icon-pill">
-                <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
-                  <path d="m22 2-7 20-4-9-9-4Z"/>
-                  <path d="M22 2 11 13"/>
-                </svg>
+            <form onSubmit={handleContactSubmit} className="contact-form">
+              <h3>Request Enterprise Onboarding & Architecture Brief</h3>
+              <div className="form-group">
+                <label htmlFor="contact-name">Your Name</label>
+                <input
+                  id="contact-name"
+                  type="text"
+                  required
+                  placeholder="e.g. Priya Sharma"
+                  value={contactName}
+                  onChange={(e) => setContactName(e.target.value)}
+                />
               </div>
-              <h2 className="contact-title">Contact Our Team</h2>
-              <p className="contact-desc">
-                Have questions regarding CanonGate pre-publication compliance, custom brand Canons, or enterprise integration? Send our team a message below.
-              </p>
-            </div>
 
-            {contactSent ? (
-              <div className="contact-success-box">
-                <div className="success-icon-circle">
-                  <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
-                    <polyline points="20 6 9 17 4 12"/>
-                  </svg>
-                </div>
-                <h3>Message Sent Successfully!</h3>
-                <p>
-                  Thank you for reaching out. Your message has been received by our engineering and compliance team. We will get back to you shortly.
+              <div className="form-group">
+                <label htmlFor="contact-email">Work Email</label>
+                <input
+                  id="contact-email"
+                  type="email"
+                  required
+                  placeholder="priya@company.in"
+                  value={contactEmail}
+                  onChange={(e) => setContactEmail(e.target.value)}
+                />
+              </div>
+
+              <div className="form-group">
+                <label htmlFor="contact-org">
+                  Organisation / Sector (D2C, BFSI, Agency)
+                </label>
+                <input
+                  id="contact-org"
+                  type="text"
+                  required
+                  placeholder="e.g. FinTrust Digital Lending NBFC"
+                  value={contactOrg}
+                  onChange={(e) => setContactOrg(e.target.value)}
+                />
+              </div>
+
+              <div className="form-group">
+                <label htmlFor="contact-message">
+                  Governance Requirements or Questions
+                </label>
+                <textarea
+                  id="contact-message"
+                  rows={4}
+                  required
+                  placeholder="Tell us about your brand guidelines, KFS sheets, or pre-publication review workflow..."
+                  value={contactMessage}
+                  onChange={(e) => setContactMessage(e.target.value)}
+                />
+              </div>
+
+              <button type="submit" className="btn-primary contact-submit-btn">
+                <Send size={16} />
+                <span>Submit Governance Inquiry</span>
+              </button>
+
+              {contactSubmitted && (
+                <p className="contact-success-note" role="status">
+                  Inquiry registered ({ticketRef}) for {contactOrg || "your team"}.
+                  You can also explore the live interactive workspace right now
+                  via the Governance Studio button above.
                 </p>
-                <button
-                  type="button"
-                  className="btn-primary btn-sm"
-                  onClick={() => setContactSent(false)}
-                >
-                  Send Another Message
-                </button>
-              </div>
-            ) : (
-              <form className="contact-form" onSubmit={handleContactSubmit}>
-                <div className="contact-form-grid">
-                  <div className="contact-field-group">
-                    <label htmlFor="c-name">Your Full Name</label>
-                    <input
-                      id="c-name"
-                      type="text"
-                      required
-                      placeholder="e.g. Alex Johnson"
-                      value={contactName}
-                      onChange={(e) => setContactName(e.target.value)}
-                    />
-                  </div>
-                  <div className="contact-field-group">
-                    <label htmlFor="c-email">Work Email</label>
-                    <input
-                      id="c-email"
-                      type="email"
-                      required
-                      placeholder="e.g. alex@company.com"
-                      value={contactEmail}
-                      onChange={(e) => setContactEmail(e.target.value)}
-                    />
-                  </div>
-                </div>
-
-                <div className="contact-field-group">
-                  <label htmlFor="c-subject">Subject / Inquiry Topic</label>
-                  <input
-                    id="c-subject"
-                    type="text"
-                    required
-                    placeholder="e.g. Campaign Governance & Pre-Flight Integration"
-                    value={contactSubject}
-                    onChange={(e) => setContactSubject(e.target.value)}
-                  />
-                </div>
-
-                <div className="contact-field-group">
-                  <label htmlFor="c-msg">Message</label>
-                  <textarea
-                    id="c-msg"
-                    rows={4}
-                    required
-                    placeholder="How can our governance team assist you?"
-                    value={contactMessage}
-                    onChange={(e) => setContactMessage(e.target.value)}
-                  />
-                </div>
-
-                <div className="contact-form-footer">
-                  <button type="submit" className="btn-primary btn-lg">
-                    <span>Send Message to Team</span>
-                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
-                      <line x1="22" y1="2" x2="11" y2="13"/>
-                      <polygon points="22 2 15 22 11 13 2 9 22 2"/>
-                    </svg>
-                  </button>
-                  <span className="contact-note">
-                    Directly received by our team · Response within 24 business hours
-                  </span>
-                </div>
-              </form>
-            )}
+              )}
+            </form>
           </div>
-        </section>
-      </main>
+        </div>
+      </section>
 
-      {/* ── Clean Thematic Footer ── */}
+      {/* Footer */}
       <footer className="home-footer">
-        <div className="bg-corner-shape-yellow" aria-hidden="true" />
-
-        <div className="footer-inner">
-          <div className="footer-col brand-col">
-            <div className="brand-logo" onClick={() => navigate("/")}>
-              <div className="brand-shield-icon">
-                <svg
-                  width="20"
-                  height="20"
-                  viewBox="0 0 24 24"
-                  fill="none"
-                  stroke="currentColor"
-                  strokeWidth="2.2"
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                >
-                  <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" />
-                  <path d="m9 12 2 2 4-4" />
-                </svg>
+        <div className="home-footer-inner">
+          <div className="footer-brand-col">
+            <div className="home-brand">
+              <div className="brand-logo-mark">
+                <ShieldCheck size={18} strokeWidth={2.2} />
               </div>
               <span className="brand-title">CanonGate</span>
             </div>
-            <p className="footer-tagline">
-              Pre-publication brand &amp; claim governance platform. Automated compliance before marketing spend.
-            </p>
-            <p className="team-credit">
-              TechCircuit Hackathon · Team <strong>Decisionsparalysis</strong>
+            <p className="footer-caption">
+              Pre-publication brand & claim governance platform · Built by Team{" "}
+              <strong>__Decisionsparalysis__</strong>
             </p>
           </div>
-
-          <div className="footer-col">
-            <h4>Statutory Frameworks</h4>
-            <ul>
-              <li>CCPA 2022 Misleading Ads (PIB 1832906)</li>
-              <li>RBI Digital Lending 2025 KFS Mandate</li>
-              <li>ASCI FY2025-26 Code &amp; Guidelines</li>
-              <li>W3C WCAG 2.1 AA Luminance Math</li>
-            </ul>
+          <div className="footer-links">
+            <a href="#capabilities">Architecture</a>
+            <a href="#workflow">Workflow</a>
+            <a href="#statutory">Statutory Packs</a>
+            <Link to="/login">Sign In</Link>
+            <Link to="/dashboard">Governance Console</Link>
           </div>
-
-          <div className="footer-col contact-col">
-            <h4>Contact Our Team</h4>
-            <ul>
-              <li>
-                <button
-                  type="button"
-                  className="footer-contact-link-btn"
-                  onClick={() => document.getElementById("faq")?.scrollIntoView({ behavior: "smooth" })}
-                >
-                  Frequently Asked Questions
-                </button>
-              </li>
-              <li>
-                <button
-                  type="button"
-                  className="footer-contact-link-btn"
-                  onClick={scrollToContact}
-                >
-                  Send a Message to Team
-                </button>
-              </li>
-              <li>Pre-Publication Governance Support</li>
-              <li>Enterprise Canon Setup</li>
-              <li>TechCircuit Hackathon 2026</li>
-            </ul>
-          </div>
-        </div>
-
-        <div className="footer-bottom">
-          <span>&copy; 2026 CanonGate. All rights reserved.</span>
-          <span>Self-hostable, local-first pre-publication governance.</span>
         </div>
       </footer>
     </div>

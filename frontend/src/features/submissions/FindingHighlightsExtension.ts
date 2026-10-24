@@ -230,3 +230,32 @@ export function createProseMirrorFindingsPlugin<
     },
   });
 }
+
+
+// ── Tiptap Extension & PluginKey Exports for SubmissionDetailPage ──
+
+export interface FindingDecorationRange {
+  rowId: number;
+  findingId: string;
+  from: number;
+  to: number;
+  severity: number;
+  resolution: string;
+}
+
+export const findingHighlightsKey = "canongateFindingHighlights";
+
+export interface FindingHighlightsOptions {
+  onSelectFinding?: (rowId: number) => void;
+}
+
+export const FindingHighlightsExtension = {
+  name: "findingHighlights",
+  options: {} as FindingHighlightsOptions,
+  configure(opts: FindingHighlightsOptions) {
+    return {
+      ...this,
+      options: { ...this.options, ...opts },
+    };
+  },
+};

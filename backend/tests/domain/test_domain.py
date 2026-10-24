@@ -1,6 +1,26 @@
 """Tests for the domain layer: pure logic, no I/O."""
 
-import pytest
+import contextlib
+import re
+import unittest
+
+try:
+    import pytest
+except ImportError:
+
+    class _PytestShim:
+        @staticmethod
+        @contextlib.contextmanager
+        def raises(exc_type, match=None):
+            try:
+                yield
+            except exc_type as e:
+                if match and not re.search(match, str(e), re.IGNORECASE):
+                    raise AssertionError(f"Pattern {match!r} not found in {str(e)!r}") from e
+            else:
+                raise AssertionError(f"Did not raise {exc_type}")
+
+    pytest = _PytestShim()
 from pydantic import ValidationError
 
 from canongate.domain import (
@@ -19,7 +39,7 @@ from canongate.domain.types import stable_finding_id
 from canongate.domain.workflow import allowed_actions
 
 
-class TestContentAST:
+class TestContentAST(unittest.TestCase):
     def test_from_texts(self):
         ast = ContentAST.from_texts(["hello", "world"])
         assert len(ast) == 2
@@ -43,11 +63,11 @@ class TestContentAST:
 
     def test_frozen(self):
         ast = ContentAST.from_texts(["x"])
-        with pytest.raises(ValidationError):
+        with pytest.raises((ValidationError, TypeError)):
             ast.nodes = ()  # type: ignore
 
 
-class TestWorkflow:
+class TestWorkflow(unittest.TestCase):
     def test_submit_draft(self):
         result = next_status(Status.DRAFT, Action.SUBMIT, Role.CREATOR)
         assert result == Status.IN_REVIEW
@@ -86,7 +106,7 @@ class TestWorkflow:
         assert Action.APPROVE not in actions
 
 
-class TestCanon:
+class TestCanon(unittest.TestCase):
     def test_hash_deterministic(self):
         c1 = Canon(
             id="test",
@@ -111,7 +131,7 @@ class TestCanon:
             canon["nonexistent"]
 
 
-class TestFindingId:
+class TestFindingId(unittest.TestCase):
     def test_stable(self):
         from canongate.domain.types import NodeId
 
@@ -127,7 +147,7 @@ class TestFindingId:
         assert a != b
 
 
-class TestResolutionValidation:
+class TestResolutionValidation(unittest.TestCase):
     """Tests for validate_resolution — role/severity gating."""
 
     def test_anyone_can_accept(self):

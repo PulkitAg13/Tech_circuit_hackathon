@@ -1,9 +1,11 @@
 """Tests for the hash-chained audit ledger."""
 
+import unittest
+
 from canongate.ledger.chain import GENESIS_HASH, compute_event_hash, verify_chain
 
 
-class TestLedger:
+class TestLedger(unittest.TestCase):
     def test_genesis_hash(self):
         assert len(GENESIS_HASH) == 64
         assert GENESIS_HASH == "0" * 64

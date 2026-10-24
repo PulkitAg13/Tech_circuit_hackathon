@@ -28,6 +28,20 @@ from canongate.store import repos
 router = APIRouter(prefix="/canons", tags=["canons"])
 
 
+class CanonRuleItemDto(BaseModel):
+    id: str
+    rule_type: str  # terminology | palette | fact | trigger | voice | logo
+    label: str
+    severity: int | None = None
+    max_delta_e: float | None = None
+    max_sentence_words: int | None = None
+    max_passive_voice_pct: float | None = None
+    max_flesch_kincaid_grade: float | None = None
+    max_aspect_distortion_pct: float | None = None
+    clear_space_ratio_h: float | None = None
+    source_text: str = ""
+
+
 class CanonSummary(BaseModel):
     id: str
     version: str
@@ -38,6 +52,7 @@ class CanonSummary(BaseModel):
     trigger_count: int = 0
     logo_count: int = 0
     has_voice_profile: bool = False
+    rules: list[CanonRuleItemDto] = []
 
 
 class CanonLintIssueDto(BaseModel):
@@ -161,6 +176,86 @@ class CompileCanonResponse(BaseModel):
     provenance: list[GroundedRuleProvenanceDto]
 
 
+def _extract_canon_rules(canon: Canon) -> list[CanonRuleItemDto]:
+    items: list[CanonRuleItemDto] = []
+    for t in canon.terminology:
+        items.append(
+            CanonRuleItemDto(
+                id=t.id,
+                rule_type="terminology",
+                label=(
+                    f"[Terminology] {t.id} — '{t.pattern_text}' → '{t.preferred}' (S={t.severity})"
+                ),
+                severity=t.severity,
+                source_text=getattr(t, "source_text", ""),
+            )
+        )
+    for c in canon.palette:
+        items.append(
+            CanonRuleItemDto(
+                id=c.id,
+                rule_type="palette",
+                label=f"[Palette] {c.id} — {c.name or c.hex} ({c.hex}, ΔE00 ≤ {c.max_delta_e})",
+                max_delta_e=c.max_delta_e,
+                source_text=getattr(c, "source_text", ""),
+            )
+        )
+    if canon.voice_profile is not None:
+        vp = canon.voice_profile
+        items.append(
+            CanonRuleItemDto(
+                id=vp.id,
+                rule_type="voice",
+                label=(
+                    f"[Voice Profile] {vp.id} — ≤{vp.max_sentence_words}w, "
+                    f"passive ≤{vp.max_passive_voice_pct}%, "
+                    f"FK ≤{vp.max_flesch_kincaid_grade} (S={vp.severity})"
+                ),
+                severity=vp.severity,
+                max_sentence_words=vp.max_sentence_words,
+                max_passive_voice_pct=vp.max_passive_voice_pct,
+                max_flesch_kincaid_grade=vp.max_flesch_kincaid_grade,
+                source_text=getattr(vp, "source_text", ""),
+            )
+        )
+    for lg in canon.logos:
+        items.append(
+            CanonRuleItemDto(
+                id=lg.id,
+                rule_type="logo",
+                label=(
+                    f"[Logo ORB] {lg.id} — {lg.name or lg.id} "
+                    f"(distortion ≤{lg.max_aspect_distortion_pct}%, "
+                    f"clear space {lg.clear_space_ratio_h}H, S={lg.severity})"
+                ),
+                severity=lg.severity,
+                max_aspect_distortion_pct=lg.max_aspect_distortion_pct,
+                clear_space_ratio_h=lg.clear_space_ratio_h,
+                source_text=getattr(lg, "source_text", ""),
+            )
+        )
+    for f in canon.facts:
+        items.append(
+            CanonRuleItemDto(
+                id=f.id,
+                rule_type="fact",
+                label=f"[Fact Claim] {f.id} — {f.text[:56]}{'…' if len(f.text) > 56 else ''}",
+                source_text=getattr(f, "source_text", "") or f.text,
+            )
+        )
+    for tr in canon.trigger_obligations:
+        items.append(
+            CanonRuleItemDto(
+                id=tr.id,
+                rule_type="trigger",
+                label=f"[Trigger Obligation] {tr.id} — IF '{tr.trigger_pattern}' (S={tr.severity})",
+                severity=tr.severity,
+                source_text=getattr(tr, "source_text", "") or tr.required_disclaimer_text,
+            )
+        )
+    return items
+
+
 def _to_summary(canon: Canon) -> CanonSummary:
     return CanonSummary(
         id=canon.id,
@@ -172,6 +267,7 @@ def _to_summary(canon: Canon) -> CanonSummary:
         trigger_count=len(canon.trigger_obligations),
         logo_count=len(canon.logos),
         has_voice_profile=canon.voice_profile is not None,
+        rules=_extract_canon_rules(canon),
     )
 
 

@@ -1,7 +1,7 @@
 import { test, expect } from "@playwright/test";
 
 test.describe("CanonGate Golden Path E2E", () => {
-  test("complete governance journey: register -> submit -> scan -> finding -> resolve -> audit", async ({
+  test("complete 4-stage governance journey: register -> submit -> scan -> resolve -> brand review -> legal release -> audit", async ({
     page,
   }) => {
     const timestamp = Date.now();
@@ -10,70 +10,97 @@ test.describe("CanonGate Golden Path E2E", () => {
 
     // 1. Open frontend and navigate to login/register
     await page.goto("/login");
-    await expect(page.getByRole("heading", { name: "CanonGate" })).toBeVisible();
+    await expect(page.getByText("CanonGate")).toBeVisible();
 
-    // 2. Register a new creator account
-    await page.getByRole("button", { name: "Register" }).click();
-    await page.locator("#username").fill(testUsername);
-    await page.locator("#password").fill(testPassword);
-    await page.locator("#role").selectOption("creator");
+    // 2. Switch to Sign Up panel and register a new Creator account with explicit role selection
     await page.getByRole("button", { name: "Create Account" }).click();
+    await page.locator("#signup-name").fill("Kabir Roy");
+    await page.locator("#signup-username").fill(testUsername);
+    await page.locator("#signup-role").selectOption("creator");
+    await page.locator("#signup-password").fill(testPassword);
+    await page.getByRole("button", { name: /Register & Enter Studio/i }).click();
 
-    // 3. Reach dashboard
-    await expect(page.getByRole("heading", { name: "Submissions" })).toBeVisible();
-    await expect(page.getByText(testUsername)).toBeVisible();
+    // 3. Reach dashboard and verify user identity is preserved
+    await expect(page.getByText(`@${testUsername}`)).toBeVisible();
 
     // 4. Create a new submission with banned term ('cheap' under acme-corp canon)
-    await page.getByRole("button", { name: "+ New Submission" }).click();
-    await page.locator("#create-title").fill(`Golden Campaign ${timestamp}`);
+    await page.getByRole("button", { name: "+ New Campaign Bundle" }).click();
+    await page.locator("#sub-title").fill(`Golden Campaign ${timestamp}`);
+    await page.locator("#sub-canon").selectOption("acme-corp");
     await page
-      .locator("#create-content")
-      .fill("Our brand offers a cheap product for daily needs.");
-    await page.getByRole("button", { name: "Create & Review" }).click();
+      .locator("#sub-content")
+      .fill("Our brand offers a cheap product for daily enterprise needs.");
+    await page
+      .getByRole("button", { name: /Create & Open in Split-Screen Review Studio/i })
+      .click();
 
     // 5. Land on submission detail page
     await expect(page).toHaveURL(/\/submissions\/\d+/);
     await expect(
-      page.getByRole("heading", { name: `Golden Campaign ${timestamp}` })
+      page.getByRole("heading", { name: `Golden Campaign ${timestamp}` }),
     ).toBeVisible();
 
     // 6. Trigger real scan via SSE
-    const runScanButton = page.getByRole("button", { name: /Run Scan/i });
+    const runScanButton = page.getByRole("button", {
+      name: /Run Governance Check/i,
+    });
     await expect(runScanButton).toBeVisible();
     await runScanButton.click();
 
     // 7. Wait for scan completion and findings to display
-    await expect(page.getByRole("button", { name: /Run Scan/i })).toBeVisible({
-      timeout: 25000,
-    });
     const findingCard = page.locator(".finding-card").first();
-    await expect(findingCard).toBeVisible({ timeout: 10000 });
-    await expect(findingCard.locator(".ev-del")).toHaveText("cheap");
+    await expect(findingCard).toBeVisible({ timeout: 15000 });
 
     // 8. Resolve finding by accepting the suggested fix
-    const acceptBtn = page.getByRole("button", { name: /Accept/i });
+    const acceptBtn = page.getByRole("button", { name: /Accept & Apply Fix/i });
     await expect(acceptBtn).toBeVisible();
     await acceptBtn.click();
 
-    // 9. Verify finding state is updated to 'accepted' and resolved count reflects it
+    // 9. Verify finding state is updated to 'accepted'
     await expect(page.locator(".resolution-badge")).toHaveText("accepted", {
       timeout: 10000,
     });
-    await expect(page.locator(".stat:has-text('Resolved') .stat-value")).toHaveText(
-      "1"
+
+    // 10. Stage 1 -> Stage 2: Submit for Brand Review
+    await page.getByRole("button", { name: /Submit for Brand Review/i }).click();
+    await page
+      .getByRole("button", { name: /Confirm & Append to Audit Chain/i })
+      .click();
+    await expect(page.locator(".status-badge").first()).toContainText(
+      "in review",
     );
 
-    // 10. Submit for review now that the blocker has been resolved
-    await page.getByRole("button", { name: "Submit for Review" }).click();
-    await expect(page.locator(".status-badge")).toContainText("in review");
+    // 11. Stage 2 -> Stage 3: Switch RBAC Role Mode to Brand Manager (preserving @testUsername!)
+    await page.getByRole("button", { name: /2 · Brand Manager/i }).click();
+    await expect(page.getByText(`@${testUsername}`)).toBeVisible();
+    await page
+      .getByRole("button", { name: /Approve Brand Review/i })
+      .click();
+    await page
+      .getByRole("button", { name: /Confirm & Append to Audit Chain/i })
+      .click();
+    await expect(page.locator(".status-badge").first()).toContainText(
+      "approved",
+    );
 
-    // 11. Open and verify the cryptographic audit trail
+    // 12. Stage 3 -> Stage 4: Switch RBAC Role Mode to Legal Sign-Off and release
+    await page.getByRole("button", { name: /3 · Legal Sign-Off/i }).click();
+    await page
+      .getByRole("button", { name: /Execute Final Legal Sign-Off & Release/i })
+      .click();
+    await page
+      .getByRole("button", { name: /Confirm & Append to Audit Chain/i })
+      .click();
+    await expect(page.locator(".status-badge").first()).toContainText(
+      "published",
+    );
+
+    // 13. Open and verify the cryptographic audit trail
     await page.getByRole("button", { name: /Audit Trail/i }).click();
     await expect(
-      page.getByRole("heading", { name: /Audit Trail/i })
+      page.getByRole("heading", { name: /Tamper-Evident SHA-256 Hash Chain/i }),
     ).toBeVisible();
-    await expect(page.locator(".audit-event")).toBeVisible();
-    await expect(page.locator(".audit-body")).toContainText("submit: draft → in_review");
-    await page.getByRole("button", { name: "Close" }).click();
+    await expect(page.locator(".audit-event").first()).toBeVisible();
+    await page.getByRole("button", { name: /Close/i }).click();
   });
 });

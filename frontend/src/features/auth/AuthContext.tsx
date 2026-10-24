@@ -1,68 +1,101 @@
-import { useState, type ReactNode } from "react";
-import { type TokenResponse, switchRole as apiSwitchRole, login as apiLogin, register as apiRegister } from "../../api/client";
-import { AuthContext } from "./context";
+import { useState, useCallback, type ReactNode } from "react";
+import {
+  login as apiLogin,
+  register as apiRegister,
+  switchRole as apiSwitchRole,
+  type TokenResponse,
+} from "../../api/client";
+import { AuthContext, type AuthState } from "./context";
+
+export { useAuth } from "./context";
+
+function loadFromStorage(): AuthState {
+  return {
+    token: localStorage.getItem("cg_token"),
+    username: localStorage.getItem("cg_username"),
+    displayName:
+      localStorage.getItem("cg_display_name") ||
+      localStorage.getItem("cg_username"),
+    role: localStorage.getItem("cg_role"),
+  };
+}
+
+function saveToStorage(res: TokenResponse) {
+  const resolvedDisplayName = res.display_name || res.username;
+  localStorage.setItem("cg_token", res.token);
+  localStorage.setItem("cg_username", res.username);
+  localStorage.setItem("cg_display_name", resolvedDisplayName);
+  localStorage.setItem("cg_role", res.role);
+}
+
+function clearStorage() {
+  localStorage.removeItem("cg_token");
+  localStorage.removeItem("cg_username");
+  localStorage.removeItem("cg_display_name");
+  localStorage.removeItem("cg_role");
+}
 
 export function AuthProvider({ children }: { children: ReactNode }) {
-  const [token, setToken] = useState<string | null>(() => localStorage.getItem("cg_token"));
-  const [username, setUsername] = useState<string | null>(() => localStorage.getItem("cg_user"));
-  const [role, setRole] = useState<string | null>(() => localStorage.getItem("cg_role"));
+  const [state, setState] = useState<AuthState>(loadFromStorage);
 
-  const loginFn = (data: TokenResponse) => {
-    localStorage.setItem("cg_token", data.token);
-    localStorage.setItem("cg_user", data.username);
-    localStorage.setItem("cg_role", data.role);
-    setToken(data.token);
-    setUsername(data.username);
-    setRole(data.role);
-  };
+  const loginFn = useCallback(async (username: string, password: string) => {
+    const res = await apiLogin(username, password);
+    saveToStorage(res);
+    setState({
+      token: res.token,
+      username: res.username,
+      displayName: res.display_name || res.username,
+      role: res.role,
+    });
+  }, []);
 
-  const logoutFn = () => {
-    localStorage.removeItem("cg_token");
-    localStorage.removeItem("cg_user");
-    localStorage.removeItem("cg_role");
-    setToken(null);
-    setUsername(null);
-    setRole(null);
-  };
+  const registerFn = useCallback(
+    async (
+      username: string,
+      password: string,
+      role = "creator",
+      displayName = "",
+    ) => {
+      const res = await apiRegister(username, password, role, displayName);
+      saveToStorage(res);
+      setState({
+        token: res.token,
+        username: res.username,
+        displayName: res.display_name || displayName || res.username,
+        role: res.role,
+      });
+    },
+    [],
+  );
 
-  const switchPersonaFn = async (targetUsername: string, targetRole: string) => {
-    const demoPassword = "demoPassword123!";
-    // Try logging in as the dedicated demo persona user first (creative_lead, pulkit_manager, aritra_legal)
-    try {
-      let data: TokenResponse;
-      try {
-        data = await apiLogin(targetUsername, demoPassword);
-      } catch {
-        // If not found or wrong password, try registering or fallback to switch-role
-        try {
-          data = await apiRegister(targetUsername, demoPassword, targetRole);
-        } catch {
-          data = await apiSwitchRole(targetRole);
-        }
-      }
-      loginFn(data);
-    } catch {
-      // Last-resort fallback to backend switch-role
-      const data = await apiSwitchRole(targetRole);
-      loginFn(data);
-    }
-  };
+  const switchRoleFn = useCallback(async (targetRole: string) => {
+    const res = await apiSwitchRole(targetRole);
+    saveToStorage(res);
+    setState((prev) => ({
+      token: res.token,
+      username: res.username || prev.username,
+      displayName: res.display_name || prev.displayName || res.username,
+      role: res.role,
+    }));
+  }, []);
+
+  const logout = useCallback(() => {
+    clearStorage();
+    setState({ token: null, username: null, displayName: null, role: null });
+  }, []);
 
   return (
     <AuthContext.Provider
       value={{
-        token,
-        username,
-        role,
-        isAuthenticated: !!token,
+        ...state,
+        isAuthenticated: Boolean(state.token),
         login: loginFn,
-        logout: logoutFn,
-        switchPersona: switchPersonaFn,
+        register: registerFn,
+        switchRole: switchRoleFn,
+        logout,
       }}
     >
       {children}
     </AuthContext.Provider>
   );
 }
-
-

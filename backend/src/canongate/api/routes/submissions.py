@@ -17,9 +17,36 @@ from typing import Any
 
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from fastapi import APIRouter, HTTPException
-from fastapi.responses import Response
+from fastapi.responses import Response, StreamingResponse
 from pydantic import BaseModel
-from sse_starlette.sse import EventSourceResponse
+
+try:
+    from sse_starlette.sse import EventSourceResponse
+except ImportError:
+
+    class EventSourceResponse(StreamingResponse):  # type: ignore[no-redef]
+        def __init__(self, content: Any, **kwargs: Any) -> None:
+            kwargs.setdefault("media_type", "text/event-stream")
+            super().__init__(content, **kwargs)
+            self.body_iterator = content
+
+        async def __call__(self, scope: Any, receive: Any, send: Any) -> None:
+            orig_iter = self.body_iterator
+
+            async def _sse_bytes() -> AsyncIterator[bytes]:
+                async for item in orig_iter:
+                    if isinstance(item, dict):
+                        ev = item.get("event", "message")
+                        data = item.get("data", "")
+                        yield f"event: {ev}\ndata: {data}\n\n".encode()
+                    elif isinstance(item, str):
+                        yield item.encode("utf-8")
+                    elif isinstance(item, bytes):
+                        yield item
+
+            self.body_iterator = _sse_bytes()
+            await super().__call__(scope, receive, send)
+
 
 from canongate.api.deps import CurrentUser, SessionDep, get_canon
 from canongate.domain.ast import ContentAST, ImageNode, Node, NodeKind, TextNode
@@ -78,6 +105,12 @@ class CreateSubmissionRequest(_ApiDto):
     canon_id: str
     image_paths: list[str] = []
     attachments: list[BundleAttachmentDto] = []
+
+
+class UpdateSubmissionContentRequest(_ApiDto):
+    raw_content: str
+    change_note: str = "Edited campaign copy in Review Studio"
+    alpha: float = 0.10
 
 
 class ImageNodeMetaDto(_ApiDto):
@@ -241,7 +274,9 @@ def _ingest_bundle_attachments(
 
 @router.post("", response_model=SubmissionResponse, status_code=201)
 async def create_submission(
-    req: CreateSubmissionRequest, session: SessionDep, user: CurrentUser
+    req: CreateSubmissionRequest,
+    session: SessionDep,
+    user: CurrentUser,
 ) -> SubmissionResponse:
     canon = get_canon(req.canon_id)
     raw_content, all_image_paths = _ingest_bundle_attachments(
@@ -274,7 +309,9 @@ async def create_submission(
 
 @router.post("/upload", response_model=SubmissionResponse, status_code=201)
 async def upload_submission_bundle(
-    req: CreateSubmissionRequest, session: SessionDep, user: CurrentUser
+    req: CreateSubmissionRequest,
+    session: SessionDep,
+    user: CurrentUser,
 ) -> SubmissionResponse:
     """Dedicated multimodal bundle upload endpoint for `.docx`, `.pdf`, `.html`, `.png`, `.jpg`."""
     return await create_submission(req, session, user)
@@ -288,11 +325,66 @@ async def list_submissions(session: SessionDep, user: CurrentUser) -> list[Submi
 
 @router.get("/{submission_id}", response_model=SubmissionResponse)
 async def get_submission(
-    submission_id: int, session: SessionDep, user: CurrentUser
+    submission_id: int,
+    session: SessionDep,
+    user: CurrentUser,
 ) -> SubmissionResponse:
     sub = await repos.get_submission(session, submission_id)
     if not sub:
         raise HTTPException(status_code=404, detail="Submission not found")
+    return _to_response(sub)
+
+
+@router.put("/{submission_id}/content", response_model=SubmissionResponse)
+async def update_submission_raw_content(
+    submission_id: int,
+    req: UpdateSubmissionContentRequest,
+    session: SessionDep,
+    user: CurrentUser,
+) -> SubmissionResponse:
+    """Save edited campaign text as a new immutable revision and re-scan findings."""
+    sub = await repos.get_submission(session, submission_id)
+    if not sub:
+        raise HTTPException(status_code=404, detail="Submission not found")
+    if sub.status not in ("draft", "changes_requested"):
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"Cannot edit content while submission is in '{sub.status}' state. "
+                "Recall to draft or request changes first."
+            ),
+        )
+
+    # Preserve embedded ![Banner](...) image blocks if not present in the edited text
+    existing_blocks = [b.strip() for b in _BLOCK_SPLIT_RE.split(sub.raw_content) if b.strip()]
+    preserved_images = [
+        b for b in existing_blocks if b.startswith("![") and "](" in b and b not in req.raw_content
+    ]
+    cleaned_text = req.raw_content.strip()
+    if preserved_images:
+        img_suffix = "\n\n".join(preserved_images)
+        new_raw = f"{cleaned_text}\n\n{img_suffix}" if cleaned_text else img_suffix
+    else:
+        new_raw = cleaned_text
+
+    new_c_hash = content_hash(new_raw.encode("utf-8"))
+    updated_sub = await repos.update_submission_content(
+        session,
+        submission_id,
+        raw_content=new_raw,
+        content_hash=new_c_hash,
+        actor_id=user.id,
+        change_note=req.change_note.strip() or "Edited campaign copy in Review Studio",
+    )
+    if updated_sub is not None:
+        sub = updated_sub
+
+    canon = get_canon(sub.canon_id)
+    ast = _parse_submission_ast(sub.raw_content)
+    raw_findings = await run_checks_collect(ast, canon)
+    calibrated = default_calibrator.filter_and_calibrate_findings(raw_findings, alpha=req.alpha)
+    await repos.save_findings(session, submission_id, calibrated)
+
     return _to_response(sub)
 
 
@@ -388,7 +480,9 @@ async def scan_submission(
 
 @router.get("/{submission_id}/findings", response_model=list[FindingResponse])
 async def get_findings(
-    submission_id: int, session: SessionDep, user: CurrentUser
+    submission_id: int,
+    session: SessionDep,
+    user: CurrentUser,
 ) -> list[FindingResponse]:
     rows = await repos.get_findings_for_submission(session, submission_id)
     return [
@@ -666,12 +760,15 @@ async def workflow_action(
         created_at=now,
     )
 
-    sub.status = new_status.value
-    if hasattr(session, "flush"):
-        await session.flush()
-    refreshed_sub = await repos.get_submission(session, submission_id)
-    if refreshed_sub is not None:
-        sub = refreshed_sub
+    if hasattr(repos, "update_submission_status"):
+        sub = await repos.update_submission_status(session, sub, new_status.value)
+    else:
+        sub.status = new_status.value
+        if hasattr(session, "flush"):
+            await session.flush()
+        refreshed_sub = await repos.get_submission(session, submission_id)
+        if refreshed_sub is not None:
+            sub = refreshed_sub
 
     # Outbound C2PA Asset Signing on approval/publishing using real ECDSA P-256 credentials
     if new_status in (Status.APPROVED, Status.PUBLISHED):
@@ -711,7 +808,11 @@ async def workflow_action(
 
 
 @router.get("/{submission_id}/audit")
-async def get_audit_trail(submission_id: int, session: SessionDep, user: CurrentUser):
+async def get_audit_trail(
+    submission_id: int,
+    session: SessionDep,
+    user: CurrentUser,
+):
     events = await repos.get_events_for_submission(session, submission_id)
     if not events:
         return []
@@ -752,7 +853,11 @@ async def get_audit_trail(submission_id: int, session: SessionDep, user: Current
 
 
 @router.get("/{submission_id}/audit/tree-head")
-async def get_audit_tree_head(submission_id: int, session: SessionDep, user: CurrentUser):
+async def get_audit_tree_head(
+    submission_id: int,
+    session: SessionDep,
+    user: CurrentUser,
+):
     """Retrieve the RFC 9162 Signed Tree Head (STH) with Ed25519 signature."""
     events = await repos.get_events_for_submission(session, submission_id)
     if not events:
@@ -882,7 +987,7 @@ _BLOCK_SPLIT_RE = re.compile(r"\n{2,}")
 
 
 async def _apply_accepted_suggestion(
-    session: SessionDep,
+    session: Any,
     submission_id: int,
     row: Any,
     *,

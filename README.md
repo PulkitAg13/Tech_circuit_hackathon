@@ -13,8 +13,8 @@
 
 | Document | Description | Direct Links |
 | :--- | :--- | :--- |
-| **System Architecture Diagram** | Complete technical architectural overview, end-to-end data pipeline, SMT verification, and RFC 9162 Merkle tree ledger | [**Download PDF (Root)**](./PulmoTwin_Architecture_Diagram.pdf)<br>[**View in `docs/`**](./docs/PulmoTwin_Architecture_Diagram.pdf) |
-| **Pitch Deck Presentation** | Product vision, market problem, automated regulatory compliance, competitive differentiation, and business model | [**Download PDF (Root)**](./PulmoTwin_Pitch_Deck.pdf)<br>[**View in `docs/`**](./docs/PulmoTwin_Pitch_Deck.pdf) |
+| **System Architecture Diagram** | Complete technical architectural overview, end-to-end data pipeline, SMT verification, and RFC 9162 Merkle tree ledger | [**Download PDF (Root)**](./CanonGate_Architecture_Diagram.pdf)<br>[**View in `docs/`**](./docs/CanonGate_Architecture_Diagram.pdf) |
+| **Pitch Deck Presentation** | Product vision, market problem, automated regulatory compliance, competitive differentiation, and business model | [**Download PDF (Root)**](./CanonGate_Pitch_Deck.pdf)<br>[**View in `docs/`**](./docs/CanonGate_Pitch_Deck.pdf) |
 
 ---
 
@@ -125,8 +125,8 @@ Open `http://localhost:5173` in your browser.
 ## 📂 Repository Structure
 
 ```
-├── PulmoTwin_Architecture_Diagram.pdf   # Technical Architecture Diagram
-├── PulmoTwin_Pitch_Deck.pdf              # Investor & Product Pitch Deck
+├── CanonGate_Architecture_Diagram.pdf   # Technical Architecture Diagram
+├── CanonGate_Pitch_Deck.pdf              # Investor & Product Pitch Deck
 ├── AGENTS.md                            # AI Agent pair programming guide
 ├── gap_analysis.md                      # Feature completeness & gap audit
 ├── backend/                             # FastAPI backend
@@ -151,8 +151,8 @@ Open `http://localhost:5173` in your browser.
 
 ## 📜 Documentation Links
 
-* [**Architecture Diagram PDF**](./PulmoTwin_Architecture_Diagram.pdf)
-* [**Pitch Deck PDF**](./PulmoTwin_Pitch_Deck.pdf)
+* [**Architecture Diagram PDF**](./CanonGate_Architecture_Diagram.pdf)
+* [**Pitch Deck PDF**](./CanonGate_Pitch_Deck.pdf)
 * [**Architecture Decision Records (ADRs)**](./docs/adr/)
 * [**AI Agent Development Guide**](./AGENTS.md)
 * [**Feature Matrix & Gap Analysis**](./gap_analysis.md)

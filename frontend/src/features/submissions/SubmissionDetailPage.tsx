@@ -1,1228 +1,1872 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useCallback, useRef, useMemo } from "react";
 import { useParams, useNavigate } from "react-router-dom";
-import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useEditor, EditorContent } from "@tiptap/react";
 import StarterKit from "@tiptap/starter-kit";
-import { Extension } from "@tiptap/core";
-import { Plugin, PluginKey } from "@tiptap/pm/state";
-import { Decoration, DecorationSet } from "@tiptap/pm/view";
 import {
   getSubmission,
   getFindings,
-  scanSubmission,
   resolveFinding,
-  rewriteFindingSpan,
-  listSubmissionComments,
-  addSubmissionComment,
   workflowAction,
   getAuditTrail,
-  getGovernanceCertificate,
   getSubmissionVersions,
+  getGovernanceCertificate,
+  getSubmissionComments,
+  createSubmissionComment,
+  rewriteFindingSpan,
+  updateSubmissionContent,
+  triggerScan,
   type Submission,
-  type FindingResponse,
-  type EvidencePayload,
-  type ImageNodeMetaDto,
-  type SubmissionCommentDto,
+  type FindingItem,
+  type AuditEvent,
+  type SubmissionVersionItem,
+  type SubmissionCommentItem,
+  type SurgicalRewriteResponse,
+  type ImageNodeMeta,
 } from "../../api/client";
-import { useAuth } from "../auth/useAuth";
-import { createProseMirrorFindingsPlugin } from "./FindingHighlightsExtension";
+import { useAuth } from "../auth/context";
+import {
+  FindingHighlightsExtension,
+  findingHighlightsKey,
+  type FindingDecorationRange,
+} from "./FindingHighlightsExtension";
 
-const findingsPluginKey = new PluginKey("canongateFindings");
+// Role-gated workflow transitions matching backend/src/canongate/domain/workflow.py
+const WORKFLOW_ACTIONS: Record<
+  string,
+  Array<{ action: string; label: string; roles: string[] }>
+> = {
+  draft: [
+    {
+      action: "submit",
+      label: "Submit for Brand Review →",
+      roles: ["creator", "admin"],
+    },
+  ],
+  in_review: [
+    {
+      action: "approve",
+      label: "✓ Approve Brand Review → Forward to Legal",
+      roles: ["reviewer", "admin"],
+    },
+    {
+      action: "request_changes",
+      label: "Request Changes",
+      roles: ["reviewer", "admin"],
+    },
+    { action: "recall", label: "Recall to Draft", roles: ["creator", "admin"] },
+  ],
+  changes_requested: [
+    {
+      action: "submit",
+      label: "Resubmit for Brand Review →",
+      roles: ["creator", "admin"],
+    },
+  ],
+  approved: [
+    {
+      action: "publish",
+      label: "⛨ Execute Final Legal Sign-Off & Release",
+      roles: ["admin"],
+    },
+    {
+      action: "recall",
+      label: "Return to Brand Review",
+      roles: ["reviewer", "admin"],
+    },
+  ],
+  published: [],
+};
 
-const FindingsDecorationExtension = Extension.create({
-  name: "findingsDecoration",
-  addProseMirrorPlugins() {
-    return [
-      createProseMirrorFindingsPlugin({
-        pluginKey: findingsPluginKey,
-        Decoration,
-        DecorationSet,
-        Plugin,
-      }) as Plugin,
-    ];
+const WORKFLOW_STAGES = [
+  {
+    num: 1,
+    key: "stage1",
+    title: "Creator Pre-Flight",
+    ownerRole: "creator",
+    ownerLabel: "Creator",
+    statuses: ["draft", "changes_requested"],
+    desc: "Run Tier 1+2 scan, fix Blockers, and record Warning override justifications.",
   },
-});
+  {
+    num: 2,
+    key: "stage2",
+    title: "Brand Manager Review",
+    ownerRole: "reviewer",
+    ownerLabel: "Brand Manager",
+    statuses: ["in_review"],
+    desc: "Inspect revision diffs, verify brand compliance & overrides, and approve.",
+  },
+  {
+    num: 3,
+    key: "stage3",
+    title: "Authorised Legal Sign-Off",
+    ownerRole: "admin",
+    ownerLabel: "Legal Reviewer",
+    statuses: ["approved"],
+    desc: "Audit Claim-Only SlotDiffs & Merkle chain; execute final statutory release.",
+  },
+  {
+    num: 4,
+    key: "stage4",
+    title: "Sealed & Released",
+    ownerRole: "published",
+    ownerLabel: "Released",
+    statuses: ["published"],
+    desc: "SHA-256 hash chain + Ed25519 Signed Tree Head + C2PA signed assets.",
+  },
+] as const;
 
-const VERDICT_LABELS: Record<string, string> = {
-  "0": "PASS",
-  "1": "WARNING",
-  "2": "BLOCKER",
-};
-const VERDICT_COLORS: Record<string, string> = {
-  "0": "#22c55e",
-  "1": "#f59e0b",
-  "2": "#ef4444",
-};
+interface SlotComparisonItem {
+  slot_name: string;
+  canon_value: string | null;
+  draft_value: string | null;
+  status: "match" | "contradicted" | "dropped" | "added";
+}
 
-/**
- * Escape HTML special characters so `<`, `>`, and `&` inside text blocks or
- * linearized table rows never get stripped as malformed HTML tags by Tiptap,
- * keeping ProseMirror UTF-16 offsets 1-to-1 with backend `TextNode.text`.
- */
-function escapeHtmlBlock(raw: string): string {
-  return raw
+interface ExtractedBBoxOverlay {
+  rowId: number;
+  findingId: string;
+  checkId: string;
+  severity: number;
+  resolution: string;
+  message: string;
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+  assetIndex: number;
+}
+
+/** Resolve backend asset URLs cleanly via relative `/api/...` paths. */
+function resolveAssetUrl(url: string): string {
+  if (!url) return "";
+  if (url.startsWith("data:") || url.startsWith("blob:")) return url;
+  if (url.startsWith("http://") || url.startsWith("https://")) {
+    try {
+      const parsed = new URL(url);
+      return `${parsed.pathname}${parsed.search}`;
+    } catch {
+      return url;
+    }
+  }
+  return url.startsWith("/") ? url : `/${url}`;
+}
+
+function escapeHtml(str: string): string {
+  return str
     .replace(/&/g, "&amp;")
     .replace(/</g, "&lt;")
     .replace(/>/g, "&gt;")
     .replace(/"/g, "&quot;")
-    .replace(/'/g, "&#39;");
+    .replace(/'/g, "&#039;");
+}
+
+function blocksToHtml(blocks: string[]): string {
+  if (blocks.length === 0) return "<p></p>";
+  return blocks.map((b) => `<p>${escapeHtml(b)}</p>`).join("");
 }
 
 /**
- * Resolve the exact sequence of textblocks to render in Tiptap so every block
- * aligns 1-to-1 with `submission.paragraph_node_ids` (including linearized
- * Markdown table rows produced by `parse_markdown_text` on the backend).
+ * Extract pixel bounding boxes `[x, y, w, h]` from both:
+ * 1. Direct `ImageNode` findings (`locator.kind === "bbox"`).
+ * 2. Low-confidence / micro-height OCR `TextNode` findings whose `node_id` or
+ *    `message` carries `[conf=...,bbox=X_Y_W_H,img_h=...]`.
  */
-function resolveEditorTextBlocks(submission: Submission): string[] {
-  if (submission.text_blocks && submission.text_blocks.length > 0) {
-    return submission.text_blocks;
-  }
-  if (!submission.raw_content) {
-    return [];
-  }
-  return submission.raw_content
-    .split(/\n{2,}/)
-    .map((b) => b.trim())
-    .filter((b) => b.length > 0);
-}
+function extractBannerOverlays(
+  findings: FindingItem[],
+  imageNodes: ImageNodeMeta[],
+): ExtractedBBoxOverlay[] {
+  if (imageNodes.length === 0) return [];
+  const overlays: ExtractedBBoxOverlay[] = [];
+  const bboxTagRe = /bbox=(\d+)_(\d+)_(\d+)_(\d+)/;
 
-/**
- * Interactive SVG viewBox overlay rendering pixel BBox(x, y, w, h) locators
- * on top of attached campaign banner images.
- */
-export function BannerBBoxOverlay({
-  imageNodes,
-  findings,
-  selectedRowId,
-  onSelectFinding,
-}: {
-  imageNodes: ImageNodeMetaDto[];
-  findings: FindingResponse[];
-  selectedRowId: number | null;
-  onSelectFinding: (rowId: number) => void;
-}) {
-  if (!imageNodes || imageNodes.length === 0) return null;
-
-  return (
-    <section className="banner-overlay-section">
-      <div className="section-header">
-        <h2>Visual Creative Inspection (BBox Governance Overlay)</h2>
-        <span className="editor-subtext">
-          Click any bounding box on the banner to inspect its CIEDE2000, WCAG 2.1, ORB Logo, ASCI 26px, or Saliency evidence
-        </span>
-      </div>
-      <div className="banner-grid">
-        {imageNodes.map((img) => {
-          const boxFindings = findings.filter(
-            (f) =>
-              f.node_id === img.node_id &&
-              f.resolution === "open" &&
-              f.payload?.locator &&
-              typeof f.payload.locator.x === "number" &&
-              typeof f.payload.locator.y === "number"
-          );
-          const viewW = Math.max(1, img.width || 800);
-          const viewH = Math.max(1, img.height || 400);
-          const srcUrl =
-            img.url.startsWith("http") || img.url.startsWith("/api")
-              ? img.url
-              : `http://localhost:8000${img.url}`;
-
-          return (
-            <div key={img.node_id} className="banner-canvas-card">
-              <div className="banner-canvas-header">
-                <code>{img.asset_path.split("/").pop() || img.asset_path}</code>
-                <span>
-                  {viewW}×{viewH}px · {boxFindings.length} open visual finding(s)
-                </span>
-              </div>
-              <div className="banner-stage">
-                <img
-                  src={srcUrl}
-                  alt={img.alt || "Campaign Banner"}
-                  className="banner-img"
-                />
-                <svg
-                  className="bbox-svg-overlay"
-                  viewBox={`0 0 ${viewW} ${viewH}`}
-                  preserveAspectRatio="xMidYMid meet"
-                >
-                  {boxFindings.map((f) => {
-                    const loc = f.payload.locator!;
-                    const x = loc.x ?? 0;
-                    const y = loc.y ?? 0;
-                    const w = Math.max(12, loc.w ?? 40);
-                    const h = Math.max(12, loc.h ?? 24);
-                    const isBlocker = f.severity >= 50;
-                    const isSelected = f.row_id === selectedRowId;
-                    const strokeColor = isBlocker ? "#ef4444" : "#f59e0b";
-
-                    return (
-                      <g
-                        key={f.row_id}
-                        className={`bbox-group ${isSelected ? "bbox-selected" : ""}`}
-                        onClick={() => onSelectFinding(f.row_id)}
-                      >
-                        <rect
-                          x={x}
-                          y={y}
-                          width={w}
-                          height={h}
-                          fill={
-                            isSelected
-                              ? "rgba(53, 167, 144, 0.28)"
-                              : isBlocker
-                                ? "rgba(239, 68, 68, 0.16)"
-                                : "rgba(245, 158, 11, 0.16)"
-                          }
-                          stroke={isSelected ? "#35a790" : strokeColor}
-                          strokeWidth={isSelected ? 3 : 2}
-                          rx={3}
-                        >
-                          <title>{`${f.check_id}: ${f.message}`}</title>
-                        </rect>
-                      </g>
-                    );
-                  })}
-                </svg>
-              </div>
-            </div>
-          );
-        })}
-      </div>
-    </section>
-  );
-}
-
-export function EvidenceView({
-  evidence,
-  slotDiffExpanded = true,
-  onToggleSlotDiff,
-}: {
-  evidence?: EvidencePayload;
-  slotDiffExpanded?: boolean;
-  onToggleSlotDiff?: () => void;
-}) {
-  if (!evidence) return null;
-
-  switch (evidence.kind) {
-    case "term_match":
-      return (
-        <div className="evidence-box">
-          <span className="evidence-kind-tag">Term Match</span>
-          <span className="ev-del">{evidence.term}</span>
-          <span className="ev-arrow">→</span>
-          <span className="ev-ins">{evidence.preferred}</span>
-        </div>
-      );
-
-    case "color_distance":
-      return (
-        <div className="evidence-box">
-          <span className="evidence-kind-tag">CIEDE2000 Palette Drift</span>
-          <span className="swatch-pair">
-            <span
-              className="color-swatch"
-              style={{ backgroundColor: evidence.found_hex }}
-              title={`Found: ${evidence.found_hex}`}
-            />
-            <code>{evidence.found_hex}</code>
-          </span>
-          <span className="ev-arrow">vs</span>
-          <span className="swatch-pair">
-            <span
-              className="color-swatch"
-              style={{ backgroundColor: evidence.approved_hex }}
-              title={`Approved: ${evidence.approved_hex}`}
-            />
-            <code>{evidence.approved_hex}</code>
-          </span>
-          <span className="ev-metric">
-            ΔE₀₀ = <strong>{evidence.delta_e.toFixed(2)}</strong> (max {evidence.max_allowed.toFixed(1)})
-          </span>
-        </div>
-      );
-
-    case "contrast":
-      return (
-        <div className="evidence-box">
-          <span className="evidence-kind-tag">WCAG {evidence.wcag_level} Contrast</span>
-          <span
-            className="contrast-preview-chip"
-            style={{
-              color: evidence.fg_hex,
-              backgroundColor: evidence.bg_hex,
-            }}
-          >
-            Aa {evidence.fg_hex} on {evidence.bg_hex}
-          </span>
-          <span className="ev-metric">
-            Ratio <strong>{evidence.contrast_ratio.toFixed(2)}:1</strong> (req ≥ {evidence.required_ratio.toFixed(1)}:1)
-          </span>
-          {evidence.suggested_fg_hex && (
-            <span className="swatch-pair">
-              <span>Suggested FG:</span>
-              <span
-                className="color-swatch"
-                style={{ backgroundColor: evidence.suggested_fg_hex }}
-              />
-              <code>{evidence.suggested_fg_hex}</code>
-            </span>
-          )}
-        </div>
-      );
-
-    case "slot_diff":
-      return (
-        <div className="evidence-box evidence-box-block">
-          <div className="evidence-header-row">
-            <span className="evidence-kind-tag">NLI SlotDiff ({evidence.canon_claim_id})</span>
-            <span className="ev-metric">
-              Entailment P = <strong>{(evidence.entailment_prob * 100).toFixed(0)}%</strong>
-            </span>
-            {onToggleSlotDiff && (
-              <button
-                type="button"
-                className="btn-sm btn-ghost"
-                onClick={(e) => {
-                  e.stopPropagation();
-                  onToggleSlotDiff();
-                }}
-              >
-                {slotDiffExpanded ? "▴ Collapse SlotDiff" : "▾ Expand SlotDiff to Unlock Actions"}
-              </button>
-            )}
-          </div>
-          {slotDiffExpanded && evidence.slots && evidence.slots.length > 0 && (
-            <table className="slot-diff-table">
-              <thead>
-                <tr>
-                  <th>Slot</th>
-                  <th>Canon Approved</th>
-                  <th>Draft Copy</th>
-                  <th>Status</th>
-                </tr>
-              </thead>
-              <tbody>
-                {evidence.slots.map((s, idx) => (
-                  <tr key={`${s.slot}-${idx}`}>
-                    <td><code>{s.slot}</code></td>
-                    <td>{s.canon_value}</td>
-                    <td>{s.draft_value}</td>
-                    <td>
-                      <span className={`slot-status-pill status-${s.status}`}>
-                        {s.status}
-                      </span>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          )}
-        </div>
-      );
-
-    case "algebraic_proof": {
-      const counterEntries = Object.entries(evidence.counterexample || {});
-      return (
-        <div className="evidence-box evidence-box-block">
-          <div className="evidence-header-row">
-            <span className="evidence-kind-tag">Tier 1.5 Algebraic Solver</span>
-            <span className="slot-status-pill status-contradicted">
-              {evidence.solver_status === "sat_counterexample" ? "SAT Counterexample" : "UNSAT Valid"}
-            </span>
-          </div>
-          <div className="ev-algebra-row">
-            <span>Draft: <code>{evidence.draft_expr}</code></span>
-            <span>Canon: <code>{evidence.canon_constraint}</code></span>
-          </div>
-          {counterEntries.length > 0 && (
-            <div className="ev-counterexample">
-              Witness:{" "}
-              {counterEntries.map(([k, v]) => (
-                <code key={k} className="ev-witness-chip">
-                  {k} = {v}
-                </code>
-              ))}
-            </div>
-          )}
-        </div>
-      );
+  for (const f of findings) {
+    const loc = f.payload?.locator;
+    if (
+      loc?.kind === "bbox" &&
+      typeof loc.x === "number" &&
+      typeof loc.y === "number" &&
+      typeof loc.w === "number" &&
+      typeof loc.h === "number"
+    ) {
+      const matchedIdx = imageNodes.findIndex((img) => img.node_id === f.node_id);
+      overlays.push({
+        rowId: f.row_id,
+        findingId: f.finding_id,
+        checkId: f.check_id,
+        severity: f.severity,
+        resolution: f.resolution,
+        message: f.message,
+        x: loc.x,
+        y: loc.y,
+        w: loc.w,
+        h: loc.h,
+        assetIndex: matchedIdx >= 0 ? matchedIdx : 0,
+      });
+      continue;
     }
 
-    case "legibility":
-      return (
-        <div className="evidence-box">
-          <span className="evidence-kind-tag">ASCI / CCPA Legibility</span>
-          <span className="ev-metric">
-            x-height <strong>{evidence.estimated_x_height_px.toFixed(1)}px</strong> / req{" "}
-            <strong>{evidence.required_px.toFixed(1)}px</strong> (box {evidence.measured_box_px.toFixed(0)}px @{" "}
-            {evidence.image_height_px}p, OCR {(evidence.ocr_confidence * 100).toFixed(0)}%)
-          </span>
-          {evidence.script_mismatch && (
-            <span className="slot-status-pill status-contradicted">
-              CCPA Clause 11 Script Mismatch
-            </span>
-          )}
-        </div>
-      );
-
-    case "saliency":
-      return (
-        <div className="evidence-box">
-          <span className="evidence-kind-tag">Montabone &amp; Soto Saliency</span>
-          <span className="ev-metric">
-            Ratio <strong>{evidence.ratio.toFixed(2)}</strong> &lt; floor{" "}
-            <strong>{evidence.min_ratio.toFixed(2)}</strong> (disclaimer {evidence.disclaimer_saliency.toFixed(3)}{" "}
-            vs headline {evidence.headline_saliency.toFixed(3)})
-          </span>
-        </div>
-      );
-
-    case "confusable":
-      return (
-        <div className="evidence-box">
-          <span className="evidence-kind-tag">UTS #39 Homoglyph</span>
-          <span className="ev-del">{evidence.spoofed_token}</span>
-          <span className="ev-arrow">→</span>
-          <span className="ev-ins">{evidence.normalized_token}</span>
-          {evidence.scripts_detected?.length > 0 && (
-            <span className="ev-metric">
-              Scripts: <code>{evidence.scripts_detected.join(" + ")}</code>
-            </span>
-          )}
-        </div>
-      );
-
-    case "c2pa":
-      return (
-        <div className="evidence-box">
-          <span className="evidence-kind-tag">C2PA Provenance</span>
-          <span className="ev-metric">
-            State: <strong>{evidence.validation_state}</strong>
-            {evidence.issuer ? ` | Issuer: ${evidence.issuer}` : ""}
-            {evidence.digital_source_type ? ` | Source: ${evidence.digital_source_type}` : ""}
-          </span>
-        </div>
-      );
-
-    case "hidden_text":
-      return (
-        <div className="evidence-box">
-          <span className="evidence-kind-tag">OWASP LLM01 ({evidence.mechanism})</span>
-          <code className="ev-snippet">{evidence.extracted_snippet}</code>
-        </div>
-      );
-
-    case "logo_geometry":
-      return (
-        <div className="evidence-box">
-          <span className="evidence-kind-tag">OpenCV ORB Logo ({evidence.logo_id})</span>
-          <span className="ev-metric">
-            AR distortion <strong>{evidence.aspect_distortion_pct.toFixed(1)}%</strong> (max{" "}
-            {evidence.max_aspect_distortion_pct.toFixed(1)}%) · Clear-space ({evidence.clear_space_ratio_h.toFixed(2)}H) intrusion{" "}
-            <strong>{evidence.clear_space_intrusion_pct.toFixed(1)}%</strong>
-          </span>
-        </div>
-      );
-
-    case "voice_readability":
-      return (
-        <div className="evidence-box">
-          <span className="evidence-kind-tag">Voice &amp; Readability</span>
-          <span className="ev-metric">
-            FK Grade <strong>{evidence.flesch_kincaid_grade.toFixed(1)}</strong> (max{" "}
-            {evidence.max_flesch_kincaid_grade.toFixed(1)}) · Passive{" "}
-            <strong>{evidence.passive_voice_pct.toFixed(0)}%</strong> · Max sentence{" "}
-            <strong>{evidence.max_sentence_words_observed}w</strong>
-          </span>
-        </div>
-      );
-
-    case "trigger_obligation":
-      return (
-        <div className="evidence-box">
-          <span className="evidence-kind-tag">Trigger Obligation ({evidence.obligation_id})</span>
-          <span className="ev-del">{evidence.matched_trigger}</span>
-          <span className="ev-arrow">requires</span>
-          <span className="ev-ins">{evidence.required_disclaimer_text}</span>
-        </div>
-      );
-
-    default:
-      return null;
+    const ev = f.payload?.evidence ?? {};
+    const bboxStr =
+      typeof ev.bbox === "string"
+        ? ev.bbox
+        : bboxTagRe.exec(f.message)?.[0] ?? "";
+    const m = bboxTagRe.exec(bboxStr) ?? /(\d+)_(\d+)_(\d+)_(\d+)/.exec(bboxStr);
+    if (m) {
+      overlays.push({
+        rowId: f.row_id,
+        findingId: f.finding_id,
+        checkId: f.check_id,
+        severity: f.severity,
+        resolution: f.resolution,
+        message: f.message,
+        x: Number(m[1]),
+        y: Number(m[2]),
+        w: Number(m[3]),
+        h: Number(m[4]),
+        assetIndex: 0,
+      });
+    }
   }
-}
 
-const EMPTY_FINDINGS: FindingResponse[] = [];
-const EMPTY_AUDIT: any[] = [];
-const EMPTY_VERSIONS: any[] = [];
-const EMPTY_COMMENTS: SubmissionCommentDto[] = [];
+  return overlays;
+}
 
 export function SubmissionDetailPage() {
   const { id } = useParams<{ id: string }>();
+  const submissionId = Number(id);
+  const { username, displayName, role, switchRole } = useAuth();
   const navigate = useNavigate();
-  const { role, username, switchPersona } = useAuth();
-  const subId = Number(id);
 
-  const queryClient = useQueryClient();
-  const [switchLoading, setSwitchLoading] = useState(false);
+  const [submission, setSubmission] = useState<Submission | null>(null);
+  const [findings, setFindings] = useState<FindingItem[]>([]);
+  const [audit, setAudit] = useState<AuditEvent[]>([]);
+  const [versions, setVersions] = useState<SubmissionVersionItem[]>([]);
+  const [comments, setComments] = useState<SubmissionCommentItem[]>([]);
+  const [scanning, setScanning] = useState(false);
+  const [switchingRole, setSwitchingRole] = useState(false);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [filter, setFilter] = useState<
+    "all" | "blockers" | "warnings" | "claims_only"
+  >("all");
+  const [selectedFindingId, setSelectedFindingId] = useState<number | null>(
+    null,
+  );
+  const [selectedAssetIdx, setSelectedAssetIdx] = useState<number>(0);
 
-  async function handleSwitchPersona(targetUsername: string, targetRole: string) {
-    setSwitchLoading(true);
-    setError("");
+  // Direct Draft Editor state (Stage 1: Creator can edit copy & re-scan)
+  const [isEditingDraft, setIsEditingDraft] = useState<boolean>(false);
+  const [draftEditValue, setDraftEditValue] = useState<string>("");
+  const [draftChangeNote, setDraftChangeNote] = useState<string>(
+    "Updated campaign copy to resolve compliance findings",
+  );
+  const [savingDraft, setSavingDraft] = useState<boolean>(false);
+
+  // Conformal Risk Control (alpha) state
+  const [conformalAlpha, setConformalAlpha] = useState<number>(0.1);
+
+  // Cognitive Forcing Function state:
+  // 1) Track which SlotDiff cards have been expanded by the user
+  const [expandedSlotDiffs, setExpandedSlotDiffs] = useState<
+    Record<number, boolean>
+  >({});
+  // 2) Structured Deliberate Override / Dismiss / Remediation popover state
+  const [overrideTarget, setOverrideTarget] = useState<{
+    rowId: number;
+    mode: "overridden" | "dismissed" | "accepted";
+  } | null>(null);
+  const [overrideReason, setOverrideReason] = useState<string>("");
+
+  // Inline comment composer state (per finding or general submission)
+  const [commentTargetRowId, setCommentTargetRowId] = useState<number | null>(
+    null,
+  );
+  const [commentBody, setCommentBody] = useState<string>("");
+  const [postingComment, setPostingComment] = useState<boolean>(false);
+  const [generalCommentBody, setGeneralCommentBody] = useState<string>("");
+
+  // Tier 3 Constrained Rewriter state
+  const [rewritingRowId, setRewritingRowId] = useState<number | null>(null);
+  const [rewritePreviews, setRewritePreviews] = useState<
+    Record<number, SurgicalRewriteResponse>
+  >({});
+
+  // Modals / Drawers
+  const [showAuditModal, setShowAuditModal] = useState(false);
+  const [showVersionsModal, setShowVersionsModal] = useState(false);
+  const [exportingCert, setExportingCert] = useState(false);
+
+  // Workflow comment modal
+  const [wfAction, setWfAction] = useState<string | null>(null);
+  const [wfComment, setWfComment] = useState("");
+
+  const findingCardRefs = useRef<Map<number, HTMLDivElement>>(new Map());
+
+  const load = useCallback(async () => {
+    setLoading(true);
     try {
-      await switchPersona(targetUsername, targetRole);
-      queryClient.invalidateQueries({ queryKey: ["submission", subId] });
-      queryClient.invalidateQueries({ queryKey: ["findings", subId] });
-      queryClient.invalidateQueries({ queryKey: ["submissions"] });
-    } catch (err: any) {
-      setError(err.message || "Failed to switch persona");
+      const [sub, fnd, aud, vers, cmts] = await Promise.all([
+        getSubmission(submissionId),
+        getFindings(submissionId),
+        getAuditTrail(submissionId),
+        getSubmissionVersions(submissionId).catch(() => []),
+        getSubmissionComments(submissionId).catch(() => []),
+      ]);
+      setSubmission(sub);
+      setFindings(fnd);
+      setAudit(aud);
+      setVersions(vers);
+      setComments(cmts);
+    } catch (err) {
+      setError((err as Error).message);
     } finally {
-      setSwitchLoading(false);
+      setLoading(false);
+    }
+  }, [submissionId]);
+
+  useEffect(() => {
+    load();
+  }, [load]);
+
+  // Default Authorised Legal Reviewer (admin) to Claim-Only & Overrides view
+  useEffect(() => {
+    if (role === "admin") {
+      setFilter("claims_only");
+    } else {
+      setFilter("all");
+    }
+  }, [role]);
+
+  function handleStartEditDraft() {
+    if (!submission) return;
+    const textOnlyBlocks =
+      submission.text_blocks && submission.text_blocks.length > 0
+        ? submission.text_blocks
+        : (submission.raw_content || "")
+            .split(/\n{2,}/)
+            .map((b) => b.trim())
+            .filter((b) => b && !b.startsWith("!["));
+    setDraftEditValue(textOnlyBlocks.join("\n\n"));
+    setIsEditingDraft(true);
+  }
+
+  async function handleSaveEditedDraft() {
+    if (!submission) return;
+    setSavingDraft(true);
+    setError(null);
+    try {
+      await updateSubmissionContent(
+        submissionId,
+        draftEditValue,
+        draftChangeNote.trim() || "Edited campaign copy in Review Studio",
+        conformalAlpha,
+      );
+      setIsEditingDraft(false);
+      await load();
+    } catch (err) {
+      setError((err as Error).message);
+    } finally {
+      setSavingDraft(false);
     }
   }
 
-  // TanStack Query for server state
-  const { data: submission = null } = useQuery({
-    queryKey: ["submission", subId],
-    queryFn: () => getSubmission(subId),
-    enabled: !Number.isNaN(subId),
-  });
-
-  const { data: serverFindings = EMPTY_FINDINGS } = useQuery({
-    queryKey: ["findings", subId],
-    queryFn: () => getFindings(subId),
-    enabled: !Number.isNaN(subId),
-  });
-
-  const { data: comments = EMPTY_COMMENTS } = useQuery({
-    queryKey: ["comments", subId],
-    queryFn: () => listSubmissionComments(subId),
-    enabled: !Number.isNaN(subId),
-  });
-
-  // Track live SSE stream during active scan
-  const [liveFindings, setLiveFindings] = useState<FindingResponse[] | null>(null);
-  const findings = liveFindings ?? serverFindings;
-
-  const [scanning, setScanning] = useState(false);
-  const [scanCount, setScanCount] = useState(0);
-  const [alpha, setAlpha] = useState<number>(0.10);
-  const [conformalCutoff, setConformalCutoff] = useState<number | null>(null);
-
-  const [showAudit, setShowAudit] = useState(false);
-  const { data: audit = EMPTY_AUDIT } = useQuery({
-    queryKey: ["audit", subId],
-    queryFn: () => getAuditTrail(subId),
-    enabled: showAudit && !Number.isNaN(subId),
-  });
-
-  const [showVersions, setShowVersions] = useState(false);
-  const { data: versions = EMPTY_VERSIONS } = useQuery({
-    queryKey: ["versions", subId],
-    queryFn: () => getSubmissionVersions(subId),
-    enabled: showVersions && !Number.isNaN(subId),
-  });
-
-  const [error, setError] = useState("");
-  const [selectedRowId, setSelectedRowId] = useState<number | null>(null);
-
-  // Legal Reviewer Claim-Only / Unresolved Blockers & Overrides filter (Plan §2 Role 3)
-  const [reviewerFilterOnly, setReviewerFilterOnly] = useState(false);
-
-  // Cognitive forcing function: Blocker SlotDiff cards start collapsed and lock "Accept & Apply Fix"
-  const [expandedSlotDiffIds, setExpandedSlotDiffIds] = useState<Record<number, boolean>>({});
-
-  // Inline comment thread state
-  const [activeCommentRowId, setActiveCommentRowId] = useState<number | null>(null);
-  const [commentDraft, setCommentDraft] = useState("");
-
-  // Cognitive forcing function state: track pending Override/Dismiss justification reason
-  const [pendingReasonRowId, setPendingReasonRowId] = useState<number | null>(null);
-  const [pendingResolutionKind, setPendingResolutionKind] = useState<"dismissed" | "overridden">("dismissed");
-  const [reasonDraft, setReasonDraft] = useState<string>("");
-
-  const editor = useEditor({
-    extensions: [StarterKit, FindingsDecorationExtension],
-    content: "",
-    editable: false,
-  });
-
-  useEffect(() => {
-    if (editor && submission) {
-      const paragraphs = resolveEditorTextBlocks(submission);
-      const html =
-        paragraphs.length > 0
-          ? paragraphs.map((p) => `<p>${escapeHtmlBlock(p)}</p>`).join("")
-          : "<p><em>(Empty document)</em></p>";
-      if (editor.getHTML() !== html) {
-        editor.commands.setContent(html);
-      }
-    }
-  }, [editor, submission]);
-
-  useEffect(() => {
-    if (!editor || !submission) return;
-    const tr = editor.state.tr.setMeta(findingsPluginKey, {
-      findings,
-      paragraphNodeIds: submission.paragraph_node_ids || [],
-      selectedRowId,
-    });
-    editor.view.dispatch(tr);
-  }, [editor, submission, findings, selectedRowId]);
-
-  useEffect(() => {
-    if (!editor) return;
-    const dom = editor.view.dom;
-    const handleClick = (e: MouseEvent) => {
-      const target = (e.target as HTMLElement).closest("[data-finding-row-id]");
-      if (target) {
-        const rowId = Number(target.getAttribute("data-finding-row-id"));
-        if (!Number.isNaN(rowId)) {
-          setSelectedRowId(rowId);
-        }
-      }
-    };
-    dom.addEventListener("click", handleClick);
-    return () => dom.removeEventListener("click", handleClick);
-  }, [editor]);
-
-  // Mutations
-  const workflowMutation = useMutation({
-    mutationFn: (vars: { action: string; comment?: string }) =>
-      workflowAction(subId, vars.action, vars.comment),
-    onSuccess: (updated) => {
-      queryClient.setQueryData(["submission", subId], updated);
-      queryClient.invalidateQueries({ queryKey: ["submission", subId] });
-      queryClient.invalidateQueries({ queryKey: ["audit", subId] });
-      queryClient.invalidateQueries({ queryKey: ["submissions"] });
-    },
-    onError: (err: any) => {
-      setError(err.message || "Workflow action failed");
-    },
-  });
-
-  const resolveMutation = useMutation({
-    mutationFn: (vars: { rowId: number; resolution: string; reason?: string }) =>
-      resolveFinding(subId, vars.rowId, vars.resolution, true, vars.reason),
-    onSuccess: () => {
-      setPendingReasonRowId(null);
-      setReasonDraft("");
-      queryClient.invalidateQueries({ queryKey: ["findings", subId] });
-      queryClient.invalidateQueries({ queryKey: ["submission", subId] });
-      queryClient.invalidateQueries({ queryKey: ["audit", subId] });
-      queryClient.invalidateQueries({ queryKey: ["versions", subId] });
-      queryClient.invalidateQueries({ queryKey: ["submissions"] });
-    },
-    onError: (err: any) => {
-      setError(err.message || "Failed to resolve finding");
-    },
-  });
-
-  const rewriteMutation = useMutation({
-    mutationFn: (rowId: number) => rewriteFindingSpan(subId, rowId),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["findings", subId] });
-    },
-    onError: (err: any) => {
-      setError(err.message || "Tier 3 surgical rewrite failed");
-    },
-  });
-
-  const commentMutation = useMutation({
-    mutationFn: (vars: { body: string; findingId?: number | null }) =>
-      addSubmissionComment(subId, vars.body, vars.findingId),
-    onSuccess: () => {
-      setCommentDraft("");
-      queryClient.invalidateQueries({ queryKey: ["comments", subId] });
-    },
-    onError: (err: any) => {
-      setError(err.message || "Failed to post comment");
-    },
-  });
-
-  async function handleScan() {
+  function handleScan() {
     setScanning(true);
-    setScanCount(0);
-    setLiveFindings([]);
-    setError("");
+    setError(null);
 
-    await scanSubmission(
-      subId,
-      (finding) => {
-        setScanCount((c) => c + 1);
-        setLiveFindings((prev) => [...(prev || []), finding]);
+    triggerScan(
+      submissionId,
+      () => {
+        // SSE stream updates findings in real time; final load() syncs DB row_ids
       },
-      async (_total, meta) => {
+      () => {
         setScanning(false);
-        setLiveFindings(null);
-        if (meta && typeof meta.conformal_threshold === "number") {
-          setConformalCutoff(meta.conformal_threshold);
-        }
-        await Promise.all([
-          queryClient.invalidateQueries({ queryKey: ["submission", subId] }),
-          queryClient.invalidateQueries({ queryKey: ["findings", subId] }),
-          queryClient.invalidateQueries({ queryKey: ["audit", subId] }),
-          queryClient.invalidateQueries({ queryKey: ["submissions"] }),
-        ]);
+        load();
       },
       (err) => {
         setScanning(false);
-        setLiveFindings(null);
         setError(err.message);
       },
-      alpha
+      conformalAlpha,
     );
   }
 
-  function handleWorkflow(action: string, comment?: string) {
-    setError("");
-    workflowMutation.mutate({ action, comment });
+  async function handleResolve(
+    rowId: number,
+    resolution: "accepted" | "dismissed" | "overridden",
+    reason?: string,
+  ) {
+    setError(null);
+    try {
+      await resolveFinding(submissionId, rowId, resolution, reason);
+      setOverrideTarget(null);
+      setOverrideReason("");
+      await load();
+    } catch (err) {
+      setError((err as Error).message);
+    }
   }
 
-  function handleResolve(findingRowId: number, resolution: string, reason?: string) {
-    setError("");
-    resolveMutation.mutate({ rowId: findingRowId, resolution, reason });
+  async function handlePostComment(findingId: number | null, bodyText: string) {
+    if (!bodyText.trim()) return;
+    setPostingComment(true);
+    setError(null);
+    try {
+      const created = await createSubmissionComment(
+        submissionId,
+        bodyText.trim(),
+        findingId,
+      );
+      setComments((prev) => [...prev, created]);
+      if (findingId === null) {
+        setGeneralCommentBody("");
+      } else {
+        setCommentBody("");
+        setCommentTargetRowId(null);
+      }
+    } catch (err) {
+      setError((err as Error).message);
+    } finally {
+      setPostingComment(false);
+    }
   }
 
-  function startReasonPrompt(rowId: number, kind: "dismissed" | "overridden") {
-    setPendingReasonRowId(rowId);
-    setPendingResolutionKind(kind);
-    setReasonDraft("");
-  }
-
-  function toggleSlotDiff(rowId: number) {
-    setExpandedSlotDiffIds((prev) => ({ ...prev, [rowId]: !prev[rowId] }));
-  }
-
-  function loadAudit() {
-    setShowAudit(true);
-  }
-
-  function loadVersions() {
-    setShowVersions(true);
+  async function handleTier3Rewrite(rowId: number) {
+    setRewritingRowId(rowId);
+    setError(null);
+    try {
+      const res = await rewriteFindingSpan(submissionId, rowId);
+      setRewritePreviews((prev) => ({ ...prev, [rowId]: res }));
+      await load();
+    } catch (err) {
+      setError((err as Error).message);
+    } finally {
+      setRewritingRowId(null);
+    }
   }
 
   async function handleExportCertificate() {
-    setError("");
+    setExportingCert(true);
+    setError(null);
     try {
-      const cert = await getGovernanceCertificate(subId);
+      const cert = await getGovernanceCertificate(submissionId);
       const blob = new Blob([JSON.stringify(cert, null, 2)], {
         type: "application/json",
       });
       const url = URL.createObjectURL(blob);
       const a = document.createElement("a");
       a.href = url;
-      a.download = `canongate_cert_sub_${subId}.json`;
+      a.download = `canongate_certificate_sub_${submissionId}.json`;
+      document.body.appendChild(a);
       a.click();
+      document.body.removeChild(a);
       URL.revokeObjectURL(url);
-    } catch (err: any) {
-      setError(err.message);
+    } catch (err) {
+      setError((err as Error).message);
+    } finally {
+      setExportingCert(false);
     }
   }
 
-  if (!submission) {
-    return <div className="loading">Loading...</div>;
+  async function handleSwitchRoleMode(
+    targetRole: "creator" | "reviewer" | "admin",
+  ) {
+    if (role === targetRole) return;
+    setSwitchingRole(true);
+    setError(null);
+    try {
+      await switchRole(targetRole);
+    } catch (err) {
+      setError((err as Error).message);
+    } finally {
+      setSwitchingRole(false);
+    }
   }
 
-  const blockerCount = findings.filter((f) => f.severity >= 50 && f.resolution === "open").length;
-  const warningCount = findings.filter((f) => f.severity > 0 && f.severity < 50 && f.resolution === "open").length;
+  async function handleWorkflow() {
+    if (!wfAction) return;
+    setError(null);
+    try {
+      const updated = await workflowAction(submissionId, wfAction, wfComment);
+      setSubmission(updated);
+      setWfAction(null);
+      setWfComment("");
+      const aud = await getAuditTrail(submissionId);
+      setAudit(aud);
+    } catch (err) {
+      setError((err as Error).message);
+    }
+  }
+
+  // Filter findings and sort priority-grouped: Open Blockers -> Open Warnings -> Resolved
+  const filteredFindings = useMemo(() => {
+    const base = findings.filter((f) => {
+      if (filter === "blockers") return f.severity >= 50;
+      if (filter === "warnings") return f.severity < 50;
+      if (filter === "claims_only") {
+        const isClaimOrStatutory =
+          f.check_id.startsWith("claim.") ||
+          f.check_id.startsWith("trigger.") ||
+          f.check_id.startsWith("legibility.") ||
+          f.payload?.rule_ref?.rule_type === "fact" ||
+          f.payload?.rule_ref?.rule_type === "trigger";
+        const isOverridden =
+          f.resolution === "overridden" || f.resolution === "dismissed";
+        return isClaimOrStatutory || isOverridden || f.severity >= 50;
+      }
+      return true;
+    });
+
+    return [...base].sort((a, b) => {
+      const aOpen = a.resolution === "open" ? 0 : 1;
+      const bOpen = b.resolution === "open" ? 0 : 1;
+      if (aOpen !== bOpen) return aOpen - bOpen;
+      return b.severity - a.severity;
+    });
+  }, [findings, filter]);
+
+  const blockerCount = findings.filter(
+    (f) => f.severity >= 50 && f.resolution === "open",
+  ).length;
+  const warningCount = findings.filter(
+    (f) => f.severity < 50 && f.resolution === "open",
+  ).length;
   const resolvedCount = findings.filter((f) => f.resolution !== "open").length;
 
-  const displayedFindings = reviewerFilterOnly
-    ? findings.filter(
-        (f) =>
-          (f.severity >= 50 && f.resolution === "open") ||
-          f.resolution === "overridden" ||
-          f.payload?.evidence?.kind === "slot_diff"
+  const availableActions = submission
+    ? (WORKFLOW_ACTIONS[submission.status] ?? []).filter((a) =>
+        a.roles.includes(role ?? ""),
       )
-    : findings;
+    : [];
+
+  const textBlocks = useMemo(() => {
+    if (!submission) return [];
+    if (submission.text_blocks && submission.text_blocks.length > 0) {
+      return submission.text_blocks;
+    }
+    if (submission.raw_content) {
+      return submission.raw_content
+        .split(/\n{2,}/)
+        .map((s) => s.trim())
+        .filter(Boolean);
+    }
+    return [];
+  }, [submission]);
+
+  const paragraphNodeIds = useMemo(
+    () => submission?.paragraph_node_ids ?? [],
+    [submission],
+  );
+
+  const imageNodes = useMemo(
+    () => submission?.image_nodes ?? [],
+    [submission],
+  );
+
+  const bannerOverlays = useMemo(
+    () => extractBannerOverlays(findings, imageNodes),
+    [findings, imageNodes],
+  );
+
+  const decorationRanges = useMemo<FindingDecorationRange[]>(() => {
+    if (!textBlocks.length || !paragraphNodeIds.length) return [];
+
+    const nodeBlockPositions: Array<{ nodeId: string; pmStart: number }> = [];
+    let currentPmPos = 1;
+    for (let i = 0; i < textBlocks.length; i++) {
+      const nid = paragraphNodeIds[i];
+      if (nid) {
+        nodeBlockPositions.push({ nodeId: nid, pmStart: currentPmPos });
+      }
+      currentPmPos += textBlocks[i].length + 2;
+    }
+
+    const ranges: FindingDecorationRange[] = [];
+    for (const f of findings) {
+      const loc = f.payload?.locator;
+      if (
+        loc?.kind === "span" &&
+        typeof loc.start === "number" &&
+        typeof loc.end === "number"
+      ) {
+        const block = nodeBlockPositions.find((b) => b.nodeId === f.node_id);
+        if (block && loc.end > loc.start) {
+          ranges.push({
+            rowId: f.row_id,
+            findingId: f.finding_id,
+            from: block.pmStart + loc.start,
+            to: block.pmStart + loc.end,
+            severity: f.severity,
+            resolution: f.resolution,
+          });
+        }
+      }
+    }
+    return ranges;
+  }, [textBlocks, paragraphNodeIds, findings]);
+
+  const handleSelectFindingFromSpan = useCallback((rowId: number) => {
+    setSelectedFindingId(rowId);
+    const el = findingCardRefs.current.get(rowId);
+    if (el) {
+      el.scrollIntoView({ behavior: "smooth", block: "nearest" });
+    }
+  }, []);
+
+  const editor = useEditor({
+    extensions: [
+      StarterKit,
+      FindingHighlightsExtension.configure({
+        onSelectFinding: handleSelectFindingFromSpan,
+      }),
+    ],
+    content: blocksToHtml(textBlocks),
+    editable: false,
+  });
+
+  useEffect(() => {
+    if (!editor || editor.isDestroyed) return;
+    const html = blocksToHtml(textBlocks);
+    if (editor.getHTML() !== html) {
+      editor.commands.setContent(html, false);
+    }
+  }, [editor, textBlocks]);
+
+  useEffect(() => {
+    if (!editor || editor.isDestroyed) return;
+    const tr = editor.state.tr.setMeta(findingHighlightsKey, {
+      ranges: decorationRanges,
+      selectedRowId: selectedFindingId,
+    });
+    editor.view.dispatch(tr);
+  }, [editor, decorationRanges, selectedFindingId]);
+
+  if (loading) {
+    return (
+      <div className="detail-page">
+        <div className="loading-state">Loading submission...</div>
+      </div>
+    );
+  }
+
+  if (!submission) {
+    return (
+      <div className="detail-page">
+        <div className="error-banner">Submission not found</div>
+      </div>
+    );
+  }
+
+  const activeBannerAsset =
+    imageNodes.length > 0
+      ? imageNodes[Math.min(selectedAssetIdx, imageNodes.length - 1)]
+      : null;
+
+  const activeStageObj =
+    WORKFLOW_STAGES.find((st) =>
+      (st.statuses as readonly string[]).includes(submission.status),
+    ) ?? WORKFLOW_STAGES[0];
+
+  const canCreatorEditDraft =
+    submission.status === "draft" || submission.status === "changes_requested";
 
   return (
     <div className="detail-page">
-      <header className="detail-header">
-        <div className="detail-header-left">
-          <button className="btn-ghost btn-sm" onClick={() => navigate("/dashboard")}>
-            ← Back to Queue
+      {/* Top Bar */}
+      <header className="console-header-curved">
+        <div className="header-left">
+          <button
+            type="button"
+            onClick={() => navigate("/dashboard")}
+            className="btn-ghost"
+          >
+            ← Queue
           </button>
           <div className="detail-title-group">
-            <span className="sub-canon-tag">{submission.canon_id}</span>
-            <h1 className="detail-heading">{submission.title}</h1>
+            <h1>{submission.title}</h1>
+            <div className="detail-meta">
+              <span className={`status-badge status-${submission.status}`}>
+                {submission.status.replace("_", " ")}
+              </span>
+              <span className="meta-item">
+                Canon: <strong>{submission.canon_id}</strong> (
+                <code>{submission.canon_hash.slice(0, 8)}…</code>)
+              </span>
+              <span className="meta-item">
+                SHA-256: <code>{submission.content_hash.slice(0, 10)}…</code>
+              </span>
+            </div>
           </div>
-          <span
-            className="status-badge large"
-            style={{ backgroundColor: getStatusColor(submission.status), color: "#fff", padding: "0.25rem 0.75rem", borderRadius: "9999px", fontSize: "0.75rem", fontWeight: 700, textTransform: "uppercase" }}
-          >
-            {submission.status.replace(/_/g, " ")}
-          </span>
         </div>
 
-        <div className="detail-header-right">
-          <div className="persona-switcher">
-            <span className="persona-label">Persona:</span>
+        <div className="header-right">
+          {/* Authenticated User Identity Pill */}
+          <div
+            className="user-identity-pill"
+            title={`Signed in as ${displayName || username} (@${username})`}
+          >
+            <span className="user-identity-avatar">
+              {(displayName || username || "U").slice(0, 1).toUpperCase()}
+            </span>
+            <div className="user-identity-text">
+              <span className="user-identity-name">
+                {displayName || username}
+              </span>
+              <span className="user-identity-handle">@{username}</span>
+            </div>
+          </div>
+
+          {/* RBAC Role Mode Switcher (Preserves signed-in username) */}
+          <div
+            className="persona-switcher-group"
+            title="Switch your active RBAC role in the 4-stage workflow (preserves your signed-in account)"
+          >
+            <span className="persona-switcher-label">Active Role:</span>
             <button
-              className={`role-switch-btn ${role === "creator" ? "active active-creator" : ""}`}
-              onClick={() => handleSwitchPersona("creative_lead", "creator")}
-              disabled={switchLoading}
-              title="Creator: Scan, triage, fix violations & submit"
+              type="button"
+              disabled={switchingRole}
+              className={`persona-chip ${role === "creator" ? "active" : ""}`}
+              onClick={() => handleSwitchRoleMode("creator")}
             >
-              Creator
+              1 · Creator
             </button>
             <button
-              className={`role-switch-btn ${role === "reviewer" ? "active active-reviewer" : ""}`}
-              onClick={() => handleSwitchPersona("pulkit_manager", "reviewer")}
-              disabled={switchLoading}
-              title="Reviewer: Adjudicate warnings, approve or request changes"
+              type="button"
+              disabled={switchingRole}
+              className={`persona-chip ${role === "reviewer" ? "active" : ""}`}
+              onClick={() => handleSwitchRoleMode("reviewer")}
             >
-              Reviewer
+              2 · Brand Manager
             </button>
             <button
-              className={`role-switch-btn ${role === "admin" ? "active active-admin" : ""}`}
-              onClick={() => handleSwitchPersona("aritra_legal", "admin")}
-              disabled={switchLoading}
-              title="Legal Officer: Final publish sign-off & C2PA cert"
+              type="button"
+              disabled={switchingRole}
+              className={`persona-chip ${role === "admin" ? "active" : ""}`}
+              onClick={() => handleSwitchRoleMode("admin")}
             >
-              Legal Officer
+              3 · Legal Sign-Off
             </button>
           </div>
 
-          <div className="user-profile-badge">
-            <span className="user-name">{username}</span>
-            <span className={`role-badge role-${role}`}>{role}</span>
-          </div>
+          {/* Revision History & Audit Trail Modals */}
+          <button
+            type="button"
+            className="btn-secondary"
+            onClick={() => setShowVersionsModal(true)}
+          >
+            Revisions ({versions.length || 1})
+          </button>
+
+          <button
+            type="button"
+            className="btn-secondary"
+            onClick={() => setShowAuditModal(true)}
+          >
+            Audit Trail ({audit.length})
+          </button>
+
+          <button
+            type="button"
+            className="btn-secondary"
+            onClick={handleExportCertificate}
+            disabled={exportingCert}
+            title="Download self-contained SHA-256 + Ed25519 Governance Certificate JSON (verifiable via `canongate verify`)"
+          >
+            {exportingCert ? "Exporting..." : "⛨ Export Certificate"}
+          </button>
+
+          <button
+            type="button"
+            className="btn-primary"
+            onClick={handleScan}
+            disabled={scanning}
+          >
+            {scanning ? "Scanning..." : "⚡ Run Governance Check"}
+          </button>
         </div>
       </header>
 
       {error && (
-        <div className="console-alert error-alert" style={{ margin: "1rem 1.5rem 0" }}>
+        <div className="error-banner" role="alert">
           <span>{error}</span>
-          <button className="alert-close" onClick={() => setError("")}>×</button>
+          <button
+            type="button"
+            className="btn-ghost"
+            style={{ padding: "0.15rem 0.5rem", fontSize: "0.75rem" }}
+            onClick={() => setError(null)}
+          >
+            Dismiss
+          </button>
         </div>
       )}
 
-      {/* Stats bar */}
-      <div className="stats-bar">
-        <div className="stat">
-          <span className="stat-value" style={{ color: "#ef4444" }}>{blockerCount}</span>
-          <span className="stat-label">Blockers</span>
-        </div>
-        <div className="stat">
-          <span className="stat-value" style={{ color: "#f59e0b" }}>{warningCount}</span>
-          <span className="stat-label">Warnings</span>
-        </div>
-        <div className="stat">
-          <span className="stat-value" style={{ color: "#22c55e" }}>{resolvedCount}</span>
-          <span className="stat-label">Resolved</span>
-        </div>
-        <div className="stat">
-          <span className="stat-value">{findings.length}</span>
-          <span className="stat-label">Total</span>
-        </div>
-      </div>
-
-      {/* Actions bar & Conformal Risk Control Slider */}
-      <div className="actions-bar">
-        <button
-          className="btn-primary"
-          onClick={handleScan}
-          disabled={scanning}
-        >
-          {scanning ? `Scanning... (${scanCount})` : "Run Scan"}
-        </button>
-
-        <div className="conformal-slider-box" title="Angelopoulos et al. Conformal Risk Control (controls max expected False Negative Rate α)">
-          <label htmlFor="conformal-alpha">
-            Conformal Risk α = <strong>{(alpha * 100).toFixed(0)}%</strong>
-            {conformalCutoff !== null ? ` (λ̂ = ${conformalCutoff.toFixed(2)})` : ""}
-          </label>
-          <input
-            id="conformal-alpha"
-            type="range"
-            min={0.02}
-            max={0.25}
-            step={0.01}
-            value={alpha}
-            onChange={(e) => setAlpha(parseFloat(e.target.value))}
-          />
-        </div>
-
-        <button
-          className={reviewerFilterOnly ? "btn-accent" : "btn-ghost"}
-          onClick={() => setReviewerFilterOnly((v) => !v)}
-          title="Authorised Legal Reviewer view: filter to unresolved Blockers, SlotDiff claims, and Creator Overrides"
-        >
-          ⚖️ {reviewerFilterOnly ? "Showing Claims & Blockers Only" : "Claim-Only / Blocker Filter"}
-        </button>
-
-        {submission.status === "draft" && (
-          <button className="btn-accent" onClick={() => handleWorkflow("submit")}>
-            Submit for Review
-          </button>
-        )}
-        {submission.status === "in_review" && (role === "reviewer" || role === "admin") && (
-          <>
-            <button
-              className="btn-success"
-              onClick={() => handleWorkflow("approve")}
-              title={blockerCount > 0 ? `${blockerCount} blocker(s) open — backend enforces 409 Blocker Gate` : "Approve submission"}
-            >
-              ✓ Approve
-            </button>
-            <button className="btn-warning" onClick={() => handleWorkflow("request_changes")}>
-              Request Changes
-            </button>
-          </>
-        )}
-        {submission.status === "in_review" && role === "creator" && (
-          <div className="persona-workflow-notice creator-notice">
-            <span>Awaiting Reviewer approval. Switch to Reviewer above to approve.</span>
-            <button className="btn-ghost btn-sm" onClick={() => handleWorkflow("recall")}>
-              Recall to Draft
-            </button>
-          </div>
-        )}
-        {submission.status === "changes_requested" && (
-          <button className="btn-accent" onClick={() => handleWorkflow("submit")}>
-            Resubmit for Review
-          </button>
-        )}
-        {submission.status === "approved" && role === "admin" && (
-          <button className="btn-success" onClick={() => handleWorkflow("publish")}>
-            Publish (Seal C2PA)
-          </button>
-        )}
-        {submission.status === "approved" && role !== "admin" && (
-          <div className="persona-workflow-notice admin-notice">
-            <span>Approved. Awaiting Legal Officer publication. Switch to Legal Officer above to publish.</span>
-          </div>
-        )}
-        {submission.status === "published" && (
-          <div className="persona-workflow-notice published-notice">
-            <span>Published &amp; Sealed. RFC 9162 Merkle log verified.</span>
-          </div>
-        )}
-        <button className="btn-ghost" onClick={loadVersions}>
-          Revisions
-        </button>
-        <button className="btn-ghost" onClick={loadAudit}>
-          Audit Trail
-        </button>
-        <button className="btn-ghost" onClick={handleExportCertificate}>
-          Export Certificate
-        </button>
-      </div>
-
-      {/* Interactive Banner Image BBox SVG Overlay */}
-      {submission.image_nodes && submission.image_nodes.length > 0 && (
-        <BannerBBoxOverlay
-          imageNodes={submission.image_nodes}
-          findings={findings}
-          selectedRowId={selectedRowId}
-          onSelectFinding={(rowId) => setSelectedRowId(rowId)}
-        />
-      )}
-
-      {/* Interactive ProseMirror Document Viewer with Inline Findings */}
-      <section className="editor-section">
-        <div className="section-header">
-          <h2>Document Content (Interactive Governance View)</h2>
-          <span className="editor-subtext">
-            Inline highlights indicate policy violations directly on the text (click a finding below to highlight)
-          </span>
-        </div>
-        <div className="editor-container">
-          <EditorContent editor={editor} />
-        </div>
-      </section>
-
-      {/* Findings list */}
-      <section className="findings-section" style={{ padding: "0 1.5rem 2.5rem" }}>
-        <h2 style={{ marginBottom: "1rem" }}>Findings ({displayedFindings.length})</h2>
-        {displayedFindings.length === 0 && !scanning && (
-          <p className="empty-state">No findings match the current filter. Run a scan to check this content.</p>
-        )}
-        <div className="findings-list">
-          {displayedFindings.map((f) => {
-            const verdict = f.severity >= 50 ? 2 : f.severity > 0 ? 1 : 0;
-            const isBlocker = f.severity >= 50;
-            const trace = f.payload?.trace;
-            const hasSlotDiff = f.payload?.evidence?.kind === "slot_diff";
-            const isSlotDiffExpanded = !isBlocker || !hasSlotDiff || !!expandedSlotDiffIds[f.row_id];
-            const cardComments = comments.filter((c) => c.finding_id === f.row_id);
-
+      {/* 4-Stage SOTA Collaborative Workflow Stepper & Action Gate */}
+      <section
+        className="studio-workflow-stepper"
+        aria-label="4-Stage Governance Progress"
+      >
+        <div className="stepper-track">
+          {WORKFLOW_STAGES.map((st) => {
+            const isCurrent = st.num === activeStageObj.num;
+            const isCompleted = st.num < activeStageObj.num;
             return (
               <div
-                key={f.row_id}
-                className={`finding-card ${f.resolution !== "open" ? "resolved" : ""} ${selectedRowId === f.row_id ? "selected" : ""}`}
-                onClick={() => setSelectedRowId(f.row_id)}
+                key={st.key}
+                className={`stepper-node ${isCurrent ? "current" : ""} ${
+                  isCompleted ? "completed" : ""
+                }`}
               >
-                <div className="finding-header" style={{ display: "flex", alignItems: "center", gap: "0.65rem", marginBottom: "0.5rem", flexWrap: "wrap" }}>
-                  <span
-                    className="verdict-badge"
-                    style={{ backgroundColor: VERDICT_COLORS[String(verdict)], color: "#fff", padding: "0.15rem 0.55rem", borderRadius: "9999px", fontSize: "0.7rem", fontWeight: 700 }}
-                  >
-                    {VERDICT_LABELS[String(verdict)]}
+                <div className="stepper-node-header">
+                  <span className="stepper-badge">
+                    {isCompleted ? "✓" : st.num}
                   </span>
-                  <span className="check-id" style={{ fontFamily: "var(--font-mono)", fontSize: "0.8rem", color: "var(--text-secondary)" }}>
-                    {f.check_id}
-                  </span>
-                  <span className="severity" style={{ fontSize: "0.75rem", color: "var(--text-muted)", fontWeight: 600 }}>
-                    S:{f.severity}
-                  </span>
-                  {f.payload?.rule_ref?.rule_id && (
-                    <span className="rule-ref-badge" title={f.payload.rule_ref.source_text || ""}>
-                      Rule: {f.payload.rule_ref.rule_id}
-                    </span>
-                  )}
-                  {trace && (
-                    <span
-                      className="tier-badge"
-                      title={`Context Trace — Tier: ${trace.tier}${trace.model_sha ? ` | SHA: ${trace.model_sha}` : ""}`}
-                    >
-                      {trace.tier === "deterministic" || trace.tier === 1
-                        ? "⚙️ CONTEXT TRACE: TIER 1 (ZERO AI)"
-                        : trace.tier === "smt"
-                          ? "🧮 CONTEXT TRACE: TIER 1.5 (Z3 SMT)"
-                          : trace.tier === 3 || trace.tier === "generative"
-                            ? "✨ CONTEXT TRACE: TIER 3 (REWRITER)"
-                            : "🤖 CONTEXT TRACE: TIER 2 (LOCAL NLI)"}{" "}
-                      {typeof trace.latency_ms === "number"
-                        ? `· ${trace.latency_ms.toFixed(1)}ms`
-                        : ""}
-                    </span>
-                  )}
-                </div>
-                <p className="finding-message">{f.message}</p>
-                <EvidenceView
-                  evidence={f.payload?.evidence}
-                  slotDiffExpanded={isSlotDiffExpanded}
-                  onToggleSlotDiff={
-                    isBlocker && hasSlotDiff ? () => toggleSlotDiff(f.row_id) : undefined
-                  }
-                />
-                {f.payload?.suggestion && (
-                  <div className="suggestion">
-                    Recommendation: {f.payload.suggestion.label}
+                  <div>
+                    <div className="stepper-title">{st.title}</div>
+                    <div className="stepper-owner">Role: {st.ownerLabel}</div>
                   </div>
-                )}
-                <div className="finding-actions" onClick={(e) => e.stopPropagation()}>
-                  {f.resolution === "open" ? (
-                    pendingReasonRowId === f.row_id ? (
-                      <div className="reason-forcing-box">
-                        <input
-                          type="text"
-                          className="reason-input"
-                          placeholder={`Justification required to ${pendingResolutionKind === "overridden" ? "override" : "dismiss"} (min 3 chars)...`}
-                          value={reasonDraft}
-                          onChange={(e) => setReasonDraft(e.target.value)}
-                          autoFocus
-                        />
-                        <button
-                          className="btn-sm btn-warning"
-                          disabled={reasonDraft.trim().length < 3}
-                          onClick={() =>
-                            handleResolve(
-                              f.row_id,
-                              pendingResolutionKind,
-                              reasonDraft.trim()
-                            )
-                          }
-                        >
-                          Confirm {pendingResolutionKind === "overridden" ? "Override" : "Dismiss"}
-                        </button>
-                        <button
-                          className="btn-sm btn-ghost"
-                          onClick={() => {
-                            setPendingReasonRowId(null);
-                            setReasonDraft("");
-                          }}
-                        >
-                          Cancel
-                        </button>
-                      </div>
-                    ) : (
-                      <>
-                        <button
-                          className="btn-sm btn-success"
-                          disabled={!isSlotDiffExpanded}
-                          title={
-                            !isSlotDiffExpanded
-                              ? "Apply fix · locked until SlotDiff is expanded (Buçinca et al., CSCW 2021)"
-                              : undefined
-                          }
-                          onClick={() => handleResolve(f.row_id, "accepted")}
-                        >
-                          {!isSlotDiffExpanded
-                            ? "🔒 Apply Fix · Locked Until SlotDiff Expanded"
-                            : f.payload?.suggestion?.replacements?.length
-                              ? "Accept & Apply Fix"
-                              : "Accept"}
-                        </button>
-
-                        <button
-                          className="btn-sm btn-ghost"
-                          onClick={() => rewriteMutation.mutate(f.row_id)}
-                          disabled={rewriteMutation.isPending}
-                          title="Tier 3 Constrained Rewriter (<=35% edit distance, Presidio PII scrub, Tier 1+2 re-verified)"
-                        >
-                          ✨ Tier 3 Rewrite
-                        </button>
-
-                        {(role === "reviewer" || role === "admin") && (
-                          <button
-                            className="btn-sm btn-ghost"
-                            onClick={() => startReasonPrompt(f.row_id, "dismissed")}
-                            title="Dismiss finding with written justification"
-                          >
-                            Dismiss
-                          </button>
-                        )}
-
-                        {(!isBlocker || role === "reviewer" || role === "admin") ? (
-                          <button
-                            className="btn-sm btn-warning"
-                            onClick={() => startReasonPrompt(f.row_id, "overridden")}
-                            title="Override finding with mandatory written justification"
-                          >
-                            {isBlocker ? "Reviewer Override" : "Deliberate Override"}
-                          </button>
-                        ) : (
-                          <span className="blocker-restricted-hint" title="Mandatory policy blocker: fix must be accepted or text revised">
-                            Policy Blocker (Must Fix)
-                          </span>
-                        )}
-
-                        <button
-                          className="btn-sm btn-ghost"
-                          onClick={() =>
-                            setActiveCommentRowId(
-                              activeCommentRowId === f.row_id ? null : f.row_id
-                            )
-                          }
-                        >
-                          💬 Comment ({cardComments.length})
-                        </button>
-                      </>
-                    )
-                  ) : (
-                    <div className="resolved-meta">
-                      <span className="resolution-badge">{f.resolution}</span>
-                      {f.resolution_reason && (
-                        <span className="resolution-reason-note">
-                          “{f.resolution_reason}”
-                        </span>
-                      )}
-                    </div>
-                  )}
                 </div>
-
-                {/* Inline Comment Thread for this Finding */}
-                {(activeCommentRowId === f.row_id || cardComments.length > 0) && (
-                  <div
-                    className="finding-comments-box"
-                    onClick={(e) => e.stopPropagation()}
-                    style={{ marginTop: "0.6rem", paddingTop: "0.5rem", borderTop: "1px solid var(--border-main)" }}
-                  >
-                    {cardComments.map((c) => (
-                      <div key={c.id} className="comment-item" style={{ fontSize: "0.85rem", marginBottom: "0.3rem" }}>
-                        <strong>{c.author_name}</strong>{" "}
-                        <span className="role-chip">{c.role}</span>: {c.body}
-                      </div>
-                    ))}
-                    {activeCommentRowId === f.row_id && (
-                      <div className="reason-forcing-box" style={{ marginTop: "0.4rem" }}>
-                        <input
-                          type="text"
-                          className="reason-input"
-                          placeholder="Add an inline comment on this finding..."
-                          value={commentDraft}
-                          onChange={(e) => setCommentDraft(e.target.value)}
-                        />
-                        <button
-                          className="btn-sm btn-primary"
-                          disabled={!commentDraft.trim()}
-                          onClick={() =>
-                            commentMutation.mutate({
-                              body: commentDraft.trim(),
-                              findingId: f.row_id,
-                            })
-                          }
-                        >
-                          Post
-                        </button>
-                      </div>
-                    )}
-                  </div>
-                )}
+                <p className="stepper-desc">{st.desc}</p>
               </div>
             );
           })}
         </div>
+
+        <div className="stepper-actions-bar">
+          <div className="stepper-gate-summary">
+            <span className="gate-pill gate-blocker">
+              {blockerCount} Open Blocker{blockerCount === 1 ? "" : "s"}
+            </span>
+            <span className="gate-pill gate-warning">
+              {warningCount} Open Warning{warningCount === 1 ? "" : "s"}
+            </span>
+            <span className="gate-pill gate-resolved">
+              {resolvedCount} Resolved
+            </span>
+            {blockerCount > 0 && (
+              <span className="gate-lock-notice">
+                🔒 Approval &amp; Release locked until all {blockerCount} Blocker
+                {blockerCount === 1 ? "" : "s"} are resolved
+              </span>
+            )}
+          </div>
+
+          <div className="stepper-cta-group">
+            {availableActions.length > 0 ? (
+              availableActions.map((a) => {
+                const blockedByGate =
+                  (a.action === "approve" || a.action === "publish") &&
+                  blockerCount > 0;
+                return (
+                  <button
+                    key={a.action}
+                    type="button"
+                    disabled={blockedByGate}
+                    title={
+                      blockedByGate
+                        ? `Resolve ${blockerCount} open Blocker(s) before ${a.action}`
+                        : a.label
+                    }
+                    className={`btn-action btn-action-${a.action}`}
+                    onClick={() => setWfAction(a.action)}
+                  >
+                    {a.label}
+                  </button>
+                );
+              })
+            ) : submission.status === "published" ? (
+              <span className="published-seal-badge">
+                ✓ Cryptographically Sealed &amp; Released — Certificate Ready
+              </span>
+            ) : (
+              <div className="role-handoff-hint">
+                <span>
+                  Current stage is owned by{" "}
+                  <strong>{activeStageObj.ownerLabel}</strong>.
+                </span>
+                {activeStageObj.ownerRole !== "published" && (
+                  <button
+                    type="button"
+                    className="btn-secondary"
+                    style={{ padding: "0.3rem 0.7rem", fontSize: "0.78rem" }}
+                    onClick={() =>
+                      handleSwitchRoleMode(
+                        activeStageObj.ownerRole as
+                          | "creator"
+                          | "reviewer"
+                          | "admin",
+                      )
+                    }
+                  >
+                    Switch to {activeStageObj.ownerLabel} Role →
+                  </button>
+                )}
+              </div>
+            )}
+          </div>
+        </div>
       </section>
 
-      {/* Immutable Revision History modal */}
-      {showVersions && (
-        <div className="modal-overlay" onClick={() => setShowVersions(false)}>
-          <div className="modal-content" onClick={(e) => e.stopPropagation()}>
-            <h2>Immutable Revision History</h2>
-            <div className="audit-list">
-              {versions.map((ver) => (
-                <div key={ver.version_number} className="audit-event">
-                  <div className="audit-chain">
-                    <strong>v{ver.version_number}</strong>
-                    <code title={ver.content_hash}>{ver.content_hash.slice(0, 10)}…</code>
-                  </div>
-                  <div className="audit-body">
-                    <span>{ver.change_note || "Revision snapshot"}</span>
-                  </div>
-                  <span className="audit-time">{ver.created_at}</span>
-                </div>
-              ))}
+      {/* Workflow transition confirmation modal */}
+      {wfAction && (
+        <div className="modal-overlay" onClick={() => setWfAction(null)}>
+          <div className="modal card" onClick={(e) => e.stopPropagation()}>
+            <h3>
+              Confirm Stage Transition:{" "}
+              <span style={{ textTransform: "capitalize" }}>
+                {wfAction.replace("_", " ")}
+              </span>
+            </h3>
+            <p
+              style={{
+                fontSize: "0.84rem",
+                color: "var(--text-secondary)",
+                marginBottom: "0.75rem",
+              }}
+            >
+              This transition will be permanently recorded in the append-only
+              SHA-256 hash chain and signed into the RFC 9162 Merkle audit tree
+              under <strong>@{username}</strong> ({role}).
+            </p>
+            <div className="form-group">
+              <label htmlFor="wf-comment">
+                Governance Review Note (recorded in SHA-256 audit log)
+              </label>
+              <textarea
+                id="wf-comment"
+                rows={3}
+                value={wfComment}
+                onChange={(e) => setWfComment(e.target.value)}
+                placeholder="Add context for this decision (e.g. verified KFS disclosures and brand compliance)..."
+              />
             </div>
-            <button className="btn-ghost" onClick={() => setShowVersions(false)}>
-              Close
-            </button>
+            <div className="modal-actions">
+              <button
+                type="button"
+                className="btn-ghost"
+                onClick={() => setWfAction(null)}
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                className="btn-primary"
+                onClick={handleWorkflow}
+              >
+                Confirm &amp; Append to Audit Chain
+              </button>
+            </div>
           </div>
         </div>
       )}
 
-      {/* Audit trail modal */}
-      {showAudit && (
-        <div className="modal-overlay" onClick={() => setShowAudit(false)}>
-          <div className="modal-content" onClick={(e) => e.stopPropagation()}>
-            <h2>Audit Trail (RFC 9162 Merkle + Ed25519 STH)</h2>
-            <div className="audit-list">
-              {audit.map((evt, i) => (
-                <div key={evt.id} className="audit-event">
-                  <div className="audit-chain">
-                    <code title={evt.event_hash}>{evt.event_hash.slice(0, 8)}…</code>
-                    {i > 0 && <span className="chain-link">⟵ {evt.prev_hash.slice(0, 8)}…</span>}
+      {/* Split-Screen Review Studio: Left = Multimodal Canvas + Document Editor | Right = Findings Sidebar */}
+      <div className="detail-content">
+        {/* LEFT PANE: Banner BBox Overlay + Tiptap Document Editor + Discussion */}
+        <div className="editor-pane">
+          {/* 1. Multimodal Banner Image & SVG Bounding Box Overlay Panel */}
+          {activeBannerAsset && (
+            <section className="content-panel card banner-overlay-section">
+              <div className="banner-panel-header">
+                <div>
+                  <h2>
+                    Multimodal Banner Inspector &amp;{" "}
+                    <code>[x, y, w, h]</code> Bounding Box Overlay
+                  </h2>
+                  <p className="gov-panel-desc" style={{ marginBottom: 0 }}>
+                    Visualising Tier 1 OpenCV ORB logo geometry, WCAG pixel
+                    luminance contrast, and dual-script OCR fine-print bounding
+                    boxes ({activeBannerAsset.width}×{activeBannerAsset.height}
+                    px).
+                  </p>
+                </div>
+                {imageNodes.length > 1 && (
+                  <div className="banner-asset-tabs">
+                    {imageNodes.map((img, idx) => (
+                      <button
+                        key={img.node_id}
+                        type="button"
+                        className={`filter-tab ${
+                          selectedAssetIdx === idx ? "active" : ""
+                        }`}
+                        onClick={() => setSelectedAssetIdx(idx)}
+                      >
+                        Banner #{idx + 1} ({img.width}×{img.height})
+                      </button>
+                    ))}
                   </div>
-                  <div className="audit-body">
-                    <strong>{evt.action}</strong>: {evt.from_status} → {evt.to_status}
-                    {evt.comment && <p className="audit-comment">"{evt.comment}"</p>}
+                )}
+              </div>
+
+              <div className="banner-canvas-wrapper">
+                <div
+                  className="banner-stage"
+                  style={{
+                    position: "relative",
+                    display: "inline-block",
+                    maxWidth: "100%",
+                  }}
+                >
+                  <img
+                    src={resolveAssetUrl(activeBannerAsset.url)}
+                    alt={activeBannerAsset.alt ?? "Campaign Banner"}
+                    className="banner-stage-img"
+                    style={{
+                      display: "block",
+                      maxWidth: "100%",
+                      height: "auto",
+                      borderRadius: "8px",
+                    }}
+                  />
+                  <svg
+                    className="banner-svg-overlay"
+                    viewBox={`0 0 ${activeBannerAsset.width} ${activeBannerAsset.height}`}
+                    preserveAspectRatio="xMidYMid meet"
+                    style={{
+                      position: "absolute",
+                      inset: 0,
+                      width: "100%",
+                      height: "100%",
+                      pointerEvents: "none",
+                    }}
+                  >
+                    {bannerOverlays
+                      .filter(
+                        (ov) =>
+                          ov.assetIndex === selectedAssetIdx ||
+                          imageNodes.length === 1,
+                      )
+                      .map((ov) => {
+                        const isSelected = selectedFindingId === ov.rowId;
+                        const strokeColor =
+                          ov.resolution !== "open"
+                            ? "#10b981"
+                            : ov.severity >= 50
+                              ? "#ef4444"
+                              : "#f59e0b";
+                        return (
+                          <g
+                            key={ov.rowId}
+                            style={{
+                              pointerEvents: "all",
+                              cursor: "pointer",
+                            }}
+                            onClick={() => handleSelectFindingFromSpan(ov.rowId)}
+                          >
+                            <rect
+                              x={ov.x}
+                              y={ov.y}
+                              width={Math.max(ov.w, 12)}
+                              height={Math.max(ov.h, 12)}
+                              fill={
+                                isSelected
+                                  ? "rgba(239, 68, 68, 0.22)"
+                                  : "rgba(239, 68, 68, 0.08)"
+                              }
+                              stroke={strokeColor}
+                              strokeWidth={isSelected ? 4 : 2.5}
+                              rx={3}
+                            />
+                            <text
+                              x={ov.x + 4}
+                              y={Math.max(14, ov.y - 4)}
+                              fill="#ffffff"
+                              stroke="#111827"
+                              strokeWidth={0.6}
+                              fontSize={Math.max(
+                                11,
+                                Math.round(activeBannerAsset.height * 0.032),
+                              )}
+                              fontWeight="bold"
+                            >
+                              {ov.checkId} (S={ov.severity})
+                            </text>
+                          </g>
+                        );
+                      })}
+                  </svg>
+                </div>
+              </div>
+            </section>
+          )}
+
+          {/* 2. Campaign Content & Inline Diff Editor */}
+          <section className="content-panel card">
+            <div className="editor-panel-header">
+              <div>
+                <h2>Campaign Content &amp; Inline Span Provenance</h2>
+                <p className="gov-panel-desc" style={{ marginBottom: 0 }}>
+                  Click any highlighted span in the document to jump to its
+                  Finding Card on the right.
+                </p>
+              </div>
+              {canCreatorEditDraft && (
+                <button
+                  type="button"
+                  className={isEditingDraft ? "btn-ghost" : "btn-secondary"}
+                  onClick={() => {
+                    if (isEditingDraft) {
+                      setIsEditingDraft(false);
+                    } else {
+                      handleStartEditDraft();
+                    }
+                  }}
+                >
+                  {isEditingDraft
+                    ? "Cancel Editing"
+                    : "✎ Edit Draft Copy & Re-Scan"}
+                </button>
+              )}
+            </div>
+
+            {isEditingDraft ? (
+              <div className="draft-inline-editor">
+                <label
+                  htmlFor="studio-draft-textarea"
+                  className="draft-editor-label"
+                >
+                  Edit Campaign Paragraphs / Markdown KFS Tables (separate
+                  blocks with a blank line):
+                </label>
+                <textarea
+                  id="studio-draft-textarea"
+                  rows={10}
+                  className="draft-editor-textarea"
+                  value={draftEditValue}
+                  onChange={(e) => setDraftEditValue(e.target.value)}
+                />
+                <div className="draft-editor-footer">
+                  <input
+                    type="text"
+                    className="draft-change-note-input"
+                    value={draftChangeNote}
+                    onChange={(e) => setDraftChangeNote(e.target.value)}
+                    placeholder="Revision change note (e.g. Added under Rs 50,000 qualifier)"
+                  />
+                  <button
+                    type="button"
+                    className="btn-primary"
+                    disabled={savingDraft}
+                    onClick={handleSaveEditedDraft}
+                  >
+                    {savingDraft
+                      ? "Saving Revision & Re-Scanning..."
+                      : "Save Immutable Revision & Re-Scan"}
+                  </button>
+                </div>
+              </div>
+            ) : (
+              <div className="content-preview tiptap-wrapper">
+                {textBlocks.length > 0 ? (
+                  <EditorContent editor={editor} />
+                ) : (
+                  <p className="text-muted">
+                    No text content blocks in this bundle.
+                  </p>
+                )}
+              </div>
+            )}
+          </section>
+
+          {/* 3. General Submission Discussion Thread */}
+          <section className="content-panel card">
+            <div className="gov-panel-header" style={{ marginBottom: "0.6rem" }}>
+              <h2 style={{ marginBottom: 0 }}>
+                Collaborative Review Discussion (
+                {comments.filter((c) => c.finding_id === null).length})
+              </h2>
+              <span className="sub-canon-tag">
+                Creator · Brand Manager · Legal
+              </span>
+            </div>
+
+            <div className="general-comments-list">
+              {comments.filter((c) => c.finding_id === null).length === 0 ? (
+                <p
+                  className="text-muted"
+                  style={{ fontSize: "0.82rem", marginBottom: "0.6rem" }}
+                >
+                  No general review notes yet. Add a note below for the Brand
+                  Manager or Authorised Legal Reviewer.
+                </p>
+              ) : (
+                comments
+                  .filter((c) => c.finding_id === null)
+                  .map((c) => (
+                    <div key={c.id} className="comment-item">
+                      <span className="comment-author">
+                        @{c.author_name} ({c.role}):
+                      </span>{" "}
+                      <span className="comment-body">{c.body}</span>
+                    </div>
+                  ))
+              )}
+            </div>
+
+            <div className="inline-comment-composer">
+              <input
+                type="text"
+                value={generalCommentBody}
+                onChange={(e) => setGeneralCommentBody(e.target.value)}
+                placeholder="Write a review note on this campaign bundle..."
+                className="comment-input"
+              />
+              <button
+                type="button"
+                className="btn-secondary"
+                disabled={postingComment || !generalCommentBody.trim()}
+                onClick={() => handlePostComment(null, generalCommentBody)}
+              >
+                Post Note
+              </button>
+            </div>
+          </section>
+        </div>
+
+        {/* RIGHT PANE: Sticky Priority-Grouped Findings & SlotDiff Sidebar */}
+        <aside className="findings-pane">
+          <div className="findings-toolbar card">
+            <div className="findings-filter-tabs">
+              <button
+                type="button"
+                className={`filter-tab ${filter === "all" ? "active" : ""}`}
+                onClick={() => setFilter("all")}
+              >
+                All ({findings.length})
+              </button>
+              <button
+                type="button"
+                className={`filter-tab filter-blocker ${
+                  filter === "blockers" ? "active" : ""
+                }`}
+                onClick={() => setFilter("blockers")}
+              >
+                Blockers ({blockerCount})
+              </button>
+              <button
+                type="button"
+                className={`filter-tab filter-warning ${
+                  filter === "warnings" ? "active" : ""
+                }`}
+                onClick={() => setFilter("warnings")}
+              >
+                Warnings ({warningCount})
+              </button>
+              <button
+                type="button"
+                className={`filter-tab ${
+                  filter === "claims_only" ? "active" : ""
+                }`}
+                onClick={() => setFilter("claims_only")}
+                title="Authorised Legal Reviewer view: filters to statutory claims, triggers, blockers, and overrides"
+              >
+                ⚖ Claims &amp; Overrides
+              </button>
+            </div>
+
+            {/* Conformal Risk Control (alpha) Calibration Control */}
+            <div className="conformal-alpha-control">
+              <label
+                htmlFor="alpha-select"
+                title="Angelopoulos et al. Conformal Risk Control target false-omission rate α"
+              >
+                Conformal Risk Control (α):
+              </label>
+              <select
+                id="alpha-select"
+                value={conformalAlpha}
+                onChange={(e) => setConformalAlpha(Number(e.target.value))}
+              >
+                <option value={0.04}>α = 0.04 (Strict BFSI/Legal)</option>
+                <option value={0.1}>α = 0.10 (Balanced Default)</option>
+                <option value={0.2}>α = 0.20 (Permissive Draft)</option>
+              </select>
+            </div>
+          </div>
+
+          {filteredFindings.length === 0 ? (
+            <div className="empty-state card">
+              {findings.length === 0
+                ? 'No findings yet. Click "⚡ Run Governance Check" in the top bar to scan this bundle.'
+                : "No findings match the current filter."}
+            </div>
+          ) : (
+            <div className="findings-list">
+              {filteredFindings.map((f) => {
+                const isBlocker = f.severity >= 50;
+                const isSelected = selectedFindingId === f.row_id;
+                const evidence = f.payload?.evidence ?? {};
+                const isSlotDiff =
+                  evidence.kind === "slot_diff" &&
+                  Array.isArray(evidence.slots);
+                const slots = (
+                  isSlotDiff ? evidence.slots : []
+                ) as SlotComparisonItem[];
+                const entailmentProb =
+                  typeof evidence.entailment_prob === "number"
+                    ? evidence.entailment_prob
+                    : null;
+
+                // Cognitive Forcing Function: Blocker SlotDiff must be expanded before Accept unlocks
+                const isSlotExpanded = Boolean(expandedSlotDiffs[f.row_id]);
+                const acceptLockedByForcingFunction =
+                  isBlocker && isSlotDiff && !isSlotExpanded;
+
+                const trace = f.payload?.trace;
+                const hasTextSuggestion = Boolean(
+                  f.payload?.suggestion &&
+                    f.payload.suggestion.replacements.length > 0,
+                );
+
+                return (
+                  <div
+                    key={f.row_id}
+                    ref={(el) => {
+                      if (el) findingCardRefs.current.set(f.row_id, el);
+                      else findingCardRefs.current.delete(f.row_id);
+                    }}
+                    onClick={() => setSelectedFindingId(f.row_id)}
+                    className={`finding-card card ${
+                      isBlocker ? "finding-blocker" : "finding-warning"
+                    } ${f.resolution !== "open" ? "finding-resolved" : ""} ${
+                      isSelected ? "finding-selected" : ""
+                    }`}
+                  >
+                    <div className="finding-header">
+                      <span
+                        className={`severity-pill ${
+                          isBlocker ? "sev-blocker" : "sev-warning"
+                        }`}
+                      >
+                        {isBlocker ? "BLOCKER" : "WARNING"} · S={f.severity}
+                      </span>
+                      <span className="check-id">{f.check_id}</span>
+                      {trace?.tier && (
+                        <span
+                          className="tier-badge"
+                          title={
+                            trace.ai_used
+                              ? `Model: ${trace.model_name ?? "NLI/Rewriter"}`
+                              : "100% Deterministic Math/Vision (Zero AI)"
+                          }
+                        >
+                          CONTEXT TRACE: {trace.tier.toUpperCase()}
+                          {trace.ai_used ? " · AI" : " · ZERO AI"}
+                        </span>
+                      )}
+                      {f.resolution !== "open" && (
+                        <span className={`resolution-badge res-${f.resolution}`}>
+                          {f.resolution}
+                        </span>
+                      )}
+                    </div>
+
+                    <p className="finding-message">{f.message}</p>
+
+                    {f.payload?.rule_ref?.source_text && (
+                      <div className="finding-rule">
+                        <strong>
+                          Approved Canon Rule ({f.payload.rule_ref.rule_id}):
+                        </strong>{" "}
+                        {f.payload.rule_ref.source_text}
+                      </div>
+                    )}
+
+                    {/* SlotDiff Table (Tier 2 NLI Claim Alignment) with Cognitive Forcing Function */}
+                    {isSlotDiff && slots.length > 0 && (
+                      <div
+                        className="slot-diff-box"
+                        onClick={(e) => e.stopPropagation()}
+                      >
+                        <div
+                          className="slot-diff-header"
+                          style={{
+                            cursor: "pointer",
+                            display: "flex",
+                            justifyContent: "space-between",
+                            alignItems: "center",
+                          }}
+                          onClick={() =>
+                            setExpandedSlotDiffs((prev) => ({
+                              ...prev,
+                              [f.row_id]: !prev[f.row_id],
+                            }))
+                          }
+                        >
+                          <span>
+                            <strong>SlotDiff Alignment</strong>
+                            {entailmentProb !== null && (
+                              <span>
+                                {" "}
+                                · Calibrated P(Canon ⊨ Draft) ={" "}
+                                {(entailmentProb * 100).toFixed(1)}%
+                              </span>
+                            )}
+                          </span>
+                          <button
+                            type="button"
+                            className="btn-ghost"
+                            style={{
+                              padding: "0.15rem 0.5rem",
+                              fontSize: "0.75rem",
+                            }}
+                          >
+                            {isSlotExpanded
+                              ? "▲ Hide SlotDiff"
+                              : "▼ Expand SlotDiff to Unlock Actions"}
+                          </button>
+                        </div>
+
+                        {isSlotExpanded && (
+                          <table className="slot-diff-table">
+                            <thead>
+                              <tr>
+                                <th>Slot</th>
+                                <th>Approved Canon</th>
+                                <th>Campaign Draft</th>
+                                <th>Status</th>
+                              </tr>
+                            </thead>
+                            <tbody>
+                              {slots.map((s, idx) => (
+                                <tr key={idx}>
+                                  <td>
+                                    <strong>{s.slot_name}</strong>
+                                  </td>
+                                  <td>{s.canon_value ?? "—"}</td>
+                                  <td>{s.draft_value ?? "—"}</td>
+                                  <td className={`slot-${s.status}`}>
+                                    {s.status.toUpperCase()}
+                                  </td>
+                                </tr>
+                              ))}
+                            </tbody>
+                          </table>
+                        )}
+                      </div>
+                    )}
+
+                    {f.payload?.suggestion && (
+                      <div className="finding-suggestion">
+                        <strong>Suggested Fix:</strong>{" "}
+                        {f.payload.suggestion.explanation}
+                        {f.payload.suggestion.replacements.map((r, i) => (
+                          <code key={i} className="replacement-chip">
+                            → &ldquo;{r.replacement}&rdquo;
+                          </code>
+                        ))}
+                      </div>
+                    )}
+
+                    {/* Tier 3 Surgical Rewrite Preview Box */}
+                    {rewritePreviews[f.row_id] && (
+                      <div
+                        className="gov-clean-box"
+                        style={{ marginTop: "0.5rem", fontSize: "0.8rem" }}
+                      >
+                        <div>
+                          <strong>
+                            Tier 3 Constrained Rewriter (
+                            {rewritePreviews[f.row_id].used_provider}):
+                          </strong>{" "}
+                          Edit ratio{" "}
+                          {(
+                            rewritePreviews[f.row_id].edit_distance_ratio * 100
+                          ).toFixed(1)}
+                          % (≤{" "}
+                          {(
+                            rewritePreviews[f.row_id].max_edit_distance_ratio *
+                            100
+                          ).toFixed(0)}
+                          % ceiling) ·{" "}
+                          {rewritePreviews[f.row_id].reverified
+                            ? "✓ Re-verified by Tiers 1 & 2"
+                            : "Needs human review"}
+                          {rewritePreviews[f.row_id].pii_masked_count > 0 &&
+                            ` · Masked ${rewritePreviews[f.row_id].pii_masked_count} PII span(s)`}
+                        </div>
+                        <div style={{ marginTop: "0.25rem" }}>
+                          <code>
+                            → &ldquo;{rewritePreviews[f.row_id].rewritten_text}
+                            &rdquo;
+                          </code>
+                        </div>
+                      </div>
+                    )}
+
+                    {/* Recorded Resolution Justification */}
+                    {f.resolution !== "open" && f.resolution_reason && (
+                      <div className="finding-override-reason">
+                        <strong>Recorded Governance Note:</strong>{" "}
+                        {f.resolution_reason}
+                      </div>
+                    )}
+
+                    {/* Action Buttons on Open Findings (Strictly aligned with domain/workflow.py RBAC) */}
+                    {f.resolution === "open" && (
+                      <div
+                        className="finding-actions"
+                        onClick={(e) => e.stopPropagation()}
+                      >
+                        {hasTextSuggestion ? (
+                          <button
+                            type="button"
+                            disabled={acceptLockedByForcingFunction}
+                            title={
+                              acceptLockedByForcingFunction
+                                ? "Cognitive Forcing Function: Expand the SlotDiff table above before accepting a Blocker fix."
+                                : "Apply surgical replacement to document and create a new immutable revision"
+                            }
+                            className="btn-resolve btn-accept"
+                            onClick={() => handleResolve(f.row_id, "accepted")}
+                          >
+                            {acceptLockedByForcingFunction
+                              ? "🔒 Expand SlotDiff to Unlock Fix"
+                              : "✓ Accept & Apply Fix"}
+                          </button>
+                        ) : (
+                          /* Visual/Banner or Structural Finding without auto-text replacement */
+                          <button
+                            type="button"
+                            disabled={acceptLockedByForcingFunction}
+                            className="btn-resolve btn-accept"
+                            onClick={() => {
+                              setOverrideTarget({
+                                rowId: f.row_id,
+                                mode: "accepted",
+                              });
+                              setOverrideReason("");
+                            }}
+                          >
+                            {acceptLockedByForcingFunction
+                              ? "🔒 Expand SlotDiff First"
+                              : "✓ Acknowledge & Record Remediation"}
+                          </button>
+                        )}
+
+                        {/* Tier 3 Constrained Rewriter button for text-span findings */}
+                        {f.payload?.locator?.kind === "span" && (
+                          <button
+                            type="button"
+                            className="btn-resolve"
+                            disabled={rewritingRowId === f.row_id}
+                            onClick={() => handleTier3Rewrite(f.row_id)}
+                            title="Invoke Tier 3 Constrained Rewriter (≤35% edit distance, Presidio PII scrub, Tier 1+2 re-verification)"
+                          >
+                            {rewritingRowId === f.row_id
+                              ? "Rewriting..."
+                              : "✨ Tier 3 Surgical Fix"}
+                          </button>
+                        )}
+
+                        {/* Warnings (severity < 50): Creator, Brand Manager, or Legal can Deliberately Override with justification */}
+                        {!isBlocker && (
+                          <button
+                            type="button"
+                            className="btn-resolve btn-override"
+                            onClick={() => {
+                              setOverrideTarget({
+                                rowId: f.row_id,
+                                mode: "overridden",
+                              });
+                              setOverrideReason("");
+                            }}
+                          >
+                            Deliberate Override (Warning)
+                          </button>
+                        )}
+
+                        {/* Warnings (severity < 50): Brand Manager or Legal can Dismiss with reason */}
+                        {!isBlocker &&
+                          (role === "reviewer" || role === "admin") && (
+                            <button
+                              type="button"
+                              className="btn-resolve btn-dismiss"
+                              onClick={() => {
+                                setOverrideTarget({
+                                  rowId: f.row_id,
+                                  mode: "dismissed",
+                                });
+                                setOverrideReason("");
+                              }}
+                            >
+                              Dismiss Warning
+                            </button>
+                          )}
+
+                        {/* Inline Comment Thread Toggle */}
+                        <button
+                          type="button"
+                          className="btn-resolve"
+                          onClick={() =>
+                            setCommentTargetRowId(
+                              commentTargetRowId === f.row_id ? null : f.row_id,
+                            )
+                          }
+                        >
+                          💬 Comment (
+                          {
+                            comments.filter((c) => c.finding_id === f.row_id)
+                              .length
+                          }
+                          )
+                        </button>
+                      </div>
+                    )}
+
+                    {/* Structured Popover for Deliberate Override / Dismiss / Remediation Note */}
+                    {overrideTarget && overrideTarget.rowId === f.row_id && (
+                      <div
+                        className="override-popover"
+                        onClick={(e) => e.stopPropagation()}
+                      >
+                        <label htmlFor={`override-reason-${f.row_id}`}>
+                          <strong>
+                            {overrideTarget.mode === "accepted"
+                              ? "Record Remediation Note (min 5 chars):"
+                              : `Mandatory Justification for ${
+                                  overrideTarget.mode === "overridden"
+                                    ? "Deliberate Warning Override"
+                                    : "Warning Dismissal"
+                                } (min 5 chars):`}
+                          </strong>
+                        </label>
+                        <textarea
+                          id={`override-reason-${f.row_id}`}
+                          rows={2}
+                          value={overrideReason}
+                          onChange={(e) => setOverrideReason(e.target.value)}
+                          placeholder={
+                            overrideTarget.mode === "accepted"
+                              ? "Explain how this visual/structural finding was remediated..."
+                              : "Explain why this Warning should be overridden or dismissed (logged to friction telemetry & audit trail)..."
+                          }
+                        />
+                        <div className="override-popover-actions">
+                          <button
+                            type="button"
+                            className="btn-ghost"
+                            onClick={() => setOverrideTarget(null)}
+                          >
+                            Cancel
+                          </button>
+                          <button
+                            type="button"
+                            className="btn-primary"
+                            disabled={overrideReason.trim().length < 5}
+                            onClick={() =>
+                              handleResolve(
+                                f.row_id,
+                                overrideTarget.mode,
+                                overrideReason.trim(),
+                              )
+                            }
+                          >
+                            Confirm &amp; Record Decision
+                          </button>
+                        </div>
+                      </div>
+                    )}
+
+                    {/* Inline Comments Thread on this Finding Card */}
+                    {(comments.some((c) => c.finding_id === f.row_id) ||
+                      commentTargetRowId === f.row_id) && (
+                      <div
+                        className="finding-comments-box"
+                        onClick={(e) => e.stopPropagation()}
+                      >
+                        {comments
+                          .filter((c) => c.finding_id === f.row_id)
+                          .map((c) => (
+                            <div key={c.id} className="comment-item">
+                              <span className="comment-author">
+                                @{c.author_name} ({c.role}):
+                              </span>{" "}
+                              <span className="comment-body">{c.body}</span>
+                            </div>
+                          ))}
+                        {commentTargetRowId === f.row_id && (
+                          <div className="inline-comment-composer">
+                            <input
+                              type="text"
+                              value={commentBody}
+                              onChange={(e) => setCommentBody(e.target.value)}
+                              placeholder="Add inline comment on this finding..."
+                              className="comment-input"
+                            />
+                            <button
+                              type="button"
+                              className="btn-primary"
+                              disabled={postingComment || !commentBody.trim()}
+                              onClick={() =>
+                                handlePostComment(f.row_id, commentBody)
+                              }
+                            >
+                              Post
+                            </button>
+                          </div>
+                        )}
+                      </div>
+                    )}
                   </div>
-                  <span className="audit-time">{evt.created_at}</span>
+                );
+              })}
+            </div>
+          )}
+        </aside>
+      </div>
+
+      {/* Immutable Revision History Modal */}
+      {showVersionsModal && (
+        <div
+          className="modal-overlay"
+          onClick={() => setShowVersionsModal(false)}
+        >
+          <div
+            className="modal card modal-wide"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="gov-panel-header">
+              <h3>Immutable Submission Revision History</h3>
+              <button
+                type="button"
+                className="btn-ghost"
+                onClick={() => setShowVersionsModal(false)}
+              >
+                ✕ Close
+              </button>
+            </div>
+            <p className="gov-panel-desc">
+              Every accepted surgical fix or studio edit creates an immutable
+              revision row with its own SHA-256 content hash.
+            </p>
+            <div className="audit-timeline">
+              {versions.map((v) => (
+                <div key={v.version_number} className="audit-event card">
+                  <div className="audit-header">
+                    <span className="audit-action">
+                      Revision v{v.version_number}
+                    </span>
+                    <span className="audit-transition">{v.change_note}</span>
+                    <span className="audit-time">
+                      {new Date(v.created_at).toLocaleString()}
+                    </span>
+                  </div>
+                  <div className="audit-hashes">
+                    <span>
+                      Content SHA-256: <code>{v.content_hash}</code>
+                    </span>
+                    <span>
+                      Canon SHA-256: <code>{v.canon_hash.slice(0, 16)}…</code>
+                    </span>
+                  </div>
+                  <pre className="version-raw-preview">{v.raw_content}</pre>
                 </div>
               ))}
-              {audit.length === 0 && <p>No events yet.</p>}
             </div>
-            <button className="btn-ghost" onClick={() => setShowAudit(false)}>Close</button>
+          </div>
+        </div>
+      )}
+
+      {/* Cryptographic Audit Trail & RFC 9162 Merkle Proof Modal */}
+      {showAuditModal && (
+        <div
+          className="modal-overlay"
+          onClick={() => setShowAuditModal(false)}
+        >
+          <div
+            className="modal card modal-wide"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="gov-panel-header">
+              <h3>
+                Tamper-Evident SHA-256 Hash Chain &amp; RFC 9162 Merkle Proofs
+              </h3>
+              <button
+                type="button"
+                className="btn-ghost"
+                onClick={() => setShowAuditModal(false)}
+              >
+                ✕ Close
+              </button>
+            </div>
+            {audit.length === 0 ? (
+              <p className="gov-panel-desc">
+                No workflow transitions recorded yet. Submit, approve, or
+                publish this bundle to append hash-chained events and generate
+                Ed25519 Signed Tree Heads.
+              </p>
+            ) : (
+              <>
+                {audit[0].tree_head && (
+                  <div
+                    className="gov-clean-box"
+                    style={{ marginBottom: "1rem" }}
+                  >
+                    <div>
+                      <strong>
+                        Ed25519 Signed Tree Head (RFC 9162 Certificate
+                        Transparency):
+                      </strong>
+                    </div>
+                    <div className="audit-hashes" style={{ marginTop: "0.35rem" }}>
+                      <span>
+                        Merkle Root:{" "}
+                        <code>
+                          {audit[0].tree_head.root_hash_hex.slice(0, 24)}…
+                        </code>
+                      </span>
+                      <span>
+                        Ed25519 Sig:{" "}
+                        <code>
+                          {audit[0].tree_head.signature_hex.slice(0, 24)}…
+                        </code>
+                      </span>
+                      <span>
+                        Tree Size: <strong>{audit[0].tree_head.tree_size}</strong>
+                      </span>
+                    </div>
+                  </div>
+                )}
+                <div className="audit-timeline">
+                  {audit.map((evt) => (
+                    <div key={evt.id} className="audit-event card">
+                      <div className="audit-header">
+                        <span className="audit-action">{evt.action}</span>
+                        <span className="audit-transition">
+                          {evt.from_status} → {evt.to_status}
+                        </span>
+                        <span className="audit-time">
+                          {new Date(evt.created_at).toLocaleString()}
+                        </span>
+                      </div>
+                      {evt.comment && (
+                        <p className="audit-comment">{evt.comment}</p>
+                      )}
+                      <div className="audit-hashes">
+                        <span>
+                          Prev SHA-256:{" "}
+                          <code>{evt.prev_hash.slice(0, 16)}…</code>
+                        </span>
+                        <span>
+                          Event SHA-256:{" "}
+                          <code>{evt.event_hash.slice(0, 16)}…</code>
+                        </span>
+                        {typeof evt.leaf_index === "number" && (
+                          <span>
+                            Merkle Leaf #{evt.leaf_index} (
+                            {evt.audit_path?.length ?? 0} inclusion proof nodes)
+                          </span>
+                        )}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </>
+            )}
           </div>
         </div>
       )}
     </div>
   );
-}
-
-function getStatusColor(status: string): string {
-  const colors: Record<string, string> = {
-    draft: "#6366f1",
-    in_review: "#f59e0b",
-    changes_requested: "#ef4444",
-    approved: "#22c55e",
-    published: "#06b6d4",
-  };
-  return colors[status] || "#888";
 }

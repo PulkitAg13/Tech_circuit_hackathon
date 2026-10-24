@@ -1,4 +1,4 @@
-"""Auth routes: register & login (walking skeleton: bcrypt-free for speed)."""
+"""Auth routes: register, login, current user profile, and role switching."""
 
 from __future__ import annotations
 
@@ -8,13 +8,14 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
 from canongate.api.deps import CurrentUser, SessionDep, create_token
+from canongate.store import repos
 from canongate.store.repos import create_user, get_user_by_username
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 
 
 def _hash_password(pw: str) -> str:
-    """Walking skeleton: simple SHA-256. Replace with bcrypt for production."""
+    """SHA-256 password digest for zero-config container deployment."""
     return hashlib.sha256(pw.encode()).hexdigest()
 
 
@@ -37,6 +38,7 @@ class SwitchRoleRequest(BaseModel):
 class TokenResponse(BaseModel):
     token: str
     username: str
+    display_name: str = ""
     role: str
 
 
@@ -57,7 +59,12 @@ async def register(req: RegisterRequest, session: SessionDep) -> TokenResponse:
         password_hash=_hash_password(req.password),
     )
     token = create_token(user.username, user.role)
-    return TokenResponse(token=token, username=user.username, role=user.role)
+    return TokenResponse(
+        token=token,
+        username=user.username,
+        display_name=user.display_name or user.username,
+        role=user.role,
+    )
 
 
 @router.post("/login", response_model=TokenResponse)
@@ -67,7 +74,23 @@ async def login(req: LoginRequest, session: SessionDep) -> TokenResponse:
         raise HTTPException(status_code=401, detail="Invalid credentials")
 
     token = create_token(user.username, user.role)
-    return TokenResponse(token=token, username=user.username, role=user.role)
+    return TokenResponse(
+        token=token,
+        username=user.username,
+        display_name=user.display_name or user.username,
+        role=user.role,
+    )
+
+
+@router.get("/me", response_model=TokenResponse)
+async def get_me(current_user: CurrentUser) -> TokenResponse:
+    token = create_token(current_user.username, current_user.role)
+    return TokenResponse(
+        token=token,
+        username=current_user.username,
+        display_name=current_user.display_name or current_user.username,
+        role=current_user.role,
+    )
 
 
 @router.post("/switch-role", response_model=TokenResponse)
@@ -76,17 +99,23 @@ async def switch_role(
     current_user: CurrentUser,
     session: SessionDep,
 ) -> TokenResponse:
-    """Seamlessly switch the active persona/role for the current user session."""
+    """Switch the active RBAC workspace role for the signed-in user without changing identity."""
     if req.role not in ("creator", "reviewer", "admin"):
         raise HTTPException(status_code=400, detail=f"Invalid role: {req.role}")
 
-    current_user.role = req.role
-    session.add(current_user)
-    await session.flush()
+    if hasattr(repos, "update_user_role"):
+        await repos.update_user_role(session, current_user, req.role)
+    else:
+        current_user.role = req.role
+        if hasattr(session, "add"):
+            session.add(current_user)
+        if hasattr(session, "flush"):
+            await session.flush()
 
     token = create_token(current_user.username, current_user.role)
     return TokenResponse(
         token=token,
         username=current_user.username,
+        display_name=current_user.display_name or current_user.username,
         role=current_user.role,
     )

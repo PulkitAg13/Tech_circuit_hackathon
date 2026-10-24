@@ -1,318 +1,346 @@
-import { useState, useEffect, type FormEvent } from "react";
-import { useNavigate, useLocation } from "react-router-dom";
-import { useAuth } from "./useAuth";
-import { login as apiLogin, register as apiRegister } from "../../api/client";
+import { useState, type FormEvent } from "react";
+import { useAuth } from "./context";
+import { useNavigate, Link } from "react-router-dom";
+import {
+  ShieldCheck,
+  Lock,
+  User,
+  KeyRound,
+  ArrowRight,
+  Sparkles,
+  CheckCircle2,
+  Briefcase,
+} from "lucide-react";
 
-/**
- * CanonGate Logo Component
- * Pixel-accurate shield-governance gate icon + typography
- */
-function CanonGateLogo({ variant = "dark" }: { variant?: "dark" | "light" }) {
-  const isLight = variant === "light";
-  return (
-    <div className={`diprella-brand-logo ${isLight ? "logo-light" : "logo-dark"}`}>
-      <div className="diprella-logo-box">
-        <svg
-          width="24"
-          height="24"
-          viewBox="0 0 24 24"
-          fill="none"
-          stroke="currentColor"
-          strokeWidth="2.2"
-          strokeLinecap="round"
-          strokeLinejoin="round"
-        >
-          <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" />
-          <path d="m9 12 2 2 4-4" />
-        </svg>
-      </div>
-      <span className="diprella-logo-text">CanonGate</span>
-    </div>
-  );
-}
+const ROLE_OPTIONS = [
+  {
+    value: "creator",
+    label: "Creator (Marketing / Agency Author)",
+    desc: "Uploads campaign bundles, runs pre-flight checks, fixes Blockers, and justifies Warning overrides.",
+  },
+  {
+    value: "reviewer",
+    label: "Brand Manager (Canon & Brand Review)",
+    desc: "Ingests & calibrates Brand Canons, reviews revision diffs & overrides, and approves brand compliance.",
+  },
+  {
+    value: "admin",
+    label: "Authorised Legal Reviewer (Compliance Sign-Off)",
+    desc: "Audits statutory SlotDiff claims & Merkle ledger to execute final legal sign-off and C2PA release.",
+  },
+] as const;
+
+const DEMO_ACCOUNTS = [
+  {
+    username: "creative_lead",
+    label: "Creator Demo",
+    roleBadge: "Creator",
+  },
+  {
+    username: "brand_manager",
+    label: "Brand Manager Demo",
+    roleBadge: "Brand Manager",
+  },
+  {
+    username: "legal_counsel",
+    label: "Legal Reviewer Demo",
+    roleBadge: "Legal Sign-Off",
+  },
+] as const;
 
 export function LoginPage() {
-  const { login } = useAuth();
+  const { login, register } = useAuth();
   const navigate = useNavigate();
-  const location = useLocation();
 
-  // State: isSignUp toggles the classic sliding container (right-panel-active)
-  const [isSignUp, setIsSignUp] = useState(Boolean((location.state as any)?.signup));
-  const [prevKey, setPrevKey] = useState(location.key);
-
-  if (location.key !== prevKey) {
-    setPrevKey(location.key);
-    setIsSignUp(Boolean((location.state as any)?.signup));
-  }
-
-  // Sign In form fields
-  const [signInEmail, setSignInEmail] = useState("");
+  // Sign In state
+  const [signInUsername, setSignInUsername] = useState("");
   const [signInPassword, setSignInPassword] = useState("");
 
-  // Sign Up form fields
+  // Sign Up state
   const [signUpName, setSignUpName] = useState("");
-  const [signUpEmail, setSignUpEmail] = useState("");
+  const [signUpUsername, setSignUpUsername] = useState("");
   const [signUpPassword, setSignUpPassword] = useState("");
+  const [signUpRole, setSignUpRole] = useState<string>("creator");
 
-  const [error, setError] = useState("");
-  const [successMsg, setSuccessMsg] = useState("");
+  // UI state
+  const [isRightPanelActive, setIsRightPanelActive] = useState(false);
+  const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
 
-  // Lock document body so sign-in page is completely fixed and not movable
-  useEffect(() => {
-    const originalOverflow = document.body.style.overflow;
-    const originalHeight = document.body.style.height;
-    document.body.style.overflow = "hidden";
-    document.body.style.height = "100vh";
-    return () => {
-      document.body.style.overflow = originalOverflow;
-      document.body.style.height = originalHeight;
-    };
-  }, []);
-
-  // Handle Sign In submission
-  const handleSignIn = async (e: FormEvent) => {
+  async function handleSignIn(e: FormEvent) {
     e.preventDefault();
-    setError("");
-    setSuccessMsg("");
+    setError(null);
     setLoading(true);
-
     try {
-      const username = signInEmail.trim();
-      const password = signInPassword;
-      const data = await apiLogin(username, password);
-      login(data);
-      navigate("/dashboard", { replace: true });
-    } catch (err: any) {
-      setError(err.message || "Invalid email or password");
+      await login(signInUsername.trim(), signInPassword);
+      navigate("/dashboard");
+    } catch (err) {
+      setError((err as Error).message);
     } finally {
       setLoading(false);
     }
-  };
+  }
 
-  // Handle Sign Up submission
-  const handleSignUp = async (e: FormEvent) => {
+  async function handleSignUp(e: FormEvent) {
     e.preventDefault();
-    setError("");
-    setSuccessMsg("");
+    setError(null);
     setLoading(true);
-
     try {
-      const username = signUpEmail.trim() || signUpName.trim().toLowerCase().replace(/\s+/g, "_");
-      const password = signUpPassword;
-      const data = await apiRegister(username, password, "creator", signUpName);
-      login(data);
-      navigate("/dashboard", { replace: true });
-    } catch (err: any) {
-      setError(err.message || "Registration failed");
+      await register(
+        signUpUsername.trim(),
+        signUpPassword,
+        signUpRole,
+        signUpName.trim() || signUpUsername.trim(),
+      );
+      navigate("/dashboard");
+    } catch (err) {
+      setError((err as Error).message);
     } finally {
       setLoading(false);
     }
-  };
+  }
 
-  const handleForgotPassword = () => {
-    setSignInEmail("creative_lead");
+  function fillDemoAccount(username: string) {
+    setIsRightPanelActive(false);
+    setSignInUsername(username);
     setSignInPassword("demoPassword123!");
-    setSuccessMsg("Filled demo evaluator credentials! Click SIGN IN to continue.");
-  };
+    setError(null);
+  }
 
   return (
-    <div className="diprella-auth-page">
-      {/* ── Background Geometric Accents ── */}
-      <div className="bg-corner-shape-red" aria-hidden="true" />
-      <div className="bg-corner-shape-yellow" aria-hidden="true" />
-
-      {/* ── Main Sliding Card Container ── */}
-      <div className={`diprella-card-container ${isSignUp ? "right-panel-active" : ""}`}>
-        
-        {/* ── Sign In Form (Left on inactive, slides right on active) ── */}
-        <div className="diprella-form-panel diprella-sign-in-panel">
-          <div className="diprella-top-left-logo" onClick={() => navigate("/")}>
-            <CanonGateLogo variant="dark" />
+    <div className="login-page-sliding">
+      {/* Top Navbar */}
+      <nav className="sliding-top-nav">
+        <Link to="/" className="sliding-brand-link">
+          <div className="brand-logo-mark">
+            <ShieldCheck size={20} strokeWidth={2.3} />
           </div>
+          <div className="sliding-brand-text">
+            <span className="sliding-brand-name">CanonGate</span>
+            <span className="sliding-brand-tag">Governance Studio</span>
+          </div>
+        </Link>
+        <Link to="/" className="sliding-back-link">
+          ← Back to Home
+        </Link>
+      </nav>
 
-          <form onSubmit={handleSignIn} className="diprella-form">
-            <h1 className="diprella-heading">Sign in to CanonGate</h1>
+      {/* Main Sliding Container */}
+      <div
+        className={`sliding-auth-container ${
+          isRightPanelActive ? "right-panel-active" : ""
+        }`}
+      >
+        {/* Sign Up Form Container */}
+        <div className="sliding-form-container sign-up-container">
+          <form className="sliding-auth-form" onSubmit={handleSignUp}>
+            <span className="sliding-form-eyebrow">
+              <Sparkles size={13} /> Role-Gated Governance Access
+            </span>
+            <h1 className="sliding-form-title">Create Account</h1>
+            <p className="sliding-form-subtitle">
+              Register your identity and select your assigned governance role in
+              the 4-stage review workflow
+            </p>
 
-            <div className="diprella-input-group">
-              <span className="diprella-input-icon">
-                <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
-                  <rect x="2" y="4" width="20" height="16" rx="2" />
-                  <path d="m22 7-8.97 5.7a1.94 1.94 0 0 1-2.06 0L2 7" />
-                </svg>
-              </span>
-              <input
-                type="text"
-                placeholder="Email or Username"
-                value={signInEmail}
-                onChange={(e) => setSignInEmail(e.target.value)}
-                required
-              />
-            </div>
-
-            <div className="diprella-input-group">
-              <span className="diprella-input-icon">
-                <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
-                  <rect x="3" y="11" width="18" height="11" rx="2" ry="2" />
-                  <path d="M7 11V7a5 5 0 0 1 10 0v4" />
-                </svg>
-              </span>
-              <input
-                type="password"
-                placeholder="Password"
-                value={signInPassword}
-                onChange={(e) => setSignInPassword(e.target.value)}
-                required
-              />
-            </div>
-
-            {error && !isSignUp && (
-              <div className="diprella-error-alert">{error}</div>
-            )}
-            {successMsg && !isSignUp && (
-              <div className="diprella-success-alert">{successMsg}</div>
-            )}
-
-            <button
-              type="button"
-              className="diprella-forgot-link"
-              onClick={handleForgotPassword}
-            >
-              Forgot your password? (Fill Demo Credentials)
-            </button>
-
-            <button
-              type="submit"
-              className="diprella-solid-btn"
-              disabled={loading}
-            >
-              {loading ? "SIGNING IN..." : "SIGN IN"}
-            </button>
-          </form>
-        </div>
-
-        {/* ── Sign Up Form (Behind on inactive, slides to right half on active) ── */}
-        <div className="diprella-form-panel diprella-sign-up-panel">
-          <form onSubmit={handleSignUp} className="diprella-form">
-            <h1 className="diprella-heading">Create Account</h1>
-
-            <div className="diprella-input-group">
-              <span className="diprella-input-icon">
-                <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
-                  <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2" />
-                  <circle cx="12" cy="7" r="4" />
-                </svg>
-              </span>
-              <input
-                type="text"
-                placeholder="Name"
-                value={signUpName}
-                onChange={(e) => setSignUpName(e.target.value)}
-                required
-              />
-            </div>
-
-            <div className="diprella-input-group">
-              <span className="diprella-input-icon">
-                <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
-                  <rect x="2" y="4" width="20" height="16" rx="2" />
-                  <path d="m22 7-8.97 5.7a1.94 1.94 0 0 1-2.06 0L2 7" />
-                </svg>
-              </span>
-              <input
-                type="text"
-                placeholder="Email or Username"
-                value={signUpEmail}
-                onChange={(e) => setSignUpEmail(e.target.value)}
-                required
-              />
-            </div>
-
-            <div className="diprella-input-group">
-              <span className="diprella-input-icon">
-                <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
-                  <rect x="3" y="11" width="18" height="11" rx="2" ry="2" />
-                  <path d="M7 11V7a5 5 0 0 1 10 0v4" />
-                </svg>
-              </span>
-              <input
-                type="password"
-                placeholder="Password"
-                value={signUpPassword}
-                onChange={(e) => setSignUpPassword(e.target.value)}
-                required
-              />
-            </div>
-
-            {error && isSignUp && (
-              <div className="diprella-error-alert">{error}</div>
-            )}
-
-            <button
-              type="submit"
-              className="diprella-solid-btn"
-              disabled={loading}
-            >
-              {loading ? "CREATING..." : "SIGN UP"}
-            </button>
-          </form>
-        </div>
-
-        {/* ── Overlay Sliding Section ── */}
-        <div className="diprella-overlay-container">
-          <div className="diprella-overlay">
-            
-            {/* Geometric Translucent Pattern Elements */}
-            <div className="geom-diamond geom-diamond-1" aria-hidden="true" />
-            <div className="geom-diamond geom-diamond-2" aria-hidden="true" />
-            <div className="geom-circle geom-circle-1" aria-hidden="true" />
-            <div className="geom-polygon" aria-hidden="true" />
-
-            {/* Left Overlay (shown when Sign Up is active -> invites to Sign In) */}
-            <div className="diprella-overlay-panel diprella-overlay-left">
-              <div className="diprella-top-left-logo" onClick={() => navigate("/")}>
-                <CanonGateLogo variant="light" />
+            {error && isRightPanelActive && (
+              <div className="sliding-form-error" role="alert">
+                {error}
               </div>
+            )}
 
-              <h1 className="diprella-overlay-heading">Welcome Back!</h1>
-              <p className="diprella-overlay-text">
-                To keep connected with us please login with your personal info
-              </p>
-              <button
-                type="button"
-                className="diprella-ghost-btn"
-                onClick={() => {
-                  setIsSignUp(false);
-                  setError("");
-                  setSuccessMsg("");
-                }}
-              >
-                SIGN IN
-              </button>
+            <div className="sliding-input-group">
+              <div className="sliding-input-wrapper">
+                <User size={16} className="sliding-input-icon" />
+                <input
+                  id="signup-name"
+                  type="text"
+                  placeholder="Full Name (e.g. Kabir Roy)"
+                  value={signUpName}
+                  onChange={(e) => setSignUpName(e.target.value)}
+                  required
+                />
+              </div>
+              <div className="sliding-input-wrapper">
+                <Lock size={16} className="sliding-input-icon" />
+                <input
+                  id="signup-username"
+                  type="text"
+                  placeholder="Username (e.g. kabir_roy)"
+                  value={signUpUsername}
+                  onChange={(e) => setSignUpUsername(e.target.value)}
+                  required
+                  autoComplete="username"
+                />
+              </div>
+              <div className="sliding-input-wrapper">
+                <Briefcase size={16} className="sliding-input-icon" />
+                <select
+                  id="signup-role"
+                  aria-label="Governance Role"
+                  value={signUpRole}
+                  onChange={(e) => setSignUpRole(e.target.value)}
+                  className="sliding-role-select"
+                >
+                  {ROLE_OPTIONS.map((opt) => (
+                    <option key={opt.value} value={opt.value}>
+                      {opt.label}
+                    </option>
+                  ))}
+                </select>
+              </div>
+              <div className="sliding-input-wrapper">
+                <KeyRound size={16} className="sliding-input-icon" />
+                <input
+                  id="signup-password"
+                  type="password"
+                  placeholder="Password"
+                  value={signUpPassword}
+                  onChange={(e) => setSignUpPassword(e.target.value)}
+                  required
+                  autoComplete="new-password"
+                />
+              </div>
             </div>
 
-            {/* Right Overlay (shown when Sign In is active -> invites to Sign Up) */}
-            <div className="diprella-overlay-panel diprella-overlay-right">
-              <h1 className="diprella-overlay-heading">Hello, Friend!</h1>
-              <p className="diprella-overlay-text">
-                Enter your personal details and start journey with us
-              </p>
-              <button
-                type="button"
-                className="diprella-ghost-btn has-ripple-accent"
-                onClick={() => {
-                  setIsSignUp(true);
-                  setError("");
-                  setSuccessMsg("");
-                }}
-              >
-                SIGN UP
-              </button>
-            </div>
+            <p className="sliding-role-hint">
+              {ROLE_OPTIONS.find((r) => r.value === signUpRole)?.desc}
+            </p>
 
-          </div>
+            <button
+              type="submit"
+              className="sliding-submit-btn"
+              disabled={loading}
+            >
+              {loading ? "Creating Account..." : "Register & Enter Studio"}
+              <ArrowRight size={16} />
+            </button>
+          </form>
         </div>
 
+        {/* Sign In Form Container */}
+        <div className="sliding-form-container sign-in-container">
+          <form className="sliding-auth-form" onSubmit={handleSignIn}>
+            <span className="sliding-form-eyebrow">
+              <CheckCircle2 size={13} /> Pre-Publication Gate
+            </span>
+            <h1 className="sliding-form-title">Sign In</h1>
+            <p className="sliding-form-subtitle">
+              Authenticate to review multimodal campaigns, calibrate Brand
+              Canons, and verify cryptographic audit trails
+            </p>
+
+            {error && !isRightPanelActive && (
+              <div className="sliding-form-error" role="alert">
+                {error}
+              </div>
+            )}
+
+            <div className="sliding-input-group">
+              <div className="sliding-input-wrapper">
+                <User size={16} className="sliding-input-icon" />
+                <input
+                  id="username"
+                  type="text"
+                  placeholder="Username"
+                  value={signInUsername}
+                  onChange={(e) => setSignInUsername(e.target.value)}
+                  required
+                  autoComplete="username"
+                />
+              </div>
+              <div className="sliding-input-wrapper">
+                <KeyRound size={16} className="sliding-input-icon" />
+                <input
+                  id="password"
+                  type="password"
+                  placeholder="Password"
+                  value={signInPassword}
+                  onChange={(e) => setSignInPassword(e.target.value)}
+                  required
+                  autoComplete="current-password"
+                />
+              </div>
+            </div>
+
+            <div className="demo-accounts-bar">
+              <span className="demo-accounts-label">
+                Quick-Fill Evaluation Persona:
+              </span>
+              <div className="demo-accounts-chips">
+                {DEMO_ACCOUNTS.map((acct) => (
+                  <button
+                    key={acct.username}
+                    type="button"
+                    className={`demo-account-chip ${
+                      signInUsername === acct.username ? "active" : ""
+                    }`}
+                    onClick={() => fillDemoAccount(acct.username)}
+                    title={`Fill seeded credentials for @${acct.username} (${acct.roleBadge})`}
+                  >
+                    {acct.label}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            <button
+              type="submit"
+              className="sliding-submit-btn"
+              disabled={loading}
+            >
+              {loading ? "Signing In..." : "Sign In to Console"}
+              <ArrowRight size={16} />
+            </button>
+          </form>
+        </div>
+
+        {/* Sliding Overlay Container */}
+        <div className="sliding-overlay-container">
+          <div className="sliding-overlay">
+            {/* Left Overlay Panel (Shown when Sign Up is active) */}
+            <div className="sliding-overlay-panel sliding-overlay-left">
+              <div className="overlay-badge">EXISTING TEAM MEMBER</div>
+              <h2 className="sliding-overlay-title">Welcome Back!</h2>
+              <p className="sliding-overlay-text">
+                Already have a Creator, Brand Manager, or Legal Reviewer
+                account? Sign in with your credentials to access your campaign
+                queue and audit ledger.
+              </p>
+              <button
+                type="button"
+                className="sliding-ghost-btn"
+                onClick={() => {
+                  setError(null);
+                  setIsRightPanelActive(false);
+                }}
+              >
+                Sign In
+              </button>
+            </div>
+
+            {/* Right Overlay Panel (Shown when Sign In is active) */}
+            <div className="sliding-overlay-panel sliding-overlay-right">
+              <div className="overlay-badge">4-STAGE COLLABORATIVE GATE</div>
+              <h2 className="sliding-overlay-title">New to CanonGate?</h2>
+              <p className="sliding-overlay-text">
+                Create an account and choose your role — Creator, Brand
+                Manager, or Authorised Legal Reviewer — to collaborate on
+                pre-publication governance.
+              </p>
+              <button
+                type="button"
+                className="sliding-ghost-btn"
+                onClick={() => {
+                  setError(null);
+                  setIsRightPanelActive(true);
+                }}
+              >
+                Create Account
+              </button>
+            </div>
+          </div>
+        </div>
       </div>
     </div>
   );

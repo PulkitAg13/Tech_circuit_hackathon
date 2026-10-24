@@ -68,7 +68,7 @@ A walking skeleton is **the thinnest possible slice that runs through every laye
 
 ## 📑 Referenced Architectural Documents & Presentation Decks
 
-* 📊 [**System Architecture Diagram (PDF)**](./PulmoTwin_Architecture_Diagram.pdf) — Complete architectural overview, check pipeline, SMT solving, and Merkle tree ledger.
-* 📑 [**Pitch Deck Presentation (PDF)**](./PulmoTwin_Pitch_Deck.pdf) — Pitch deck covering product vision, regulatory landscape, and business model.
+* 📊 [**System Architecture Diagram (PDF)**](./CanonGate_Architecture_Diagram.pdf) — Complete architectural overview, check pipeline, SMT solving, and Merkle tree ledger.
+* 📑 [**Pitch Deck Presentation (PDF)**](./CanonGate_Pitch_Deck.pdf) — Pitch deck covering product vision, regulatory landscape, and business model.
 * 🏛️ [**Architecture Decision Records (ADRs)**](./docs/adr/) — ADRs 0001 through 0005.
 

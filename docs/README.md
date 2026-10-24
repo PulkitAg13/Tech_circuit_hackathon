@@ -6,10 +6,10 @@ This directory contains architectural specifications, presentation decks, and Ar
 
 ## 📑 Core Documentation & Presentation Decks
 
-* 📊 [**System Architecture Diagram (PDF)**](./PulmoTwin_Architecture_Diagram.pdf)
+* 📊 [**System Architecture Diagram (PDF)**](./CanonGate_Architecture_Diagram.pdf)
   Comprehensive diagram illustrating the ingestion pipeline, AST normalization, multi-tiered checking engines (Tier 1 deterministic, Tier 1.5 Z3 SMT arithmetic, Tier 2 NLI fact verification, Tier 3 constrained rewriter), and the RFC 9162 Merkle tree audit ledger.
 
-* 📑 [**Pitch Deck Presentation (PDF)**](./PulmoTwin_Pitch_Deck.pdf)
+* 📑 [**Pitch Deck Presentation (PDF)**](./CanonGate_Pitch_Deck.pdf)
   Executive presentation covering product overview, regulatory problem statement, automated claim governance, competitive advantages, and implementation roadmap.
 
 ---
