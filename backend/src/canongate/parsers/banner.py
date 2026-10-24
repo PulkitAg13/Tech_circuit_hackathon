@@ -1,18 +1,19 @@
-"""Multimodal Image & Promotional Banner Parser with Dual-Script OCR (`parsers/banner.py`).
+r"""Multimodal Image & Promotional Banner Parser with Dual-Script OCR (`parsers/banner.py`).
 
 Produces:
 1. An `ImageNode` with verified pixel dimensions `(width, height)`, SHA-256
    content identity, and `alt` metadata for Tier 1 visual checks
    (`visual.subordination`, `c2pa.inbound`, `visual.palette_drift`,
-   `accessibility.contrast`, `legibility.placement`).
+   `accessibility.contrast`, `legibility.placement`, `visual.logo_orb`).
 2. Companion `TextNode`s (`{path}/ocr[{i}]` or `{path}/ocr_low_conf[{i}][...]`)
    automatically extracted in live runs via `BannerOCREngine`:
    - **Primary Engine:** `PaddleOCR 3.x (PP-OCRv5)` dual-script recognizer
      (`en` + `hi`/`devanagari`) supporting both `.predict()` (`rec_texts`,
      `rec_scores`, `rec_boxes`/`dt_polys`) and `.ocr()`.
    - **Automatic Local Fallback:** `Tesseract 5` (`pytesseract.image_to_data`)
-     with 2x bicubic upscaling on small banners, grouping word boxes into
-     lines with exact bounding boxes and confidence scores $\\in [0, 1]$.
+     with compact text-band strip collage assembly and automatic 2x bicubic
+     upscaling on fine-print strips (`height < 28px`), grouping word boxes into
+     lines with exact original-banner bounding boxes and confidence scores $\in [0, 1]$.
    - **Confidence & Height Gating (Plan §3.1 p. 4):** Any fine-print OCR box
      with `confidence < 0.75` or `height < 10px` is tagged with
      `ocr_low_conf` metadata so `legibility.placement` flags it for human review
@@ -43,8 +44,8 @@ logger = logging.getLogger(__name__)
 
 _DEVANAGARI_RE = re.compile(r"[\u0900-\u097F]")
 _LATIN_RE = re.compile(r"[A-Za-z]")
-_REAL_WORD_RE = re.compile(r"[A-Za-z\u0900-\u097F]{2,}|\d{2,}|[₹$%]\d+|\d+[₹$%]")
-_STRIPE_NOISE_RE = re.compile(r"^[|Il1!.\-_/:;,\s]+$")
+_REAL_WORD_RE = re.compile(r"[A-Za-z\u0900-\u097F]{3,}|\d{2,}|[₹$%]\d+|\d+[₹$%]|t&c", re.IGNORECASE)
+_STRIPE_NOISE_RE = re.compile(r"^[|Il1!.\-_/:;,=<>+\s]+$")
 
 
 _DEFAULT_BBOX: BBox = BBox(x=0, y=0, w=100, h=20)
@@ -79,7 +80,7 @@ def _detect_script(text: str) -> Literal["latin", "devanagari", "mixed"]:
 
 
 def _is_meaningful_ocr_line(text: str) -> bool:
-    """Filter out single-bar stripe artifacts produced when OCR scans synthetic test stripes."""
+    """Filter out single-bar stripe or geometric logo artifacts lacking real words/numbers."""
     cleaned = text.strip()
     if len(cleaned) < 2 or _STRIPE_NOISE_RE.match(cleaned):
         return False
@@ -102,13 +103,23 @@ def _poly_or_box_to_bbox(coords: Any) -> BBox:
         flat = arr.flatten()
         if len(flat) == 4:
             x0, y0, v2, v3 = (max(0, int(v)) for v in flat)
-            # Support both [x1, y1, x2, y2] and [x, y, w, h]
             w = (v2 - x0) if v2 > x0 else max(1, v2)
             h = (v3 - y0) if v3 > y0 else max(1, v3)
             return BBox(x=x0, y=y0, w=max(1, w), h=max(1, h))
     except Exception:
         pass
     return BBox(x=0, y=0, w=100, h=20)
+
+
+@dataclass(frozen=True, slots=True)
+class _StripSlice:
+    orig_x: int
+    orig_y: int
+    orig_w: int
+    orig_h: int
+    collage_y0: int
+    collage_y1: int
+    scale: int
 
 
 class BannerOCREngine:
@@ -217,8 +228,6 @@ class BannerOCREngine:
                 txt = item.strip()
                 boxes.append(OCRBox(text=txt, confidence=0.95, script=_detect_script(txt)))
             elif isinstance(item, dict):
-                # PaddleOCR 3.x predict() dict:
-                # {"rec_texts": [...], "rec_scores": [...], "rec_boxes"/"dt_polys": [...]}
                 if "rec_texts" in item:
                     texts = item.get("rec_texts") or []
                     scores = item.get("rec_scores") or []
@@ -271,8 +280,6 @@ class BannerOCREngine:
                         )
                     )
             elif isinstance(item, (list, tuple)):
-                # PaddleOCR 2.x format: [ [ [[x1,y1]..], ("text", confidence) ], ... ]
-                # or direct tuple: ( [[x1,y1]..], ("text", confidence) )
                 candidates = (
                     [item]
                     if (
@@ -355,20 +362,51 @@ class BannerOCREngine:
             cache[cache_key] = []
             return []
 
-        crop_x0 = max(0, min(b.x for b in stroke_boxes) - 10)
-        crop_y0 = max(0, min(b.y for b in stroke_boxes) - 10)
-        crop_x1 = min(w, max(b.x + b.w for b in stroke_boxes) + 10)
-        crop_y1 = min(h, max(b.y + b.h for b in stroke_boxes) + 10)
-        cropped_pil = pil_img.crop((crop_x0, crop_y0, crop_x1, crop_y1))
-        cw, ch = cropped_pil.size
+        # Assemble compact text-band strip collage so 1080p banners do not waste
+        # OCR cycles on blank whitespace between top headlines and bottom fine print,
+        # while upscaling <28px fine-print strips by 2x for high-recall recognition.
+        strips: list[tuple[np.ndarray, int, int, int, int, int]] = []
+        for b in stroke_boxes[:8]:
+            sx0 = max(0, b.x - 8)
+            sy0 = max(0, b.y - 6)
+            sx1 = min(w, b.x + b.w + 8)
+            sy1 = min(h, b.y + b.h + 6)
+            crop_arr = rgb_arr[sy0:sy1, sx0:sx1]
+            if crop_arr.size == 0:
+                continue
+            sh, sw = crop_arr.shape[:2]
+            sc = 2 if sh < 28 else 1
+            if sc > 1:
+                crop_arr = cv2.resize(crop_arr, (sw * sc, sh * sc), interpolation=cv2.INTER_CUBIC)
+            strips.append((crop_arr, sx0, sy0, sx1 - sx0, sy1 - sy0, sc))
 
-        scale = 2 if (ch < 120 or cw < 320) else 1
-        work_img = (
-            cropped_pil.resize((cw * scale, ch * scale), Image.Resampling.BICUBIC)
-            if scale > 1
-            else cropped_pil
-        )
+        if not strips:
+            cache[cache_key] = []
+            return []
 
+        pad_v = 12
+        max_w = max(arr.shape[1] for arr, *_ in strips) + 16
+        total_h = sum(arr.shape[0] + pad_v for arr, *_ in strips) + pad_v
+        collage = np.full((total_h, max_w, 3), 255, dtype=np.uint8)
+        slices: list[_StripSlice] = []
+        cur_y = pad_v
+        for arr, ox, oy, ow, oh, sc in strips:
+            ah, aw = arr.shape[:2]
+            collage[cur_y : cur_y + ah, 8 : 8 + aw] = arr
+            slices.append(
+                _StripSlice(
+                    orig_x=ox,
+                    orig_y=oy,
+                    orig_w=ow,
+                    orig_h=oh,
+                    collage_y0=cur_y,
+                    collage_y1=cur_y + ah,
+                    scale=sc,
+                )
+            )
+            cur_y += ah + pad_v
+
+        work_img = Image.fromarray(collage)
         try:
             data = pytesseract.image_to_data(
                 work_img, output_type=pytesseract.Output.DICT, config="--psm 6"
@@ -378,9 +416,10 @@ class BannerOCREngine:
             self._tesseract_available = False
             return []
 
-        line_groups: dict[tuple[int, int, int], list[tuple[str, float, int, int, int, int]]] = (
-            defaultdict(list)
-        )
+        line_groups: dict[
+            tuple[int, int, int, int],
+            list[tuple[str, float, int, int, int, int]],
+        ] = defaultdict(list)
         n_items = len(data.get("text", ()))
         for i in range(n_items):
             word = str(data["text"][i]).strip()
@@ -392,15 +431,26 @@ class BannerOCREngine:
                 conf_raw = -1.0
             if conf_raw < 0:
                 continue
+
+            cy = int(data["top"][i]) + int(data["height"][i]) // 2
+            matched_idx = 0
+            for s_idx, sl in enumerate(slices):
+                if sl.collage_y0 - 6 <= cy <= sl.collage_y1 + 6:
+                    matched_idx = s_idx
+                    break
+            sl = slices[matched_idx]
+            sc = sl.scale
+
+            lx = sl.orig_x + max(0, (int(data["left"][i]) - 8) // sc)
+            ly = sl.orig_y + max(0, (int(data["top"][i]) - sl.collage_y0) // sc)
+            lw = max(1, int(data["width"][i]) // sc)
+            lh = max(1, int(data["height"][i]) // sc)
             key = (
+                matched_idx,
                 int(data["block_num"][i]),
                 int(data["par_num"][i]),
                 int(data["line_num"][i]),
             )
-            lx = crop_x0 + max(0, int(data["left"][i]) // scale)
-            ly = crop_y0 + max(0, int(data["top"][i]) // scale)
-            lw = max(1, int(data["width"][i]) // scale)
-            lh = max(1, int(data["height"][i]) // scale)
             line_groups[key].append((word, conf_raw / 100.0, lx, ly, lw, lh))
 
         boxes: list[OCRBox] = []
@@ -483,12 +533,7 @@ def parse_banner_image(
     ocr_texts: Sequence[str] = (),
     ocr_engine: Any = "auto",
 ) -> ContentAST:
-    """Parse an image file or byte buffer into an `ImageNode` plus OCR `TextNode`s.
-
-    By default (`ocr_engine="auto"`), runs `default_ocr_engine` (`PaddleOCR` PP-OCRv5
-    with automatic fallback to `Tesseract 5`) so text inside uploaded raster banners
-    flows automatically through Tier 1 and Tier 2 checks.
-    """
+    """Parse an image file or byte buffer into an `ImageNode` plus OCR `TextNode`s."""
     try:
         if isinstance(source, (str, Path)):
             file_path = Path(source)

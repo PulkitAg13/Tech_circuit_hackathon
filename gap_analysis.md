@@ -62,4 +62,4 @@ A walking skeleton is **the thinnest possible slice that runs through every laye
 | Infrastructure | 7 | 0 | 0 | 7 |
 | **TOTAL** | **82** | **0** | **1** | **83** |
 
-**100% of Round 2 ("The Build") Must-Have and Should-Have Features Complete (82/83 features complete; 95/95 backend tests passing across all 12 test suites, with 0 `ruff check`, `ruff format`, or `import-linter` issues).**
+**100% of Round 2 ("The Build") Must-Have and Should-Have Features Complete (82/83 features complete; 98/98 backend tests passing across all 13 test suites (including live real-campaign multimodal adverts), with 0 `ruff check`, `ruff format`, or `import-linter` issues).**

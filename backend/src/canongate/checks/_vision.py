@@ -1,4 +1,4 @@
-"""Shared deterministic vision, colourimetric (CIE Lab / CIEDE2000), and WCAG 2.1 math.
+r"""Shared deterministic vision, colourimetric (CIE Lab / CIEDE2000), and WCAG 2.1 math.
 
 Why this module lives inside `canongate.checks`:
 1. `import-linter` forbids `canongate.checks` from importing `canongate.parsers`.
@@ -20,22 +20,33 @@ from PIL import Image
 from canongate.domain.finding import BBox
 
 
-def load_rgb_image(path: str | Path) -> np.ndarray | None:
-    """Load an image file as an `(H, W, 3)` uint8 RGB array, compositing alpha over white."""
-    p = Path(path)
-    if not p.is_file():
-        return None
+@lru_cache(maxsize=32)
+def _load_rgb_image_cached(resolved_path: str, mtime_ns: int, size: int) -> np.ndarray | None:
     try:
-        with Image.open(p) as im:
+        with Image.open(resolved_path) as im:
             if im.mode in ("RGBA", "LA") or (im.mode == "P" and "transparency" in im.info):
                 rgba = im.convert("RGBA")
                 bg = Image.new("RGBA", rgba.size, (255, 255, 255, 255))
                 rgb = Image.alpha_composite(bg, rgba).convert("RGB")
             else:
                 rgb = im.convert("RGB")
-            return np.asarray(rgb, dtype=np.uint8)
+            arr = np.asarray(rgb, dtype=np.uint8)
+            arr.setflags(write=False)
+            return arr
     except Exception:
         return None
+
+
+def load_rgb_image(path: str | Path) -> np.ndarray | None:
+    """Load an image file as a cached `(H, W, 3)` uint8 RGB array, compositing alpha over white."""
+    if not path:
+        return None
+    p = Path(path)
+    try:
+        st = p.stat()
+    except OSError:
+        return None
+    return _load_rgb_image_cached(str(p.resolve()), st.st_mtime_ns, st.st_size)
 
 
 @lru_cache(maxsize=512)
@@ -56,7 +67,7 @@ def rgb_to_hex(rgb: tuple[int, int, int]) -> str:
 
 @lru_cache(maxsize=512)
 def relative_luminance(rgb: tuple[int, int, int]) -> float:
-    """W3C WCAG 2.1 relative luminance $L \\in [0, 1]$ from 8-bit sRGB."""
+    r"""W3C WCAG 2.1 relative luminance $L \in [0, 1]$ from 8-bit sRGB."""
     lin: list[float] = []
     for channel in rgb:
         c = channel / 255.0
@@ -65,7 +76,7 @@ def relative_luminance(rgb: tuple[int, int, int]) -> float:
 
 
 def wcag_contrast_ratio(rgb1: tuple[int, int, int], rgb2: tuple[int, int, int]) -> float:
-    """W3C WCAG 2.1 contrast ratio $(L_1 + 0.05) / (L_2 + 0.05) \\in [1.0, 21.0]$."""
+    r"""W3C WCAG 2.1 contrast ratio $(L_1 + 0.05) / (L_2 + 0.05) \in [1.0, 21.0]$."""
     l1 = relative_luminance(rgb1)
     l2 = relative_luminance(rgb2)
     lighter, darker = (l1, l2) if l1 >= l2 else (l2, l1)
@@ -79,7 +90,6 @@ def rgb_to_lab(rgb: tuple[int, int, int]) -> tuple[float, float, float]:
         (c / 255.0) / 12.92 if (c / 255.0) <= 0.04045 else (((c / 255.0) + 0.055) / 1.055) ** 2.4
         for c in rgb
     ]
-    # sRGB to XYZ (D65)
     x = (0.4124564 * lin[0] + 0.3575761 * lin[1] + 0.1804375 * lin[2]) / 0.95047
     y = (0.2126729 * lin[0] + 0.7151522 * lin[1] + 0.0721750 * lin[2]) / 1.00000
     z = (0.0193339 * lin[0] + 0.1191920 * lin[1] + 0.9503041 * lin[2]) / 1.08883
@@ -136,12 +146,10 @@ def suggest_compliant_fg_hex(
 
     _, a_star, b_star = rgb_to_lab(fg_rgb)
     bg_lum = relative_luminance(bg_rgb)
-    # Darken fg if background is light (L_bg >= 0.18), else lighten fg
     darken = bg_lum >= 0.18
 
     lo, hi = (0.0, 100.0)
     best_rgb = (0, 0, 0) if darken else (255, 255, 255)
-    # Binary search on L* holding chroma (a*, b*) constant
     for _ in range(24):
         mid = 0.5 * (lo + hi)
         cand_rgb = lab_to_rgb((mid, a_star, b_star))
@@ -149,9 +157,9 @@ def suggest_compliant_fg_hex(
         if ratio >= required_ratio:
             best_rgb = cand_rgb
             if darken:
-                lo = mid  # move L* closer to original (lighter) while staying >= required_ratio
+                lo = mid
             else:
-                hi = mid  # move L* closer to original (darker)
+                hi = mid
         else:
             if darken:
                 hi = mid
@@ -164,7 +172,7 @@ def delta_e_ciede2000(
     lab1: tuple[float, float, float],
     lab2: tuple[float, float, float],
 ) -> float:
-    """Exact Sharma, Wu, & Dalal (2005) CIEDE2000 perceptual colour distance $\\Delta E_{00}$."""
+    r"""Exact Sharma, Wu, & Dalal (2005) CIEDE2000 perceptual colour distance $\Delta E_{00}$."""
     l1, a1, b1 = lab1
     l2, a2, b2 = lab2
 
@@ -271,7 +279,6 @@ def segment_fg_bg_rgb(
         med = tuple(round(float(x)) for x in np.median(crop_rgb.reshape(-1, 3), axis=0))
         return (med[0], med[1], med[2]), (med[0], med[1], med[2])
 
-    # Backgroundtypically occupies the majority of border pixels in a text bounding box
     pos_rgb = tuple(round(float(x)) for x in np.median(crop_rgb[pos_mask], axis=0))
     neg_rgb = tuple(round(float(x)) for x in np.median(crop_rgb[neg_mask], axis=0))
     if int(np.count_nonzero(pos_mask)) >= int(np.count_nonzero(neg_mask)):

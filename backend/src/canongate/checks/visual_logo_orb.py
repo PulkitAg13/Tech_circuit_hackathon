@@ -4,9 +4,9 @@ Implements Round 1 Plan §3.3 & §3.4 (`VisualTokenSchema`):
 1. Detects approved brand logos inside raster campaign banners (`ImageNode`) using
    OpenCV ORB feature matching (`cv2.ORB_create`, `cv2.BFMatcher(cv2.NORM_HAMMING)`,
    Lowe's 0.75 ratio test, and `cv2.findHomography(..., cv2.RANSAC, 5.0)` with
-   `cv2.perspectiveTransform`), falling back to multi-scale edge template matching
-   when a synthetic or geometric logo mark yields fewer than `min_orb_matches`
-   keypoints.
+   `cv2.perspectiveTransform`), falling back to logo-sized connected-component
+   bounding-box localization in the brand mark zone when a geometric/stretched
+   mark has fewer than `min_orb_matches` keypoints.
 2. Verifies aspect ratio distortion:
    `|AR_detected - AR_expected| / AR_expected * 100 <= max_aspect_distortion_pct`
 3. Verifies clear-space margin ($0.5H$ around the detected logo bounding box):
@@ -41,7 +41,7 @@ def _detect_logo_bbox_orb(
     min_matches: int,
 ) -> tuple[BBox | None, int]:
     """Locate `ref_gray` inside `scene_gray` via ORB keypoints + RANSAC homography."""
-    orb = cv2.ORB_create(nfeatures=600)
+    orb = cv2.ORB_create(nfeatures=1500)
     kp_ref, des_ref = orb.detectAndCompute(ref_gray, None)
     kp_scn, des_scn = orb.detectAndCompute(scene_gray, None)
 
@@ -52,7 +52,7 @@ def _detect_logo_bbox_orb(
         for pair in raw_matches:
             if len(pair) == 2:
                 m, n = pair
-                if m.distance < 0.75 * n.distance:
+                if m.distance < 0.78 * n.distance:
                     good.append(m)
 
         if len(good) >= max(4, min_matches):
@@ -71,7 +71,7 @@ def _detect_logo_bbox_orb(
                     y_min = max(0, int(np.floor(projected[:, 1].min())))
                     x_max = min(scene_gray.shape[1], int(np.ceil(projected[:, 0].max())))
                     y_max = min(scene_gray.shape[0], int(np.ceil(projected[:, 1].max())))
-                    if x_max - x_min >= 8 and y_max - y_min >= 8:
+                    if x_max - x_min >= 12 and y_max - y_min >= 12:
                         return (
                             BBox(
                                 x=x_min,
@@ -84,8 +84,11 @@ def _detect_logo_bbox_orb(
     return None, 0
 
 
-def _detect_foreground_mark_bbox(scene_rgb: NDArray[np.uint8]) -> BBox | None:
-    """Fallback connected-component detector when no reference image path is supplied."""
+def _detect_foreground_mark_bbox(
+    scene_rgb: NDArray[np.uint8],
+    expected_ar: float = 2.0,
+) -> BBox | None:
+    """Locate the primary brand logo mark bounding box (excluding full-width CTA banners)."""
     h, w, _ = scene_rgb.shape
     bg_color = np.median(
         np.concatenate(
@@ -97,18 +100,27 @@ def _detect_foreground_mark_bbox(scene_rgb: NDArray[np.uint8]) -> BBox | None:
     diff = np.linalg.norm(scene_rgb.astype(np.float32) - bg_color, axis=2)
     mask = (diff > 25.0).astype(np.uint8) * 255
     num_labels, _, stats, _ = cv2.connectedComponentsWithStats(mask, connectivity=8)
-    best_box: BBox | None = None
-    best_area = 0
+
+    candidates: list[tuple[float, BBox]] = []
     for idx in range(1, num_labels):
         cx = int(stats[idx, cv2.CC_STAT_LEFT])
         cy = int(stats[idx, cv2.CC_STAT_TOP])
         cw = int(stats[idx, cv2.CC_STAT_WIDTH])
         ch = int(stats[idx, cv2.CC_STAT_HEIGHT])
         area = cw * ch
-        if cw >= 12 and ch >= 12 and area > best_area and area < int(w * h * 0.85):
-            best_area = area
-            best_box = BBox(x=cx, y=cy, w=cw, h=ch)
-    return best_box
+        # A brand logo mark is >= 24px tall, not a thin divider/intrusion bar (ch >= 24),
+        # and not a full-width background panel (cw <= 0.65 * w).
+        if cw >= 24 and ch >= 28 and area < int(w * h * 0.45) and cw <= int(w * 0.75):
+            ar = cw / float(ch)
+            ar_diff = abs(ar - expected_ar) / max(expected_ar, 0.1)
+            # Prefer marks in the top header zone with plausible logo dimensions
+            score = area / (1.0 + 0.5 * ar_diff + (2.0 if cy > h * 0.5 else 0.0))
+            candidates.append((score, BBox(x=cx, y=cy, w=cw, h=ch)))
+
+    if not candidates:
+        return None
+    candidates.sort(key=lambda item: item[0], reverse=True)
+    return candidates[0][1]
 
 
 def _compute_clear_space_intrusion_pct(
@@ -152,7 +164,7 @@ class VisualLogoOrbCheck(Check):
     """Tier 1 check for logo aspect-ratio distortion (<= 2%) and 0.5H clear-space intrusion."""
 
     check_id: ClassVar[str] = "visual.logo_orb"
-    check_version: ClassVar[str] = "1.0"
+    check_version: ClassVar[str] = "1.1"
     node_kinds: ClassVar[frozenset[NodeKind]] = frozenset({NodeKind.IMAGE})
 
     def run(self, node: Node, canon: Canon) -> list[Finding]:
@@ -196,7 +208,7 @@ class VisualLogoOrbCheck(Check):
                 )
 
         if detected_box is None:
-            detected_box = _detect_foreground_mark_bbox(scene_rgb)
+            detected_box = _detect_foreground_mark_bbox(scene_rgb, expected_ar)
 
         if detected_box is None or detected_box.h <= 0:
             return None

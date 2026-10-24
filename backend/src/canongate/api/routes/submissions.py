@@ -217,14 +217,23 @@ def _ingest_bundle_attachments(
                     text_blocks.append(f"[HIDDEN_BLOCK] {node.text.strip()}")
                 else:
                     text_blocks.append(node.text.strip())
-            elif (
-                isinstance(node, ImageNode)
-                and node.asset_path
-                and node.asset_path not in merged_images
-            ):
-                merged_images.append(node.asset_path)
+            elif isinstance(node, ImageNode):
+                if node.alt == "" and not Path(node.asset_path).is_file():
+                    text_blocks.append(f"[HTML_IMG_MISSING_ALT] {node.asset_path}")
+                elif node.asset_path and node.asset_path not in merged_images:
+                    merged_images.append(node.asset_path)
 
-    return "\n\n".join(text_blocks), merged_images
+    dedup_images: list[str] = []
+    seen_img_hashes: set[str] = set()
+    for img_p in merged_images:
+        p_obj = Path(img_p)
+        if p_obj.is_file():
+            h_val = content_hash(p_obj.read_bytes())
+            if h_val in seen_img_hashes:
+                continue
+            seen_img_hashes.add(h_val)
+        dedup_images.append(img_p)
+    return "\n\n".join(text_blocks), dedup_images
 
 
 # ── Endpoints ────────────────────────────────────────────────────────
@@ -1087,6 +1096,18 @@ def _parse_submission_ast(raw: str) -> ContentAST:
         if isinstance(node, TextNode) and node.text.startswith("[HIDDEN_BLOCK] "):
             clean_txt = node.text[len("[HIDDEN_BLOCK] ") :].strip()
             expanded_nodes.append(TextNode.from_text(clean_txt, path=f"{node.path}/hidden[0]"))
+            continue
+        if isinstance(node, TextNode) and node.text.startswith("[HTML_IMG_MISSING_ALT] "):
+            img_src = node.text[len("[HTML_IMG_MISSING_ALT] ") :].strip() or "img"
+            expanded_nodes.append(
+                ImageNode.from_bytes(
+                    img_src.encode("utf-8"),
+                    path=img_src,
+                    width=100,
+                    height=100,
+                    alt="",
+                )
+            )
             continue
         if isinstance(node, TextNode) and "|" in node.text and "\n" in node.text:
             tbl_ast = parse_markdown_text(node.text, source=node.path)

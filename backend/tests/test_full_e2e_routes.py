@@ -243,6 +243,16 @@ class _SqliteStoreAdapter:
                 resolved_by INTEGER,
                 payload_json TEXT NOT NULL
             );
+            CREATE TABLE submission_comments (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                submission_id INTEGER NOT NULL,
+                finding_id INTEGER,
+                author_id INTEGER NOT NULL,
+                author_name TEXT NOT NULL DEFAULT "",
+                role TEXT NOT NULL DEFAULT "creator",
+                body TEXT NOT NULL,
+                created_at TEXT NOT NULL DEFAULT "2026-10-24T00:00:00Z"
+            );
             CREATE TABLE workflow_events (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 submission_id INTEGER NOT NULL,
@@ -521,6 +531,74 @@ class _SqliteStoreAdapter:
                 created_at=str(r["created_at"]),
             )
             for r in cur.fetchall()
+        ]
+
+    async def create_comment(
+        self,
+        _session: Any,
+        *,
+        submission_id: int,
+        finding_id: int | None,
+        author_id: int,
+        author_name: str,
+        role: str,
+        body: str,
+    ) -> Any:
+        from types import SimpleNamespace
+
+        cur = self.conn.execute(
+            """
+            INSERT INTO submission_comments
+            (submission_id, finding_id, author_id, author_name, role, body)
+            VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            (submission_id, finding_id, author_id, author_name, role, body),
+        )
+        self.conn.commit()
+        cid = int(cur.lastrowid or 1)
+        return SimpleNamespace(
+            id=cid,
+            submission_id=submission_id,
+            finding_id=finding_id,
+            author_id=author_id,
+            author_name=author_name,
+            role=role,
+            body=body,
+            created_at="2026-10-24T00:00:00Z",
+        )
+
+    async def list_comments_for_submission(
+        self,
+        _session: Any,
+        submission_id: int,
+        *,
+        finding_id: int | None = None,
+    ) -> list[Any]:
+        from types import SimpleNamespace
+
+        if finding_id is not None:
+            rows = self.conn.execute(
+                "SELECT * FROM submission_comments "
+                "WHERE submission_id = ? AND finding_id = ? ORDER BY id ASC",
+                (submission_id, finding_id),
+            ).fetchall()
+        else:
+            rows = self.conn.execute(
+                "SELECT * FROM submission_comments WHERE submission_id = ? ORDER BY id ASC",
+                (submission_id,),
+            ).fetchall()
+        return [
+            SimpleNamespace(
+                id=r["id"],
+                submission_id=r["submission_id"],
+                finding_id=r["finding_id"],
+                author_id=r["author_id"],
+                author_name=r["author_name"],
+                role=r["role"],
+                body=r["body"],
+                created_at=r["created_at"],
+            )
+            for r in rows
         ]
 
     async def get_findings_for_canon(self, _session: Any, canon_id: str) -> list[_FindingRecord]:

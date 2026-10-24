@@ -38,7 +38,8 @@ _DEVANAGARI_RE = re.compile(r"[\u0900-\u097F]")
 _LATIN_WORD_RE = re.compile(r"[A-Za-z]{2,}")
 _DISCLAIMER_SPLIT_RE = re.compile(
     r"(?:\|\s*Footnote\s*:|\*(?:T&C|Terms|Conditions|Disclaimer)|"
-    r"\b(?:Disclaimer|Note|T&C\s+Apply)\s*:|अस्वीकरण\s*:?|शर्तें\s+लागू|नियम\s+(?:एवं|और)\s+शर्तें)",
+    r"\b(?:Disclaimer|Note|T&C\s+Apply)\s*:|"
+    r"अस्वीकरण\s*:?|शर्तें\s+लागू|नियम\s+(?:एवं|और)\s+शर्तें)",
     re.IGNORECASE,
 )
 _LOW_CONF_PATH_RE = re.compile(

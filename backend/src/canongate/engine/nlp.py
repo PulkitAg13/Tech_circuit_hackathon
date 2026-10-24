@@ -75,7 +75,8 @@ _ANCHOR_RE = re.compile(
 
 _QUALIFIER_CLAUSE_RE = re.compile(
     r"\b("
-    r"(?:only\s+)?(?:on|for|under|below|above|over|up\s+to|within|subject\s+to|valid\s+(?:until|till|for)|as\s+of|across|in\s+vitro|clinical)\s+"
+    r"(?:only\s+)?(?:on|for|under|below|above|over|up\s+to|within|subject\s+to|"
+    r"valid\s+(?:until|till|for)|as\s+of|across|in\s+vitro|clinical)\s+"
     r"(?:\d[\d,]*|[^.;,\n()]){3,90}?"
     r")(?=\s+(?:valid\s+(?:until|till|for)|subject\s+to|as\s+of)\b|[.;,\n()]|$)",
     re.IGNORECASE,
@@ -387,6 +388,7 @@ class SpacyLinguisticAnalyzer:
     def __init__(self) -> None:
         self._spacy_nlp: Any = None
         self._spacy_checked = False
+        self._parse_cache: dict[str, tuple[ParsedToken, ...]] = {}
 
     def _get_spacy_nlp(self) -> Any:
         if self._spacy_checked:
@@ -407,10 +409,13 @@ class SpacyLinguisticAnalyzer:
 
     def parse(self, text: str) -> list[ParsedToken]:
         """Parse `text` into `ParsedToken`s with UPOS tags and dependency labels."""
+        cached = self._parse_cache.get(text)
+        if cached is not None:
+            return list(cached)
         nlp = self._get_spacy_nlp()
         if nlp is not None:
             doc = nlp(text)
-            return [
+            res = tuple(
                 ParsedToken(
                     text=tok.text,
                     lemma=tok.lemma_.lower(),
@@ -421,7 +426,10 @@ class SpacyLinguisticAnalyzer:
                     end=tok.idx + len(tok.text),
                 )
                 for tok in doc
-            ]
+            )
+            if len(self._parse_cache) < 1024:
+                self._parse_cache[text] = res
+            return list(res)
 
         raw_matches = list(_SPAN_TOKEN_RE.finditer(text))
         if not raw_matches:
@@ -911,7 +919,8 @@ class QASemSlotAligner:
         if fact.substantiation_level == "ingredient_in_vitro":
             has_invitro_disclosure = bool(
                 re.search(
-                    r"\b(?:in[\s\-]?vitro|ingredient(?:\s+study|\s+test)?|lab[\s\-]?tested\s+ingredient)\b",
+                    r"\b(?:in[\s\-]?vitro|ingredient(?:\s+study|\s+test)?"
+                    r"|lab[\s\-]?tested\s+ingredient)\b",
                     sent,
                     re.IGNORECASE,
                 )

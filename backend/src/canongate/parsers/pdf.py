@@ -1,25 +1,31 @@
-"""PDF Document, Table, and Hidden Micro-Text Parser (`parsers/pdf.py`).
+"""PDF Document, Table, Embedded Banner, and Hidden Micro-Text Parser (`parsers/pdf.py`).
 
 Uses `pdfplumber` (MIT) with automatic fallback to `pypdf` (BSD-3):
-1. Detects and linearizes PDF tables via `page.find_tables()` (both bordered lattice
-   tables and borderless whitespace-aligned tables via `vertical_strategy="text"`) and
-   `TableGrid`, filtering table bounding boxes out of the page before body text
-   extraction so tabular numbers are never duplicated as mangled plain text.
+1. Detects and linearizes PDF tables via `page.find_tables()` (bordered lattice tables)
+   and `_extract_whitespace_aligned_tables()` (borderless whitespace/tab-aligned tables)
+   via `TableGrid`, filtering bordered table bounding boxes out of the page before body
+   text extraction so tabular numbers are never duplicated as mangled plain text.
 2. Inspects `page.chars` for OWASP LLM01 indirect prompt-injection vectors:
    micro-font text (`size < 4.0` pt) or white-on-white fill colour
    (`(1, 1, 1)` or `(255, 255, 255)`), emitting `{source}/page[{p}]/hidden[0]`.
 3. Splits remaining body text into paragraph `TextNode`s (`{source}/page[{p}]/p[{i}]`).
+4. Extracts embedded raster images/banners from PDF pages via `pypdf` and routes
+   them through `parse_banner_image` for CV + OCR inspection.
 """
 
 from __future__ import annotations
 
+import hashlib
 import io
 import logging
 import re
 from pathlib import Path
 from typing import Any
 
+from PIL import Image, UnidentifiedImageError
+
 from canongate.domain.ast import ContentAST, Node, TextNode
+from canongate.parsers.banner import parse_banner_image
 from canongate.parsers.llm_table import MultiProviderJsonLLM
 from canongate.parsers.tables import TableGrid, is_footnote_text
 
@@ -27,13 +33,7 @@ logger = logging.getLogger(__name__)
 
 _PARA_SPLIT = re.compile(r"\n{2,}")
 _BORDERLESS_ROW_RE = re.compile(r"\S+\s{2,}\S+")
-
-_TEXT_TABLE_SETTINGS: dict[str, Any] = {
-    "vertical_strategy": "text",
-    "horizontal_strategy": "text",
-    "min_words_vertical": 2,
-    "min_words_horizontal": 1,
-}
+_PDF_MEDIA_DIR = Path("/tmp/.canongate_pdf_media")
 
 
 def _is_white_color(color: Any) -> bool:
@@ -57,7 +57,11 @@ def _is_char_hidden(ch: dict[str, Any]) -> bool:
 
 
 def _point_in_bboxes(
-    x0: float, top: float, x1: float, bottom: float, bboxes: list[tuple[float, float, float, float]]
+    x0: float,
+    top: float,
+    x1: float,
+    bottom: float,
+    bboxes: list[tuple[float, float, float, float]],
 ) -> bool:
     cx = 0.5 * (x0 + x1)
     cy = 0.5 * (top + bottom)
@@ -74,8 +78,14 @@ def _extract_whitespace_aligned_tables(raw_text: str) -> tuple[list[list[list[st
         lines = [ln.strip() for ln in blk.splitlines() if ln.strip()]
         multi_col_lines = [ln for ln in lines if _BORDERLESS_ROW_RE.search(ln)]
         if len(lines) >= 2 and len(multi_col_lines) >= 2:
-            grid: list[list[str]] = []
+            table_lines: list[str] = []
             for ln in lines:
+                if _BORDERLESS_ROW_RE.search(ln) or is_footnote_text(ln):
+                    table_lines.append(ln)
+                else:
+                    remaining_blocks.append(ln)
+            grid: list[list[str]] = []
+            for ln in table_lines:
                 if is_footnote_text(ln):
                     grid.append([ln])
                 else:
@@ -88,6 +98,43 @@ def _extract_whitespace_aligned_tables(raw_text: str) -> tuple[list[list[list[st
         remaining_blocks.append(blk)
 
     return tables, remaining_blocks
+
+
+def _extract_pdf_embedded_images(raw_bytes: bytes) -> list[Node]:
+    """Extract embedded raster images from PDF pages using `pypdf` into `ImageNode`s + OCR."""
+    extracted_nodes: list[Node] = []
+    try:
+        import pypdf  # type: ignore[import-untyped]
+
+        reader = pypdf.PdfReader(io.BytesIO(raw_bytes))
+        _PDF_MEDIA_DIR.mkdir(parents=True, exist_ok=True)
+        seen_digests: set[str] = set()
+        for page in reader.pages:
+            images = getattr(page, "images", None) or ()
+            for img_file in images:
+                blob = getattr(img_file, "data", b"")
+                if not blob or len(blob) < 128:
+                    continue
+                digest = hashlib.sha256(blob).hexdigest()[:12]
+                if digest in seen_digests:
+                    continue
+                try:
+                    with Image.open(io.BytesIO(blob)) as im:
+                        w, h = im.size
+                        if w < 32 or h < 32:
+                            continue
+                        rgb_im = im.convert("RGB")
+                        out_path = _PDF_MEDIA_DIR / f"{digest}_pdf_img.png"
+                        if not out_path.is_file():
+                            rgb_im.save(out_path, format="PNG")
+                    seen_digests.add(digest)
+                    img_ast = parse_banner_image(out_path, path=str(out_path), alt=None)
+                    extracted_nodes.extend(img_ast.nodes)
+                except (UnidentifiedImageError, OSError, ValueError):
+                    continue
+    except Exception:
+        pass
+    return extracted_nodes
 
 
 def _parse_with_pypdf(
@@ -118,6 +165,7 @@ def _parse_with_pypdf(
                 cleaned = block.strip()
                 if cleaned:
                     nodes.append(TextNode.from_text(cleaned, path=f"{page_prefix}/p[{b_idx}]"))
+        nodes.extend(_extract_pdf_embedded_images(raw_bytes))
         return ContentAST(nodes=tuple(nodes))
     except Exception:
         logger.warning("Failed to parse PDF via pypdf fallback at %s", source)
@@ -130,10 +178,7 @@ def parse_pdf(
     source_name: str = "pdf",
     llm_client: MultiProviderJsonLLM | None = None,
 ) -> ContentAST:
-    """Parse a PDF file or byte buffer into a `ContentAST` of paragraphs, tables, and hidden text.
-
-    Fault-tolerant: returns an empty `ContentAST` if the PDF is missing, empty, or corrupted.
-    """
+    """Parse a PDF file or byte buffer into a `ContentAST` of text, tables, and images."""
     try:
         if isinstance(source, (str, Path)):
             path = Path(source)
@@ -170,23 +215,9 @@ def parse_pdf(
                 if hidden_text:
                     nodes.append(TextNode.from_text(hidden_text, path=f"{page_prefix}/hidden[0]"))
 
-                # 2. Extract bordered tables first; if none found,
-                # probe borderless text-aligned tables
+                # 2. Extract bordered lattice tables first
                 table_bboxes: list[tuple[float, float, float, float]] = []
                 found_tables = page.find_tables() if hasattr(page, "find_tables") else []
-                if not found_tables and hasattr(page, "find_tables"):
-                    try:
-                        candidate_tables = page.find_tables(table_settings=_TEXT_TABLE_SETTINGS)
-                        # Only accept text-strategy tables with >= 2 rows and >= 2 columns
-                        found_tables = [
-                            t
-                            for t in (candidate_tables or [])
-                            if (grid := t.extract())
-                            and len(grid) >= 2
-                            and max((len(r) for r in grid), default=0) >= 2
-                        ]
-                    except TypeError:
-                        found_tables = []
 
                 for t_idx, tbl_obj in enumerate(found_tables):
                     bbox = getattr(tbl_obj, "bbox", None)
@@ -246,6 +277,7 @@ def parse_pdf(
                                 nodes.append(
                                     TextNode.from_text(cleaned, path=f"{page_prefix}/p[{b_idx}]")
                                 )
+        nodes.extend(_extract_pdf_embedded_images(raw_bytes))
     except Exception:
         logger.warning("pdfplumber failed on %s; attempting pypdf fallback", source_name)
         return _parse_with_pypdf(raw_bytes, source=source_name, llm_client=llm_client)

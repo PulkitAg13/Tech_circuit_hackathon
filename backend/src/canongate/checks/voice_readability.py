@@ -88,16 +88,20 @@ class VoiceReadabilityCheck(Check):
     """Tier 1 check enforcing `VoiceProfile` sentence length, passive voice %, and FK grade."""
 
     check_id: ClassVar[str] = "voice.readability"
-    check_version: ClassVar[str] = "1.0"
+    check_version: ClassVar[str] = "1.1"
     node_kinds: ClassVar[frozenset[NodeKind]] = frozenset({NodeKind.TEXT})
 
     def run(self, node: Node, canon: Canon) -> list[Finding]:
         if not isinstance(node, TextNode) or canon.voice_profile is None:
             return []
+        # Skip linearized table cells, hidden prompt-injection nodes, and short OCR fragments
+        if any(tag in node.path for tag in ("/table[", "/hidden[", "/ocr")):
+            return []
 
         vp = canon.voice_profile
         text = node.text.strip()
-        if not text:
+        words_all = _WORD_RE.findall(text)
+        if len(words_all) < 7:
             return []
 
         sentences = [s.strip() for s in _SENTENCE_SPLIT_RE.split(text) if _WORD_RE.search(s)]

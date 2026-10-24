@@ -6,11 +6,13 @@ tables in exact document reading order:
 2. Linearizes tables (including nested tables and horizontally merged cells)
    via `TableGrid` so RBI Key Fact Statement (KFS) fee/APR schedules retain
    column headers and footnotes (`{source}/table[{t}]/r[{r}]`).
-3. Extracts embedded raster images from package relationships into `ImageNode`s.
+3. Extracts embedded raster images from package relationships into disk-backed
+   `ImageNode`s and OCR `TextNode`s via `parse_banner_image`.
 """
 
 from __future__ import annotations
 
+import hashlib
 import io
 import logging
 from collections.abc import Iterator
@@ -19,10 +21,13 @@ from typing import Any
 
 from PIL import Image, UnidentifiedImageError
 
-from canongate.domain.ast import ContentAST, ImageNode, Node, TextNode
+from canongate.domain.ast import ContentAST, Node, TextNode
+from canongate.parsers.banner import parse_banner_image
 from canongate.parsers.tables import TableGrid
 
 logger = logging.getLogger(__name__)
+
+_DOCX_MEDIA_DIR = Path("/tmp/.canongate_docx_media")
 
 
 def _iter_docx_blocks(container: Any) -> Iterator[tuple[str, Any]]:
@@ -36,7 +41,6 @@ def _iter_docx_blocks(container: Any) -> Iterator[tuple[str, Any]]:
                 yield ("tbl", item)
         return
 
-    # Fallback for older python-docx versions lacking iter_inner_content
     for p in getattr(container, "paragraphs", ()):
         yield ("p", p)
     for t in getattr(container, "tables", ()):
@@ -53,8 +57,6 @@ def _extract_docx_table_grids(table: Any) -> Iterator[list[list[str]]]:
         seen_tc_ids: set[int] = set()
         for cell in row.cells:
             tc_id = id(cell._tc)
-            # In python-docx, horizontally merged cells share the same _tc XML object;
-            # TableGrid handles duplicate adjacent values, so appending cell.text is safe.
             if tc_id not in seen_tc_ids:
                 seen_tc_ids.add(tc_id)
                 for sub_tbl in getattr(cell, "tables", ()):
@@ -124,7 +126,7 @@ def parse_docx(
                 table_idx += 1
 
     if extract_images and hasattr(doc, "part") and hasattr(doc.part, "rels"):
-        img_idx = 0
+        _DOCX_MEDIA_DIR.mkdir(parents=True, exist_ok=True)
         for rel in doc.part.rels.values():
             target_ref = str(getattr(rel, "target_ref", ""))
             if "image" not in target_ref.lower():
@@ -132,18 +134,19 @@ def parse_docx(
             try:
                 blob: bytes = rel.target_part.blob
                 with Image.open(io.BytesIO(blob)) as im:
-                    w, h = im.size
-                nodes.append(
-                    ImageNode.from_bytes(
-                        blob,
-                        path=f"{source_name}/media/{Path(target_ref).name}",
-                        width=w,
-                        height=h,
-                        alt=None,
-                    )
+                    im.verify()
+                digest = hashlib.sha256(blob).hexdigest()[:12]
+                ext = Path(target_ref).suffix.lower() or ".png"
+                media_file = _DOCX_MEDIA_DIR / f"{digest}_{Path(target_ref).stem}{ext}"
+                if not media_file.is_file():
+                    media_file.write_bytes(blob)
+                img_ast = parse_banner_image(
+                    media_file,
+                    path=str(media_file),
+                    alt=None,
                 )
-                img_idx += 1
-            except (AttributeError, UnidentifiedImageError, OSError):
+                nodes.extend(img_ast.nodes)
+            except (AttributeError, UnidentifiedImageError, OSError, ValueError):
                 continue
 
     return ContentAST(nodes=tuple(nodes))

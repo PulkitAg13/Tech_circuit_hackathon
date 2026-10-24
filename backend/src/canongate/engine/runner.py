@@ -94,6 +94,20 @@ def _stamp_latency(findings: list[Finding], elapsed_ms: float) -> list[Finding]:
 # ── Runner ───────────────────────────────────────────────────────────
 
 
+def _run_sync_timed(check: Check, node: Node, canon: Canon) -> tuple[list[Finding], float]:
+    t0 = time.perf_counter()
+    res = check.run(node, canon)
+    return res, (time.perf_counter() - t0) * 1000.0
+
+
+def _run_bundle_sync_timed(
+    check: Check, ast: ContentAST, canon: Canon
+) -> tuple[list[Finding], float]:
+    t0 = time.perf_counter()
+    res = check.run_bundle(ast, canon)
+    return res, (time.perf_counter() - t0) * 1000.0
+
+
 async def run_checks(ast: ContentAST, canon: Canon) -> AsyncIterator[Finding]:
     """Run all registered checks on the AST and yield findings as they arrive."""
     checks = _instantiate_checks()
@@ -105,20 +119,22 @@ async def run_checks(ast: ContentAST, canon: Canon) -> AsyncIterator[Finding]:
             logger.debug("Cache hit: %s on %s", check.check_id, node.id)
             return cached
 
-        t0 = time.monotonic()
+        t0 = time.perf_counter()
         succeeded = False
+        elapsed = 0.0
         try:
             if type(check).run_async is not Check.run_async:
                 coro = check.run_async(node, canon)
+                findings = await asyncio.wait_for(coro, timeout=check.timeout_s)
+                elapsed = (time.perf_counter() - t0) * 1000.0
             else:
-                # Sync checks go to a thread to avoid blocking the event loop
-                coro = asyncio.to_thread(check.run, node, canon)
-            findings = await asyncio.wait_for(coro, timeout=check.timeout_s)
+                coro_timed = asyncio.to_thread(_run_sync_timed, check, node, canon)
+                findings, elapsed = await asyncio.wait_for(coro_timed, timeout=check.timeout_s)
             succeeded = True
         except Exception:
             logger.exception("Check %s failed on node %s", check.check_id, node.id)
             findings = []
-        elapsed = (time.monotonic() - t0) * 1000
+            elapsed = (time.perf_counter() - t0) * 1000.0
         logger.debug(
             "Check %s on %s: %d findings in %.1fms",
             check.check_id,
@@ -140,19 +156,22 @@ async def run_checks(ast: ContentAST, canon: Canon) -> AsyncIterator[Finding]:
         if cached is not None:
             return cached
 
-        t0 = time.monotonic()
+        t0 = time.perf_counter()
         succeeded = False
+        elapsed = 0.0
         try:
             if type(check).run_bundle_async is not Check.run_bundle_async:
                 coro = check.run_bundle_async(ast, canon)
+                findings = await asyncio.wait_for(coro, timeout=check.timeout_s)
+                elapsed = (time.perf_counter() - t0) * 1000.0
             else:
-                coro = asyncio.to_thread(check.run_bundle, ast, canon)
-            findings = await asyncio.wait_for(coro, timeout=check.timeout_s)
+                coro_timed = asyncio.to_thread(_run_bundle_sync_timed, check, ast, canon)
+                findings, elapsed = await asyncio.wait_for(coro_timed, timeout=check.timeout_s)
             succeeded = True
         except Exception:
             logger.exception("Bundle check %s failed on AST %s", check.check_id, ast.hash)
             findings = []
-        elapsed = (time.monotonic() - t0) * 1000
+            elapsed = (time.perf_counter() - t0) * 1000.0
         if succeeded:
             findings = _stamp_latency(findings, elapsed)
             _cache_put(key, findings)

@@ -4,10 +4,10 @@ Implements formal symbolic constraint solving (`SmtConstraintSolver`) backed by:
 1. **Primary Solver — Z3 Theorem Prover (`z3-solver`):**
    Uses `z3.Real`, `z3.Int`, `z3.Solver`, `z3.And`, `z3.Not`, and `solver.model().eval(...)`
    over Linear and Nonlinear Real Arithmetic (`QF_NRA` / `QF_LRA`).
-2. **Secondary Solver — SymPy Rational Inequality + SciPy HiGHS LP Solver (`sympy-scipy-smt-v2`):**
-   When the native Z3 C++ wheel is absent, symbolically reduces rational inequality systems
-   via `sympy.solvers.inequalities.reduce_rational_inequalities` and computes exact interior
-   counterexample witnesses via `scipy.optimize.linprog(method="highs")`.
+2. **Secondary Solver — SymPy Rational Interval + SciPy HiGHS LP Solver (`sympy-scipy-smt-v2`):**
+   When the native Z3 C++ wheel is absent, symbolically intersects exact rational intervals
+   via `sympy.Interval` & `sympy.Rational` and computes exact interior counterexample
+   witnesses via `scipy.optimize.linprog(method="highs")`.
 
 Proves five classes of regulatory and mathematical violations:
 - **Upper-Bound Cap Breach:** $\\exists x > 0 : (x \\le D_{\\max}) \\land \\neg(x \\le C_{\\max})$
@@ -27,6 +27,7 @@ import datetime as dt
 import re
 import threading
 from dataclasses import dataclass
+from functools import lru_cache
 from typing import ClassVar, Literal
 
 import numpy as np
@@ -116,6 +117,7 @@ class SmtConstraintSolver:
     """Formal SMT / symbolic arithmetic constraint solver (`z3` -> `sympy` + `scipy` HiGHS)."""
 
     @staticmethod
+    @lru_cache(maxsize=512)
     def prove_upper_bound_breach(draft_val: float, canon_val: float) -> tuple[bool, float, str]:
         """Prove $\\exists x > 0 : (x \\le D_{\\max}) \\land \\neg(x \\le C_{\\max})$."""
         try:
@@ -144,20 +146,12 @@ class SmtConstraintSolver:
         try:
             import sympy as sp
             from scipy.optimize import linprog
-            from sympy.solvers.inequalities import reduce_rational_inequalities
 
-            x_sym = sp.Symbol("amount", real=True)
-            sol = reduce_rational_inequalities(
-                [
-                    [
-                        x_sym > 0,
-                        x_sym <= sp.Rational(str(draft_val)),
-                        x_sym > sp.Rational(str(canon_val)),
-                    ]
-                ],
-                x_sym,
+            d_rat = sp.Rational(str(draft_val))
+            c_rat = sp.Rational(str(canon_val))
+            sol_set = sp.Interval(0, d_rat, left_open=True) & sp.Interval(
+                c_rat, sp.oo, left_open=True
             )
-            sol_set = sol.as_set()
             if sol_set.is_empty:
                 return False, 0.0, "sympy-scipy-smt-v2"
 
@@ -182,6 +176,7 @@ class SmtConstraintSolver:
             return False, 0.0, "interval-smt-v1"
 
     @staticmethod
+    @lru_cache(maxsize=512)
     def prove_lower_bound_breach(draft_val: float, canon_val: float) -> tuple[bool, float, str]:
         """Prove $\\exists x > 0 : (x \\ge D_{\\min}) \\land \\neg(x \\ge C_{\\min})$."""
         try:
@@ -201,20 +196,13 @@ class SmtConstraintSolver:
 
         try:
             import sympy as sp
-            from sympy.solvers.inequalities import reduce_rational_inequalities
 
-            x_sym = sp.Symbol("amount", real=True)
-            sol = reduce_rational_inequalities(
-                [
-                    [
-                        x_sym > 0,
-                        x_sym >= sp.Rational(str(draft_val)),
-                        x_sym < sp.Rational(str(canon_val)),
-                    ]
-                ],
-                x_sym,
+            d_rat = sp.Rational(str(draft_val))
+            c_rat = sp.Rational(str(canon_val))
+            sol_set = sp.Interval(max(sp.Integer(0), d_rat), sp.oo) & sp.Interval(
+                0, c_rat, left_open=True, right_open=True
             )
-            if not sol.as_set().is_empty:
+            if not sol_set.is_empty:
                 return True, 0.5 * (draft_val + canon_val), "sympy-scipy-smt-v2"
             return False, 0.0, "sympy-scipy-smt-v2"
         except Exception:
@@ -223,6 +211,7 @@ class SmtConstraintSolver:
             return False, 0.0, "interval-smt-v1"
 
     @staticmethod
+    @lru_cache(maxsize=512)
     def prove_temporal_expiry_breach(draft_iso: str, canon_iso: str) -> tuple[bool, str, str]:
         r"""Prove $\exists t \in \mathbb{Z}$ such that:
         $(t \le t_{\text{draft}}) \land \neg(t \le t_{\text{canon}})$.
@@ -249,17 +238,18 @@ class SmtConstraintSolver:
 
         try:
             import sympy as sp
-            from sympy.solvers.inequalities import reduce_rational_inequalities
 
-            t_sym = sp.Symbol("epoch_day", real=True)
-            sol = reduce_rational_inequalities([[t_sym <= d_ord, t_sym > c_ord]], t_sym)
-            if not sol.as_set().is_empty:
+            sol_set = sp.Interval(-sp.oo, sp.Integer(d_ord)) & sp.Interval(
+                sp.Integer(c_ord), sp.oo, left_open=True
+            )
+            if not sol_set.is_empty:
                 return True, draft_iso, "sympy-scipy-smt-v2"
             return False, "", "sympy-scipy-smt-v2"
         except Exception:
             return (d_ord > c_ord), draft_iso, "temporal-smt-v1"
 
     @staticmethod
+    @lru_cache(maxsize=512)
     def prove_drip_pricing_contradiction(
         claimed_pct: float,
         gst_pct: float,
@@ -283,20 +273,17 @@ class SmtConstraintSolver:
 
         try:
             import sympy as sp
-            from sympy.solvers.inequalities import reduce_rational_inequalities
 
             d_r = sp.Rational(str(claimed_pct)) / sp.Integer(100)
             g_r = sp.Rational(str(gst_pct)) / sp.Integer(100)
             eff_r = (sp.Integer(1) - (sp.Integer(1) - d_r) * (sp.Integer(1) + g_r)) * sp.Integer(
                 100
             )
-            x_sym = sp.Symbol("d_eff", real=True)
-            sol = reduce_rational_inequalities(
-                [[x_sym >= eff_r, x_sym <= eff_r, x_sym < sp.Rational(str(claimed_pct))]],
-                x_sym,
+            sol_set = sp.FiniteSet(eff_r) & sp.Interval(
+                -sp.oo, sp.Rational(str(claimed_pct)), right_open=True
             )
             eff_float = round(float(eff_r), 2)
-            return (not sol.as_set().is_empty), eff_float, "sympy-scipy-smt-v2"
+            return (not sol_set.is_empty), eff_float, "sympy-scipy-smt-v2"
         except Exception:
             net_mult = (1.0 - claimed_pct / 100.0) * (1.0 + gst_pct / 100.0)
             eff_float = round((1.0 - net_mult) * 100.0, 2)

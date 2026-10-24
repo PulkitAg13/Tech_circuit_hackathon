@@ -15,3 +15,4 @@ node_modules/
 *.zip
 test-results/
 playwright-report/
+.canongate_uploads/

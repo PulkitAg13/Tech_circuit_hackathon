@@ -1,4 +1,4 @@
-"""HTML DOM, Table, Image Alt-Text, and CSS Hidden-Text Parser (`parsers/html.py`).
+"""HTML DOM, Table, Image Alt-Text, Inline Style, and CSS Hidden-Text Parser (`parsers/html.py`).
 
 Uses `BeautifulSoup` (`html.parser`) to convert campaign HTML pages or email
 templates into a `ContentAST`:
@@ -10,6 +10,8 @@ templates into a `ContentAST`:
    `th`/`td` headers).
 4. Extracts `img` elements as `ImageNode`s (preserving `alt` attributes for
    WCAG 2.1 AA alt-text auditing).
+5. Preserves inline `style` colour/contrast declarations on semantic text blocks
+   so `AccessibilityContrastCheck` and `VisualPaletteDriftCheck` audit DOM styles.
 """
 
 from __future__ import annotations
@@ -37,6 +39,7 @@ _COLOR_PROP_RE = re.compile(
     r"(?:^|;)\s*(color|background-color|background)\s*:\s*([^;]+)",
     re.IGNORECASE,
 )
+_HEX_IN_STYLE_RE = re.compile(r"#[0-9A-Fa-f]{3,6}\b")
 _WS_RE = re.compile(r"\s+")
 
 
@@ -169,12 +172,15 @@ def parse_html(
         )
         img_idx += 1
 
-    # 4. Extract semantic text blocks in document order
+    # 4. Extract semantic text blocks in document order, preserving inline colour styles
     for blk in soup.find_all(_TEXT_BLOCK_TAGS):
         if any(p.name in _TEXT_BLOCK_TAGS for p in blk.parents if isinstance(p, Tag)):
             continue
         txt = _WS_RE.sub(" ", blk.get_text(" ", strip=True)).strip()
         if txt:
+            style_attr = str(blk.get("style", "")).strip()
+            if style_attr and _HEX_IN_STYLE_RE.search(style_attr):
+                txt = f"{txt} ({style_attr})"
             nodes.append(TextNode.from_text(txt, path=f"{source}/{blk.name}[{block_idx}]"))
             block_idx += 1
 
