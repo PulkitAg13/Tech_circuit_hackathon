@@ -3,6 +3,7 @@
 
 id: indian-d2c-nutra
 version: "1.0"
+require_image_alt: true
 
 terminology:
   - id: term-miracle-cure
@@ -41,9 +42,12 @@ facts:
       - "in-vitro ingredient study only"
       - "when taken with piperine for 8 weeks"
     valid_until: "2026-12-31"
+    substantiation_level: "ingredient_in_vitro"
 
   - id: fact-protein-per-serving
     text: "24g plant protein per scoop"
     conditions:
       - "per 35g serving size"
     valid_until: "2026-12-31"
+    substantiation_level: "finished_product_clinical"
+

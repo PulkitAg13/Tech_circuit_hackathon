@@ -128,6 +128,7 @@ def _compute_clear_space_intrusion_pct(
     logo_box: BBox,
     clear_space_ratio_h: float,
 ) -> float:
+    """Measure % of pixels in the $0.5H$ clear-space collar that contain intruding graphics."""
     img_h, img_w, _ = scene_rgb.shape
     margin = max(2, round(clear_space_ratio_h * logo_box.h))
 

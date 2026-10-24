@@ -3,6 +3,7 @@
 
 id: indian-digital-lending
 version: "1.0"
+require_image_alt: true
 
 terminology:
   - id: term-guaranteed-approval
@@ -47,9 +48,42 @@ facts:
       - "under Rs 50,000"
       - "for first-time borrowers only"
     valid_until: "2026-09-30"
+    subject_product: "processing fee"
+    metric_value: "0%"
+    comparison_operator: "<="
+    kfs_acceptance_validity_days: 3
 
   - id: fact-kfs-apr-ceiling
     text: "Annual Percentage Rate (APR) is 18%"
     conditions:
       - "up to Rs 2,00,000"
     valid_until: "2026-12-31"
+    subject_product: "Annual Percentage Rate (APR)"
+    metric_value: "18%"
+    comparison_operator: "<="
+
+trigger_obligations:
+  - id: trig-kfs-schedule
+    trigger_pattern: "0%\\s+processing\\s+fee"
+    required_disclaimer_id: rbi-kfs-mandatory
+    required_disclaimer_text: "Subject to RBI Key Fact Statement (KFS) schedule"
+    same_language: true
+    severity: 75
+
+voice_profile:
+  id: lending-voice
+  min_sentence_words: 3
+  max_sentence_words: 28
+  max_passive_voice_pct: 25.0
+  max_flesch_kincaid_grade: 12.0
+  approved_exemplars:
+    - "Transparent digital credit with upfront APR and zero hidden charges."
+  severity: 35
+
+logos:
+  - id: nbfc-primary-logo
+    name: "NBFC Trust Mark"
+    aspect_ratio: 2.0
+    max_aspect_distortion_pct: 2.0
+    clear_space_ratio_h: 0.50
+    severity: 65

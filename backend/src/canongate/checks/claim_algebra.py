@@ -124,8 +124,9 @@ class SmtConstraintSolver:
             import z3  # type: ignore[import-not-found]
 
             with _Z3_LOCK:
-                x = z3.Real("amount")
-                solver = z3.Solver()
+                ctx = z3.Context()
+                x = z3.Real("amount", ctx=ctx)
+                solver = z3.Solver(ctx=ctx)
                 solver.add(x > 0)
                 solver.add(x <= draft_val)
                 solver.add(z3.Not(x <= canon_val))
@@ -140,7 +141,7 @@ class SmtConstraintSolver:
                     )
                     return True, witness, "z3-smt-v4"
                 return False, 0.0, "z3-smt-v4"
-        except ImportError:
+        except Exception:
             pass
 
         try:
@@ -183,15 +184,16 @@ class SmtConstraintSolver:
             import z3  # type: ignore[import-not-found]
 
             with _Z3_LOCK:
-                x = z3.Real("amount")
-                solver = z3.Solver()
+                ctx = z3.Context()
+                x = z3.Real("amount", ctx=ctx)
+                solver = z3.Solver(ctx=ctx)
                 solver.add(x > 0)
                 solver.add(x >= draft_val)
                 solver.add(z3.Not(x >= canon_val))
                 if solver.check() == z3.sat:
                     return True, 0.5 * (draft_val + canon_val), "z3-smt-v4"
                 return False, 0.0, "z3-smt-v4"
-        except ImportError:
+        except Exception:
             pass
 
         try:
@@ -226,14 +228,15 @@ class SmtConstraintSolver:
             import z3  # type: ignore[import-not-found]
 
             with _Z3_LOCK:
-                t = z3.Int("epoch_day")
-                solver = z3.Solver()
+                ctx = z3.Context()
+                t = z3.Int("epoch_day", ctx=ctx)
+                solver = z3.Solver(ctx=ctx)
                 solver.add(t <= d_ord)
                 solver.add(z3.Not(t <= c_ord))
                 if solver.check() == z3.sat:
                     return True, draft_iso, "z3-smt-v4"
                 return False, "", "z3-smt-v4"
-        except ImportError:
+        except Exception:
             pass
 
         try:
@@ -259,8 +262,9 @@ class SmtConstraintSolver:
             import z3  # type: ignore[import-not-found]
 
             with _Z3_LOCK:
-                d_eff = z3.Real("effective_pct")
-                solver = z3.Solver()
+                ctx = z3.Context()
+                d_eff = z3.Real("effective_pct", ctx=ctx)
+                solver = z3.Solver(ctx=ctx)
                 net_mult = (1.0 - claimed_pct / 100.0) * (1.0 + gst_pct / 100.0)
                 exact_eff = round((1.0 - net_mult) * 100.0, 2)
                 solver.add(d_eff == exact_eff)
@@ -268,7 +272,7 @@ class SmtConstraintSolver:
                 if solver.check() == z3.sat:
                     return True, exact_eff, "z3-smt-v4"
                 return False, exact_eff, "z3-smt-v4"
-        except ImportError:
+        except Exception:
             pass
 
         try:

@@ -147,15 +147,16 @@ def validate_resolution(
     if resolution == "accepted":
         return  # anyone can accept a suggestion
 
+    verb = {"dismissed": "dismiss", "overridden": "override"}.get(resolution, resolution)
     if severity >= 50:
         raise ResolutionError(
-            f"Cannot {resolution} a blocker (severity={severity}). "
+            f"Cannot {verb} a blocker (severity={severity}). "
             "Blockers must be accepted (fix applied) or the content must be changed."
         )
 
     if resolution == "dismissed" and role not in (Role.REVIEWER, Role.ADMIN):
         raise ResolutionError(
-            f"Role {role} cannot {resolution} a finding — only reviewers and admins can"
+            f"Role {role} cannot {verb} a finding — only reviewers and admins can"
         )
 
     # Creator Deliberate Override on a Warning requires a recorded justification reason
@@ -167,5 +168,5 @@ def validate_resolution(
 
     if (require_reason or reason is not None) and len((reason or "").strip()) < 3:
         raise ResolutionError(
-            f"Cannot {resolution} a finding without a justification reason (at least 3 characters)."
+            f"Cannot {verb} a finding without a justification reason (at least 3 characters)."
         )
