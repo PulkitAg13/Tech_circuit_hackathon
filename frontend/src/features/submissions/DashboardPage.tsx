@@ -242,9 +242,9 @@ export function DashboardPage() {
 
   useEffect(() => {
     let active = true;
-    setSubmissions([]);
     void Promise.resolve().then(() => {
       if (active) {
+        setSubmissions([]);
         refresh();
       }
     });
