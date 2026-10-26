@@ -50,6 +50,16 @@ _ANCHOR_RE = re.compile(
 
 _NUMBER_NORM_RE = re.compile(r"\d+(?:\.\d+)?")
 
+DEFAULT_GEMINI_MODEL_CASCADE: tuple[str, ...] = (
+    "gemini-3.8-flash",
+    "gemini-3.6-flash",
+    "gemini-3.5-flash",
+    "gemini-3.5-flash-lite",
+    "gemini-3-flash-preview",
+    "gemini-flash-lite-latest",
+    "gemini-3.1-flash-lite-preview",
+)
+
 
 def extract_table_anchors(text: str) -> tuple[str, ...]:
     """Extract all numeric, currency, percentage, and date anchors from `text`."""
@@ -160,7 +170,7 @@ class LLMProviderConfig:
                 model
                 or os.environ.get("CANONGATE_GEMINI_MODEL")
                 or os.environ.get("GEMINI_MODEL")
-                or "gemini-2.5-flash"
+                or "gemini-3.8-flash"
             )
             resolved_url = (
                 base_url
@@ -279,29 +289,57 @@ class MultiProviderJsonLLM:
         return None
 
     def _call_gemini(self, system_prompt: str, user_prompt: str) -> dict[str, Any] | None:
-        url = (
-            f"{self.config.base_url}/models/{self.config.model}:generateContent"
-            f"?key={self.config.api_key}"
-        )
-        payload: dict[str, Any] = {
-            "systemInstruction": {"parts": [{"text": system_prompt}]},
-            "contents": [{"role": "user", "parts": [{"text": user_prompt}]}],
-            "generationConfig": {
-                "temperature": 0.0,
-                "responseMimeType": "application/json",
-            },
-        }
-        headers = {"Content-Type": "application/json"}
-        resp = self._transport(url, payload, headers, self.config.timeout_s)
-        candidates = resp.get("candidates") or []
-        if not candidates:
-            return None
-        parts = (candidates[0].get("content") or {}).get("parts") or []
-        if not parts or "text" not in parts[0]:
-            return None
-        raw_json = _strip_markdown_fences(str(parts[0]["text"]))
-        parsed = json.loads(raw_json)
-        return parsed if isinstance(parsed, dict) else None
+        models_to_try: list[str] = [self.config.model]
+        for fb in DEFAULT_GEMINI_MODEL_CASCADE:
+            if fb not in models_to_try:
+                models_to_try.append(fb)
+
+        for candidate_model in models_to_try:
+            url = (
+                f"{self.config.base_url}/models/{candidate_model}:generateContent"
+                f"?key={self.config.api_key}"
+            )
+            payload: dict[str, Any] = {
+                "systemInstruction": {"parts": [{"text": system_prompt}]},
+                "contents": [{"role": "user", "parts": [{"text": user_prompt}]}],
+                "generationConfig": {
+                    "temperature": 0.0,
+                    "responseMimeType": "application/json",
+                    "thinkingConfig": {"thinkingBudget": 0},
+                },
+            }
+            headers = {"Content-Type": "application/json"}
+            try:
+                resp = self._transport(url, payload, headers, self.config.timeout_s)
+            except Exception as exc:
+                logger.info(
+                    "Gemini table candidate '%s' failed (%s); cascading to next",
+                    candidate_model,
+                    exc,
+                )
+                continue
+
+            candidates = resp.get("candidates") or []
+            if not candidates:
+                continue
+            parts = (candidates[0].get("content") or {}).get("parts") or []
+            cand_text = ""
+            for p in parts:
+                if isinstance(p, dict) and "text" in p:
+                    cand_text = str(p["text"])
+                    if cand_text.strip():
+                        break
+            if not cand_text:
+                continue
+            raw_json = _strip_markdown_fences(cand_text)
+            try:
+                parsed = json.loads(raw_json)
+                if isinstance(parsed, dict):
+                    return parsed
+            except Exception:
+                continue
+
+        return None
 
     def _call_openai(self, system_prompt: str, user_prompt: str) -> dict[str, Any] | None:
         url = f"{self.config.base_url}/chat/completions"

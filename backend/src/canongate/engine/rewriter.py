@@ -90,6 +90,16 @@ _NUMERIC_ANCHOR_RE = re.compile(
     re.IGNORECASE,
 )
 
+DEFAULT_GEMINI_MODEL_CASCADE: tuple[str, ...] = (
+    "gemini-3.8-flash",
+    "gemini-3.6-flash",
+    "gemini-3.5-flash",
+    "gemini-3.5-flash-lite",
+    "gemini-3-flash-preview",
+    "gemini-flash-lite-latest",
+    "gemini-3.1-flash-lite-preview",
+)
+
 
 def _default_http_post(
     url: str,
@@ -424,7 +434,7 @@ class ResolvedRewriterBackend:
                 model=(
                     os.environ.get("CANONGATE_GEMINI_MODEL")
                     or os.environ.get("GEMINI_MODEL")
-                    or "gemini-2.5-flash"
+                    or "gemini-3.8-flash"
                 ),
                 api_key=gemini_key,
                 base_url=(
@@ -647,9 +657,10 @@ class ConstrainedRewriter:
         backend: ResolvedRewriterBackend,
         system_prompt: str,
         user_prompt: str,
-    ) -> str | None:
+    ) -> tuple[str | None, str]:
+        active_model = backend.model
         if not self._circuit_breaker.allow_request():
-            return None
+            return None, active_model
 
         idem_key = (
             "cg-rw-"
@@ -660,26 +671,55 @@ class ConstrainedRewriter:
 
         try:
             if backend.provider == "gemini":
-                url = (
-                    f"{backend.base_url}/models/{backend.model}:generateContent"
-                    f"?key={backend.api_key}"
-                )
-                payload: dict[str, Any] = {
-                    "systemInstruction": {"parts": [{"text": system_prompt}]},
-                    "contents": [{"role": "user", "parts": [{"text": user_prompt}]}],
-                    "generationConfig": {
-                        "temperature": 0.0,
-                        "responseMimeType": "application/json",
-                    },
-                }
-                headers = {"Content-Type": "application/json"}
-                resp = self._http_transport(url, payload, headers, backend.timeout_s)
-                candidates = resp.get("candidates") or []
-                if not candidates:
+                models_to_try: list[str] = [backend.model]
+                for fb in DEFAULT_GEMINI_MODEL_CASCADE:
+                    if fb not in models_to_try:
+                        models_to_try.append(fb)
+
+                raw_txt = ""
+                for candidate_model in models_to_try:
+                    url = (
+                        f"{backend.base_url}/models/{candidate_model}:generateContent"
+                        f"?key={backend.api_key}"
+                    )
+                    payload: dict[str, Any] = {
+                        "systemInstruction": {"parts": [{"text": system_prompt}]},
+                        "contents": [{"role": "user", "parts": [{"text": user_prompt}]}],
+                        "generationConfig": {
+                            "temperature": 0.0,
+                            "responseMimeType": "application/json",
+                            "thinkingConfig": {"thinkingBudget": 0},
+                        },
+                    }
+                    headers = {"Content-Type": "application/json"}
+                    try:
+                        resp = self._http_transport(url, payload, headers, backend.timeout_s)
+                    except Exception as exc:
+                        logger.info(
+                            "Gemini model '%s' unavailable (%s); cascading to next",
+                            candidate_model,
+                            exc,
+                        )
+                        continue
+
+                    candidates = resp.get("candidates") or []
+                    if not candidates:
+                        continue
+                    parts = (candidates[0].get("content") or {}).get("parts") or []
+                    cand_text = ""
+                    for p in parts:
+                        if isinstance(p, dict) and "text" in p:
+                            cand_text = str(p["text"])
+                            if cand_text.strip():
+                                break
+                    if cand_text.strip():
+                        raw_txt = cand_text
+                        active_model = candidate_model
+                        break
+
+                if not raw_txt:
                     self._circuit_breaker.record_failure()
-                    return None
-                parts = (candidates[0].get("content") or {}).get("parts") or []
-                raw_txt = str(parts[0].get("text") or "") if parts else ""
+                    return None, active_model
             elif backend.provider == "ollama":
                 url = f"{backend.base_url}/api/generate"
                 payload = {
@@ -725,7 +765,7 @@ class ConstrainedRewriter:
             raw_txt = raw_txt.strip()
             if not raw_txt:
                 self._circuit_breaker.record_failure()
-                return None
+                return None, active_model
 
             cleaned = _strip_meta_chatter_and_quotes(raw_txt)
             if cleaned.startswith("{") and cleaned.endswith("}"):
@@ -739,12 +779,12 @@ class ConstrainedRewriter:
                         )
                         if isinstance(val, str) and val.strip():
                             self._circuit_breaker.record_success()
-                            return _strip_meta_chatter_and_quotes(val)
+                            return _strip_meta_chatter_and_quotes(val), active_model
                 except Exception:
                     pass
 
             self._circuit_breaker.record_success()
-            return cleaned
+            return cleaned, active_model
         except Exception as exc:
             logger.warning(
                 "Tier 3 LLM backend %s (%s) failed; recording circuit-breaker failure: %s",
@@ -753,7 +793,7 @@ class ConstrainedRewriter:
                 exc,
             )
             self._circuit_breaker.record_failure()
-            return None
+            return None, active_model
 
     async def evaluate_candidate_gates(
         self,
@@ -900,6 +940,7 @@ class ConstrainedRewriter:
             except Exception as exc:
                 llm_rejected_reason = f"Custom LLM callback raised exception: {exc}"
         elif backend.is_configured:
+            effective_model = backend.model
             if not self._circuit_breaker.allow_request():
                 llm_rejected_reason = (
                     f"Circuit breaker for {backend.provider} is OPEN after "
@@ -908,7 +949,7 @@ class ConstrainedRewriter:
                 )
             else:
                 llm_attempted = True
-                raw_llm_output = await asyncio.to_thread(
+                raw_llm_output, effective_model = await asyncio.to_thread(
                     self._invoke_configured_backend_sync,
                     backend,
                     sys_prompt,
@@ -949,7 +990,7 @@ class ConstrainedRewriter:
                 if has_custom_fn:
                     used_provider = "llm-constrained"
                 else:
-                    used_provider = f"{backend.provider}:{backend.model}"
+                    used_provider = f"{backend.provider}:{effective_model}"
                 provider_notice = (
                     f"Generated via {used_provider} with DPDP PII scrubbing "
                     f"({scrubbed.pii_count} PII entities masked) and verified "

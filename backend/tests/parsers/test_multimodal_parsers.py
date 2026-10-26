@@ -434,7 +434,7 @@ class TestMultimodalParsersAndPipelineA(unittest.TestCase):
         with patch.dict(os.environ, {"GEMINI_API_KEY": "AIzaSy-free-gemini-key"}, clear=True):
             cfg_gem = LLMProviderConfig.from_env()
             self.assertEqual(cfg_gem.provider, "gemini")
-            self.assertEqual(cfg_gem.model, "gemini-2.5-flash")
+            self.assertEqual(cfg_gem.model, "gemini-3.8-flash")
             self.assertEqual(cfg_gem.api_key, "AIzaSy-free-gemini-key")
 
         with patch.dict(os.environ, {"OPENAI_API_KEY": "sk-test-openai"}, clear=True):
