@@ -11,6 +11,7 @@ import {
   GitPullRequest,
   Layers,
   Lock,
+  Play,
   Scale,
   ShieldAlert,
   ShieldCheck,
@@ -796,6 +797,13 @@ export function HomePage() {
   const [selectedSwatchHex, setSelectedSwatchHex] = useState<string | null>(
     null,
   );
+  const [scanPulseKey, setScanPulseKey] = useState<number>(1);
+  const [tracePulseKey, setTracePulseKey] = useState<number>(1);
+
+  // Interactive Bento specimen states
+  const [bentoSnappedPalette, setBentoSnappedPalette] =
+    useState<boolean>(false);
+  const [bentoZ3Reconciled, setBentoZ3Reconciled] = useState<boolean>(false);
 
   // Architecture & Developer section interactive tabs
   const [activeStageIdx, setActiveStageIdx] = useState<number>(0);
@@ -835,12 +843,17 @@ export function HomePage() {
     ? currentScenario.banner.accentCanonHex
     : currentScenario.banner.accentDraftHex;
 
+  function triggerScanSweep() {
+    setScanPulseKey((prev) => prev + 1);
+    setTracePulseKey((prev) => prev + 1);
+  }
+
   function handleCopyText(id: string, text: string) {
     void navigator.clipboard?.writeText(text);
     setCopiedId(id);
     window.setTimeout(() => {
       setCopiedId((prev) => (prev === id ? null : prev));
-    }, 1800);
+    }, 1600);
   }
 
   async function handleQuickPersonaLaunch(targetUsername: string) {
@@ -886,7 +899,7 @@ export function HomePage() {
                 </span>
                 <Link to="/dashboard" className="cg-btn cg-btn-primary">
                   <span>Open Workspace</span>
-                  <ArrowRight size={15} />
+                  <ArrowRight size={15} className="cg-arrow-shift" />
                 </Link>
               </>
             ) : (
@@ -942,7 +955,7 @@ export function HomePage() {
                 </Link>
                 <Link to="/login" className="cg-btn cg-btn-primary">
                   <span>Open Studio</span>
-                  <ArrowRight size={15} />
+                  <ArrowRight size={15} className="cg-arrow-shift" />
                 </Link>
               </>
             )}
@@ -989,12 +1002,14 @@ export function HomePage() {
                       ? "Launch Governance Queue"
                       : "Enter Review Studio"}
                   </span>
-                  <ArrowRight size={16} />
+                  <ArrowRight size={16} className="cg-arrow-shift" />
                 </Link>
 
                 <button
                   type="button"
-                  className="cg-cli-pill"
+                  className={`cg-cli-pill ${
+                    copiedId === "hero-cli" ? "cg-cli-copied" : ""
+                  }`}
                   onClick={() =>
                     handleCopyText(
                       "hero-cli",
@@ -1007,7 +1022,10 @@ export function HomePage() {
                   <code>
                     uv run canongate gate --canon indian-digital-lending
                   </code>
-                  <span className="cg-cli-copy-badge">
+                  <span
+                    key={copiedId === "hero-cli" ? "copied" : "copy"}
+                    className="cg-cli-copy-badge cg-icon-pop"
+                  >
                     {copiedId === "hero-cli" ? (
                       <>
                         <Check size={12} /> Copied
@@ -1045,7 +1063,8 @@ export function HomePage() {
                       <code>@creative_lead</code>
                     </div>
                     <div className="cg-role-card-name">
-                      Creator Pre-Flight Studio →
+                      <span>Creator Pre-Flight Studio</span>
+                      <ArrowRight size={13} className="cg-arrow-shift" />
                     </div>
                   </button>
 
@@ -1061,7 +1080,8 @@ export function HomePage() {
                       <code>@brand_manager</code>
                     </div>
                     <div className="cg-role-card-name">
-                      Brand &amp; Friction Review →
+                      <span>Brand &amp; Friction Review</span>
+                      <ArrowRight size={13} className="cg-arrow-shift" />
                     </div>
                   </button>
 
@@ -1077,7 +1097,8 @@ export function HomePage() {
                       <code>@legal_counsel</code>
                     </div>
                     <div className="cg-role-card-name">
-                      Legal Sign-Off &amp; Merkle Seal →
+                      <span>Legal Sign-Off &amp; Seal</span>
+                      <ArrowRight size={13} className="cg-arrow-shift" />
                     </div>
                   </button>
                 </div>
@@ -1093,9 +1114,19 @@ export function HomePage() {
                 <div className="cg-telemetry-title-group">
                   <Cpu size={15} />
                   <span>VERIFICATION PIPELINE TRACE</span>
+                  <button
+                    type="button"
+                    className="cg-trace-replay-btn"
+                    onClick={triggerScanSweep}
+                    title="Re-run 4-tier verification trace"
+                  >
+                    <Play size={10} />
+                    <span>Re-Run</span>
+                  </button>
                 </div>
                 <span
-                  className={`cg-gate-verdict-pill ${
+                  key={blockerCount === 0 ? "allow" : "block"}
+                  className={`cg-gate-verdict-pill cg-icon-pop ${
                     blockerCount === 0 ? "verdict-allow" : "verdict-block"
                   }`}
                 >
@@ -1105,8 +1136,8 @@ export function HomePage() {
                 </span>
               </div>
 
-              <div className="cg-telemetry-rows">
-                <div className="cg-telemetry-row">
+              <div key={tracePulseKey} className="cg-telemetry-rows">
+                <div className="cg-telemetry-row cg-stagger-1">
                   <div className="cg-telemetry-tier">
                     <span className="cg-tier-dot tier-1" />
                     <div>
@@ -1122,7 +1153,7 @@ export function HomePage() {
                   <code className="cg-tier-latency">14.2 ms</code>
                 </div>
 
-                <div className="cg-telemetry-row">
+                <div className="cg-telemetry-row cg-stagger-2">
                   <div className="cg-telemetry-tier">
                     <span className="cg-tier-dot tier-15" />
                     <div>
@@ -1138,7 +1169,7 @@ export function HomePage() {
                   <code className="cg-tier-latency">9.8 ms</code>
                 </div>
 
-                <div className="cg-telemetry-row">
+                <div className="cg-telemetry-row cg-stagger-3">
                   <div className="cg-telemetry-tier">
                     <span className="cg-tier-dot tier-2" />
                     <div>
@@ -1154,7 +1185,7 @@ export function HomePage() {
                   <code className="cg-tier-latency">31.6 ms</code>
                 </div>
 
-                <div className="cg-telemetry-row">
+                <div className="cg-telemetry-row cg-stagger-4">
                   <div className="cg-telemetry-tier">
                     <span className="cg-tier-dot tier-3" />
                     <div>
@@ -1162,14 +1193,44 @@ export function HomePage() {
                         Tier 3 · DPDP PII Vault + Surgical Rewriter
                       </div>
                       <div className="cg-tier-sub">
-                        Local Presidio/regex masking ({currentScenario.piiMaskedCount}{" "}
-                        tokens) · edit_ratio {currentScenario.editRatio}
+                        Local Presidio/regex masking (
+                        {currentScenario.piiMaskedCount} tokens) · edit_ratio{" "}
+                        {currentScenario.editRatio}
                       </div>
                     </div>
                   </div>
-                  <code className="cg-tier-latency">
+                  <code
+                    className={`cg-tier-latency ${
+                      isRepaired ? "cg-latency-repaired" : ""
+                    }`}
+                  >
                     {isRepaired ? "APPLIED" : "READY"}
                   </code>
+                </div>
+              </div>
+
+              {/* Animated Conformal Risk Threshold Meter */}
+              <div className="cg-conformal-meter-wrap">
+                <div className="cg-conformal-meter-labels">
+                  <span>
+                    Conformal Quantile Threshold{" "}
+                    <code>
+                      λ̂(α={conformalAlpha.toFixed(2)}) ={" "}
+                      {conformalLambda.toFixed(2)}
+                    </code>
+                  </span>
+                  <span>
+                    {calibratedFindings.length} /{" "}
+                    {currentScenario.findings.length} checks active
+                  </span>
+                </div>
+                <div className="cg-conformal-meter-track">
+                  <div
+                    className="cg-conformal-meter-fill"
+                    style={{
+                      transform: `scaleX(${conformalLambda})`,
+                    }}
+                  />
                 </div>
               </div>
 
@@ -1214,6 +1275,7 @@ export function HomePage() {
                       setSelectedFindingIdx(0);
                       setIsRepaired(false);
                       setSelectedSwatchHex(null);
+                      triggerScanSweep();
                     }}
                   >
                     <span className="cg-tab-canon">{scen.canonId}.yaml</span>
@@ -1237,7 +1299,10 @@ export function HomePage() {
                       className={`cg-alpha-btn ${
                         Math.abs(conformalAlpha - val) < 0.001 ? "active" : ""
                       }`}
-                      onClick={() => setConformalAlpha(val)}
+                      onClick={() => {
+                        setConformalAlpha(val);
+                        setTracePulseKey((prev) => prev + 1);
+                      }}
                     >
                       {val.toFixed(2)}
                     </button>
@@ -1255,6 +1320,7 @@ export function HomePage() {
                     if (isRepaired) {
                       setSelectedSwatchHex(null);
                     }
+                    triggerScanSweep();
                   }}
                 >
                   <Wand2 size={14} />
@@ -1270,7 +1336,17 @@ export function HomePage() {
             {/* Workbench 3-Pane Studio Body */}
             <div className="cg-workbench-grid">
               {/* Pane 1: Multi-Modal Asset Canvas (Copy + Visual Ad Banner) */}
-              <div className="cg-workbench-pane cg-pane-canvas">
+              <div
+                key={`${currentScenario.id}-${isRepaired ? "rep" : "raw"}`}
+                className="cg-workbench-pane cg-pane-canvas cg-animate-swap"
+              >
+                {/* GPU-composited verification scanline sweep */}
+                <div
+                  key={scanPulseKey}
+                  className="cg-scanline-sweep"
+                  aria-hidden="true"
+                />
+
                 <div className="cg-pane-header">
                   <div>
                     <span className="cg-mono-label">
@@ -1388,17 +1464,28 @@ export function HomePage() {
                     <div
                       role="button"
                       tabIndex={0}
-                      onClick={() => setSelectedFindingIdx(2)}
+                      onClick={() =>
+                        setSelectedFindingIdx(
+                          currentScenario.findings.length - 1,
+                        )
+                      }
                       onKeyDown={(e) => {
                         if (e.key === "Enter" || e.key === " ") {
-                          setSelectedFindingIdx(2);
+                          setSelectedFindingIdx(
+                            currentScenario.findings.length - 1,
+                          );
                         }
                       }}
                       className={`cg-sim-banner-disclaimer ${
                         !isRepaired && !selectedSwatchHex
                           ? "bbox-flagged"
                           : "bbox-repaired"
-                      } ${selectedFindingIdx === 2 ? "bbox-selected" : ""}`}
+                      } ${
+                        selectedFindingIdx ===
+                        currentScenario.findings.length - 1
+                          ? "bbox-selected"
+                          : ""
+                      }`}
                       style={{ color: activeBannerFgHex }}
                     >
                       <span className="cg-bbox-pin-badge">
@@ -1447,12 +1534,17 @@ export function HomePage() {
                   ))}
                 </div>
 
-                {/* Active Finding Detail Card */}
-                <div className="cg-inspector-card">
+                {/* Active Finding Detail Card (Keyed for snappy 180ms transition) */}
+                <div
+                  key={`${activeFinding.id}-${isRepaired ? "rep" : "raw"}`}
+                  className="cg-inspector-card cg-animate-swap"
+                >
                   <div className="cg-inspector-top">
                     <span
                       className={`cg-sev-badge ${
-                        isRepaired ? "sev-pass" : `sev-${activeFinding.severity}`
+                        isRepaired
+                          ? "sev-pass"
+                          : `sev-${activeFinding.severity}`
                       }`}
                     >
                       {isRepaired
@@ -1560,7 +1652,10 @@ export function HomePage() {
                             className={`cg-swatch-card ${
                               activeBannerFgHex === sw.hex ? "active" : ""
                             }`}
-                            onClick={() => setSelectedSwatchHex(sw.hex)}
+                            onClick={() => {
+                              setSelectedSwatchHex(sw.hex);
+                              triggerScanSweep();
+                            }}
                           >
                             <div className="cg-swatch-top">
                               <span
@@ -1609,15 +1704,22 @@ export function HomePage() {
                 </div>
 
                 <div
-                  className={`cg-release-seal-card ${
+                  key={blockerCount === 0 ? "seal-ready" : "seal-blocked"}
+                  className={`cg-release-seal-card cg-animate-swap ${
                     blockerCount === 0 ? "seal-ready" : "seal-blocked"
                   }`}
                 >
                   <div className="cg-seal-status-row">
                     {blockerCount === 0 ? (
-                      <CheckCircle2 size={20} className="cg-seal-icon-pass" />
+                      <CheckCircle2
+                        size={20}
+                        className="cg-seal-icon-pass cg-icon-pop"
+                      />
                     ) : (
-                      <ShieldAlert size={20} className="cg-seal-icon-block" />
+                      <ShieldAlert
+                        size={20}
+                        className="cg-seal-icon-block cg-icon-pop"
+                      />
                     )}
                     <div>
                       <div className="cg-seal-title">
@@ -1674,7 +1776,10 @@ export function HomePage() {
                       <button
                         type="button"
                         className="cg-btn cg-btn-primary cg-btn-full"
-                        onClick={() => setIsRepaired(true)}
+                        onClick={() => {
+                          setIsRepaired(true);
+                          triggerScanSweep();
+                        }}
                       >
                         <Wand2 size={14} />
                         <span>Apply Surgical Repair &amp; Re-Verify</span>
@@ -1702,7 +1807,7 @@ export function HomePage() {
                   <div className="cg-mini-audit-item">
                     <span className="cg-audit-step">01</span>
                     <div>
-                      <strong>ContentAST Parsed &amp;Hashed</strong>
+                      <strong>ContentAST Parsed &amp; Hashed</strong>
                       <p>
                         Normalized NFC text + 1080p banner Sobel/Otsu regions
                       </p>
@@ -1711,7 +1816,10 @@ export function HomePage() {
                   <div className="cg-mini-audit-item">
                     <span className="cg-audit-step">02</span>
                     <div>
-                      <strong>Conformal Risk Calibration (α = {conformalAlpha.toFixed(2)})</strong>
+                      <strong>
+                        Conformal Risk Calibration (α ={" "}
+                        {conformalAlpha.toFixed(2)})
+                      </strong>
                       <p>
                         Empirical quantile threshold λ̂ ={" "}
                         {conformalLambda.toFixed(2)} applied
@@ -1783,21 +1891,40 @@ export function HomePage() {
                 keypoint RANSAC homography.
               </p>
 
-              {/* Visual Specimen inside Cell 1 */}
+              {/* Interactive Visual Specimen inside Cell 1 */}
               <div className="cg-bento-specimen">
                 <div className="cg-specimen-row">
                   <div className="cg-colorimeter-pair">
                     <div className="cg-color-chip-box">
                       <span
                         className="cg-color-circle"
-                        style={{ backgroundColor: "#1E6091" }}
+                        style={{
+                          backgroundColor: bentoSnappedPalette
+                            ? "#0D3B66"
+                            : "#1E6091",
+                        }}
                       />
                       <div>
-                        <code>#1E6091</code>
+                        <code>
+                          {bentoSnappedPalette ? "#0D3B66" : "#1E6091"}
+                        </code>
                         <span>Sampled Banner ROI</span>
                       </div>
                     </div>
-                    <span className="cg-delta-arrow">ΔE₀₀ = 6.42 &gt; 3.0</span>
+
+                    <button
+                      type="button"
+                      className={`cg-delta-arrow ${
+                        bentoSnappedPalette ? "delta-pass" : ""
+                      }`}
+                      onClick={() => setBentoSnappedPalette((prev) => !prev)}
+                      title="Click to test snapping off-brand swatch to Canon token"
+                    >
+                      {bentoSnappedPalette
+                        ? "ΔE₀₀ = 0.00 ≤ 3.0 (PASS · Click to Reset)"
+                        : "ΔE₀₀ = 6.42 > 3.0 (Click to Snap Token)"}
+                    </button>
+
                     <div className="cg-color-chip-box">
                       <span
                         className="cg-color-circle"
@@ -1838,14 +1965,35 @@ export function HomePage() {
               <div className="cg-bento-specimen cg-specimen-dark">
                 <div className="cg-specimen-code-header">
                   <span>Z3 SMT-LIBv2 Proof Trace</span>
-                  <span className="cg-badge-unsat">CONTRADICTION PROVED</span>
+                  <button
+                    type="button"
+                    className={`cg-badge-unsat ${
+                      bentoZ3Reconciled ? "z3-sat" : ""
+                    }`}
+                    onClick={() => setBentoZ3Reconciled((prev) => !prev)}
+                    title="Click to toggle between Contradicted and Reconciled KFS APR"
+                  >
+                    {bentoZ3Reconciled
+                      ? "SAT · KFS RECONCILED (Click to Toggle)"
+                      : "CONTRADICTION PROVED (Click to Fix APR)"}
+                  </button>
                 </div>
-                <pre className="cg-specimen-pre">{`(declare-const APR Real)
+                <pre className="cg-specimen-pre">
+                  {bentoZ3Reconciled
+                    ? `(declare-const APR Real)
+(assert (= Principal 50000.0))
+(assert (= UpfrontFee 1500.0))
+(assert (= Interest 3500.0))
+(assert (= StatedAPR 0.2818))
+; Solved Effective APR = 0.2818 == 0.2818 (VALID)`
+                    : `(declare-const APR Real)
 (assert (= Principal 50000.0))
 (assert (= UpfrontFee 1500.0))
 (assert (= Interest 3500.0))
 (assert (= StatedAPR 0.1400))
-; Solved Effective APR = 0.2818 != 0.1400`}</pre>
+; Solved Effective APR = 0.2818 != 0.1400`}
+                  <span className="cg-terminal-cursor" aria-hidden="true" />
+                </pre>
               </div>
             </article>
 
@@ -1917,15 +2065,23 @@ export function HomePage() {
                     <span className="cg-mono-label">1. LOCAL SCRUB</span>
                     <code>PAN: ABCDE1234F → &lt;PAN_ID_1&gt;</code>
                   </div>
-                  <ArrowRight size={14} className="cg-pii-arrow" />
+                  <ArrowRight
+                    size={14}
+                    className="cg-pii-arrow cg-flow-pulse"
+                  />
                   <div className="cg-pii-step">
                     <span className="cg-mono-label">2. BOUNDED DIFF</span>
                     <code>edit_ratio = 0.21 ≤ 0.35</code>
                   </div>
-                  <ArrowRight size={14} className="cg-pii-arrow" />
+                  <ArrowRight
+                    size={14}
+                    className="cg-pii-arrow cg-flow-pulse"
+                  />
                   <div className="cg-pii-step">
                     <span className="cg-mono-label">3. RE-VERIFY</span>
-                    <code className="cg-text-emerald">0 Blockers · Restored</code>
+                    <code className="cg-text-emerald">
+                      0 Blockers · Restored
+                    </code>
                   </div>
                 </div>
               </div>
@@ -1979,8 +2135,11 @@ export function HomePage() {
               ))}
             </div>
 
-            {/* Active Stage Detail Panel */}
-            <div className="cg-stage-detail-card">
+            {/* Active Stage Detail Panel (Keyed for snappy 180ms transition) */}
+            <div
+              key={activeStageIdx}
+              className="cg-stage-detail-card cg-animate-swap"
+            >
               <div className="cg-stage-detail-main">
                 <div className="cg-stage-detail-eyebrow">
                   <span>{WORKFLOW_STAGE_SPECS[activeStageIdx].stage}</span>
@@ -2027,7 +2186,7 @@ export function HomePage() {
                       Launch Workspace as @
                       {WORKFLOW_STAGE_SPECS[activeStageIdx].username}
                     </span>
-                    <ArrowRight size={15} />
+                    <ArrowRight size={15} className="cg-arrow-shift" />
                   </button>
                 </div>
               </div>
@@ -2085,34 +2244,49 @@ export function HomePage() {
                     )
                   }
                 >
-                  {copiedId === "yaml-copy" ? (
-                    <>
-                      <Check size={12} /> Copied
-                    </>
-                  ) : (
-                    <>
-                      <Copy size={12} /> Copy YAML
-                    </>
-                  )}
+                  <span
+                    key={copiedId === "yaml-copy" ? "copied" : "copy"}
+                    className="cg-icon-pop"
+                    style={{
+                      display: "inline-flex",
+                      alignItems: "center",
+                      gap: "0.3rem",
+                    }}
+                  >
+                    {copiedId === "yaml-copy" ? (
+                      <>
+                        <Check size={12} /> Copied
+                      </>
+                    ) : (
+                      <>
+                        <Copy size={12} /> Copy YAML
+                      </>
+                    )}
+                  </span>
                 </button>
               </div>
 
-              <div className="cg-code-meta-strip">
-                <span>
-                  <strong>
-                    {PLAYBOOK_YAML_SAMPLES[activePlaybookKey].title}
-                  </strong>{" "}
-                  · {PLAYBOOK_YAML_SAMPLES[activePlaybookKey].authority}
-                </span>
-                <code>
-                  {PLAYBOOK_YAML_SAMPLES[activePlaybookKey].rulesCount} compiled
-                  rules
-                </code>
-              </div>
+              <div
+                key={activePlaybookKey}
+                className="cg-code-body-wrap cg-animate-swap"
+              >
+                <div className="cg-code-meta-strip">
+                  <span>
+                    <strong>
+                      {PLAYBOOK_YAML_SAMPLES[activePlaybookKey].title}
+                    </strong>{" "}
+                    · {PLAYBOOK_YAML_SAMPLES[activePlaybookKey].authority}
+                  </span>
+                  <code>
+                    {PLAYBOOK_YAML_SAMPLES[activePlaybookKey].rulesCount}{" "}
+                    compiled rules
+                  </code>
+                </div>
 
-              <pre className="cg-code-pre">
-                <code>{PLAYBOOK_YAML_SAMPLES[activePlaybookKey].yaml}</code>
-              </pre>
+                <pre className="cg-code-pre">
+                  <code>{PLAYBOOK_YAML_SAMPLES[activePlaybookKey].yaml}</code>
+                </pre>
+              </div>
             </div>
 
             {/* Right Column: CLI, GitHub Actions, FastMCP & Webhook Terminal */}
@@ -2142,25 +2316,40 @@ export function HomePage() {
                     )
                   }
                 >
-                  {copiedId === "dev-copy" ? (
-                    <>
-                      <Check size={12} /> Copied
-                    </>
-                  ) : (
-                    <>
-                      <Copy size={12} /> Copy Snippet
-                    </>
-                  )}
+                  <span
+                    key={copiedId === "dev-copy" ? "copied" : "copy"}
+                    className="cg-icon-pop"
+                    style={{
+                      display: "inline-flex",
+                      alignItems: "center",
+                      gap: "0.3rem",
+                    }}
+                  >
+                    {copiedId === "dev-copy" ? (
+                      <>
+                        <Check size={12} /> Copied
+                      </>
+                    ) : (
+                      <>
+                        <Copy size={12} /> Copy Snippet
+                      </>
+                    )}
+                  </span>
                 </button>
               </div>
 
-              <div className="cg-code-meta-strip">
-                <span>{DEV_INTEGRATION_TABS[activeDevTab].subtitle}</span>
-              </div>
+              <div
+                key={activeDevTab}
+                className="cg-code-body-wrap cg-animate-swap"
+              >
+                <div className="cg-code-meta-strip">
+                  <span>{DEV_INTEGRATION_TABS[activeDevTab].subtitle}</span>
+                </div>
 
-              <pre className="cg-code-pre">
-                <code>{DEV_INTEGRATION_TABS[activeDevTab].code}</code>
-              </pre>
+                <pre className="cg-code-pre">
+                  <code>{DEV_INTEGRATION_TABS[activeDevTab].code}</code>
+                </pre>
+              </div>
             </div>
           </div>
         </div>
@@ -2203,7 +2392,7 @@ export function HomePage() {
               <span>
                 {isAuthenticated ? "Open Console" : "Sign In to Studio"}
               </span>
-              <ArrowRight size={14} />
+              <ArrowRight size={14} className="cg-arrow-shift" />
             </Link>
           </div>
         </div>
