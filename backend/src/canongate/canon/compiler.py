@@ -69,20 +69,26 @@ _KFS_DAYS_RE = re.compile(
 
 # Deterministic patterns for zero-LLM offline brand book compilation
 _BANNED_RULE_RE = re.compile(
-    r"""(?:never\s+use|avoid|ban(?:ned)?|do\s+not\s+use)\s+(?:['"“”])([^'"“”]+)(?:['"“”])\s*"""
-    r"""(?:[,;—\-]+\s*|\s*->\s*|\s*→\s*)?(?:use|prefer|replace\s+with)\s+(?:['"“”])([^'"“”]+)(?:['"“”])""",
+    r"""(?:never\s+use|avoid|ban(?:ned)?(?:\s+(?:phrase|term|word))?\s*[:\-]?|do\s+not\s+use)\s+"""
+    r"""(?:['"“”])([^'"“”]+)(?:['"“”])\s*"""
+    r"""(?:[,;—\-|]+\s*(?:[A-Za-z_ ]+\s*:\s*)?|\s*->\s*|\s*→\s*)?"""
+    r"""(?:use|prefer|replace(?:ment|\s+with)?\s*[:\-]?)\s+(?:['"“”])([^'"“”]+)(?:['"“”])""",
     re.IGNORECASE,
 )
 _FLEX_TERM_RULE_RE = re.compile(
-    r"""(?:banned(?:\s+term)?|avoid|do\s+not\s+use|replace)\s*[:\-]?\s*"""
-    r"""['"“”]?([A-Za-z0-9][A-Za-z0-9 _\-/]{1,40}?)['"“”]?\s*"""
-    r"""(?:[,;—\-]+|->|→|\bwith\b|\bprefer(?:red)?\s*[:\-]?|\buse\s*[:\-]?)\s*"""
+    r"""(?:banned(?:\s+(?:term|phrase|word))?|avoid|do\s+not\s+use|replace)\s*[:\-]?\s*"""
+    r"""['"“”]?([A-Za-z0-9%][A-Za-z0-9% _\-/]{1,40}?)['"“”]?\s*"""
+    r"""(?:[,;—\-]+|->|→|\bwith\b|\bprefer(?:red)?\s*[:\-]?|\breplacement\s*[:\-]?|\buse\s*[:\-]?)\s*"""
     r"""['"“”]?([A-Za-z0-9][A-Za-z0-9 _\-/]{1,50}?)['"“”]?(?:[.!\n]|$)""",
     re.IGNORECASE,
 )
 _TRIGGER_RULE_RE = re.compile(
-    r"""(?:when\s+(?:mentioning|using)|if\s+(?:mentioning|using)|trigger\s*[:\-])\s*['"“”]([^'"“”]+)['"“”]\s*"""
-    r"""(?:[,;—\-]+|\s*->\s*|\s*→\s*|\s*then\s*)?(?:include\s+disclaimer|require(?:d)?\s+disclaimer|disclaimer)\s*[:\-]?\s*['"“”]([^'"“”]+)['"“”]""",
+    r"""(?:when\s+(?:copy\s+)?(?:mentions?|mentioning|uses?|using)|"""
+    r"""if\s+(?:copy\s+)?(?:mentions?|mentioning|uses?|using)|trigger(?:\s+keywords?)?\s*[:\-])\s*"""
+    r"""(?:when\s+(?:copy\s+)?(?:mentions?|uses?)\s+)?['"“”]?([^'"“”\n\-→>]+?)['"“”]?\s*"""
+    r"""(?:[,;—\-]+|\s*->\s*|\s*→\s*|\s*then\s*|\s*\|\s*)?"""
+    r"""(?:include\s+(?:disclaimer|disclosure)|require(?:d)?\s+(?:disclaimer|disclosure)|"""
+    r"""disclaimer|disclosure)\s*[:\-]?\s*['"“”]([^'"“”]+)['"“”]""",
     re.IGNORECASE,
 )
 _VOICE_MAX_WORDS_RE = re.compile(
@@ -616,7 +622,7 @@ class CanonCompiler:
                     )
 
             # 2. Flexible unquoted/arrow terminology rules: Banned: X -> Preferred: Y
-            if not _BANNED_RULE_RE.search(block):
+            if True:
                 for m in _FLEX_TERM_RULE_RE.finditer(block):
                     pat = m.group(1).strip(" '\"\t")
                     pref = m.group(2).strip(" '\"\t.")
@@ -682,8 +688,8 @@ class CanonCompiler:
                             "source_text": block,
                         }
                     )
-            elif "/table[" in node.path or (
-                extract_value_anchors(block)
+            elif (
+                ("/table[" in node.path or extract_value_anchors(block))
                 and not _BANNED_RULE_RE.search(block)
                 and not _FLEX_TERM_RULE_RE.search(block)
                 and not _TRIGGER_RULE_RE.search(block)

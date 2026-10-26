@@ -42,8 +42,11 @@ from canongate.domain.finding import (
 from canongate.engine.check import Check
 
 _CSS_FG_BG_RE = re.compile(
-    r"color\s*[:=]\s*['\"]?(#[0-9A-Fa-f]{3,6})\b['\"]?[^;\n]*?[;\s]+"
-    r"(?:background-color|background)\s*[:=]\s*['\"]?(#[0-9A-Fa-f]{3,6})\b",
+    r"(?:^|[;\s(])color\s*[:=]\s*['\"]?(#[0-9A-Fa-f]{3,6})\b['\"]?[^;\n]*?[;\s]+"
+    r"(?:background-color|background)\s*[:=]\s*['\"]?(#[0-9A-Fa-f]{3,6})\b"
+    r"|"
+    r"(?:background-color|background)\s*[:=]\s*['\"]?(#[0-9A-Fa-f]{3,6})\b['\"]?[^;\n]*?[;\s]+"
+    r"color\s*[:=]\s*['\"]?(#[0-9A-Fa-f]{3,6})\b",
     re.IGNORECASE,
 )
 _PLACEHOLDER_ALT_RE = re.compile(
@@ -73,7 +76,12 @@ class AccessibilityContrastCheck(Check):
             source_text="WCAG 2.1 SC 1.4.3 Contrast (Minimum): normal text requires >= 4.5:1",
         )
         for match in _CSS_FG_BG_RE.finditer(node.text):
-            fg_raw, bg_raw = match.group(1), match.group(2)
+            if match.group(1) and match.group(2):
+                fg_raw, bg_raw = match.group(1), match.group(2)
+                fg_group_idx = 1
+            else:
+                bg_raw, fg_raw = match.group(3), match.group(4)
+                fg_group_idx = 4
             try:
                 fg_rgb = hex_to_rgb(fg_raw)
                 bg_rgb = hex_to_rgb(bg_raw)
@@ -87,7 +95,7 @@ class AccessibilityContrastCheck(Check):
                 fg_hex = rgb_to_hex(fg_rgb)
                 bg_hex = rgb_to_hex(bg_rgb)
                 suggested_hex = suggest_compliant_fg_hex(fg_rgb, bg_rgb, required)
-                fg_span = Span(start=match.start(1), end=match.end(1))
+                fg_span = Span(start=match.start(fg_group_idx), end=match.end(fg_group_idx))
                 findings.append(
                     self.finding(
                         node=node,

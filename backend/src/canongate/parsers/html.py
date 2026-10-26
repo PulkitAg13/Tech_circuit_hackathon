@@ -179,6 +179,26 @@ def parse_html(
         txt = _WS_RE.sub(" ", blk.get_text(" ", strip=True)).strip()
         if txt:
             style_attr = str(blk.get("style", "")).strip()
+            if not (style_attr and _HEX_IN_STYLE_RE.search(style_attr)):
+                inherited_props: dict[str, str] = {}
+                curr_tag: Tag | None = blk
+                while curr_tag is not None and isinstance(curr_tag, Tag):
+                    st = str(curr_tag.get("style", "")).strip()
+                    if st:
+                        for pm in _COLOR_PROP_RE.finditer(st):
+                            k = pm.group(1).lower()
+                            norm_k = "background-color" if k == "background" else k
+                            inherited_props.setdefault(norm_k, pm.group(2).strip())
+                    curr_tag = curr_tag.parent if isinstance(curr_tag.parent, Tag) else None
+                if "color" in inherited_props or "background-color" in inherited_props:
+                    parts = []
+                    if "color" in inherited_props:
+                        parts.append(f"color: {inherited_props['color']}")
+                    if "background-color" in inherited_props:
+                        parts.append(f"background-color: {inherited_props['background-color']}")
+                    cand_style = "; ".join(parts)
+                    if _HEX_IN_STYLE_RE.search(cand_style):
+                        style_attr = cand_style
             if style_attr and _HEX_IN_STYLE_RE.search(style_attr):
                 txt = f"{txt} ({style_attr})"
             nodes.append(TextNode.from_text(txt, path=f"{source}/{blk.name}[{block_idx}]"))

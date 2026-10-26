@@ -101,21 +101,35 @@ def _detect_foreground_mark_bbox(
     mask = (diff > 25.0).astype(np.uint8) * 255
     num_labels, _, stats, _ = cv2.connectedComponentsWithStats(mask, connectivity=8)
 
-    candidates: list[tuple[float, BBox]] = []
+    raw_boxes: list[BBox] = []
     for idx in range(1, num_labels):
         cx = int(stats[idx, cv2.CC_STAT_LEFT])
         cy = int(stats[idx, cv2.CC_STAT_TOP])
         cw = int(stats[idx, cv2.CC_STAT_WIDTH])
         ch = int(stats[idx, cv2.CC_STAT_HEIGHT])
         area = cw * ch
-        # A brand logo mark is >= 24px tall, not a thin divider/intrusion bar (ch >= 24),
-        # and not a full-width background panel (cw <= 0.65 * w).
         if cw >= 24 and ch >= 28 and area < int(w * h * 0.45) and cw <= int(w * 0.75):
-            ar = cw / float(ch)
-            ar_diff = abs(ar - expected_ar) / max(expected_ar, 0.1)
-            # Prefer marks in the top header zone with plausible logo dimensions
-            score = area / (1.0 + 0.5 * ar_diff + (2.0 if cy > h * 0.5 else 0.0))
-            candidates.append((score, BBox(x=cx, y=cy, w=cw, h=ch)))
+            raw_boxes.append(BBox(x=cx, y=cy, w=cw, h=ch))
+
+    candidates: list[tuple[float, BBox]] = []
+    for b in raw_boxes:
+        # Exclude individual character glyphs that sit along a multi-letter horizontal text line
+        if b.w < int(w * 0.12) and b.h < int(h * 0.12):
+            same_line_glyphs = sum(
+                1
+                for other in raw_boxes
+                if other is not b
+                and abs(other.y - b.y) <= max(10, int(b.h * 0.5))
+                and abs(other.h - b.h) <= max(10, int(b.h * 0.5))
+                and other.w < int(w * 0.12)
+            )
+            if same_line_glyphs >= 3:
+                continue
+        area = b.w * b.h
+        ar = b.w / float(b.h)
+        ar_diff = abs(ar - expected_ar) / max(expected_ar, 0.1)
+        score = area / (1.0 + 0.5 * ar_diff + (2.0 if b.y > h * 0.5 else 0.0))
+        candidates.append((score, b))
 
     if not candidates:
         return None

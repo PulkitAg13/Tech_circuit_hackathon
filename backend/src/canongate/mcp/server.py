@@ -1100,18 +1100,35 @@ class CanonGateMcpServer:
         target_node: TextNode | None = None
         if raw_content:
             ast = parse_raw_bundle_ast(raw_content)
+            text_nodes = [n for n in ast.of_kind(NodeKind.TEXT) if isinstance(n, TextNode)]
             target_node = next(
-                (
-                    n
-                    for n in ast.of_kind(NodeKind.TEXT)
-                    if isinstance(n, TextNode) and str(n.id) == str(f.node_id)
-                ),
+                (n for n in text_nodes if str(n.id) == str(f.node_id)),
                 None,
             )
-            if target_node is None:
-                text_nodes = [n for n in ast.of_kind(NodeKind.TEXT) if isinstance(n, TextNode)]
-                if text_nodes:
-                    target_node = text_nodes[0]
+            if target_node is None and text_nodes:
+                loc = f.locator.model_dump()
+                s = int(loc.get("start", -1))
+                e = int(loc.get("end", -1))
+                ev = f.evidence.model_dump()
+                raw_probe = (
+                    ev.get("draft_value")
+                    or ev.get("matched_text")
+                    or ev.get("trigger_matched")
+                    or ""
+                )
+                probe = str(raw_probe).strip().lower()
+                for cand in text_nodes:
+                    if 0 <= s < e <= len(cand.text):
+                        slice_txt = cand.text[s:e].lower()
+                        if not probe or probe in slice_txt or slice_txt in probe:
+                            target_node = cand
+                            break
+                if target_node is None:
+                    target_node = (
+                        text_nodes[-1]
+                        if len(text_nodes) > 1 and text_nodes[0].text.startswith("#")
+                        else text_nodes[0]
+                    )
 
         if target_node is not None:
             rewrite_res = await default_constrained_rewriter.rewrite(

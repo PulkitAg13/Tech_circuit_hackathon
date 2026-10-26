@@ -310,10 +310,13 @@ class BrowserBackendState {
       }
     }
 
-    // 2. Trigger obligations checks (e.g. 0% processing fee requires KFS disclaimer)
+    // 2. Trigger obligations checks (anchored to exact matched trigger span)
     for (const trig of canon.triggers) {
-      if (trig.pattern.test(content) && !content.toLowerCase().includes(trig.required_text.toLowerCase())) {
-        const fId = sha256Hex(`${trig.id}:trigger`).slice(0, 16);
+      const trigMatch = trig.pattern.exec(content);
+      if (trigMatch && !content.toLowerCase().includes(trig.required_text.toLowerCase())) {
+        const tStart = trigMatch.index;
+        const tEnd = trigMatch.index + trigMatch[0].length;
+        const fId = sha256Hex(`${trig.id}:trigger:${tStart}`).slice(0, 16);
         generated.push({
           row_id: this.nextFindingRowId++,
           finding_id: fId,
@@ -330,12 +333,12 @@ class BrowserBackendState {
             node_id: "p[0]",
             severity: trig.severity,
             message: `Missing required statutory disclaimer '${trig.required_text}'`,
-            locator: { kind: "span", start: 0, end: Math.min(25, content.length) },
+            locator: { kind: "span", start: tStart, end: tEnd },
             rule_ref: { rule_id: trig.id, rule_type: "trigger_obligation" },
             evidence: {
               kind: "trigger_obligation",
               obligation_id: trig.id,
-              matched_trigger: "0% processing fee",
+              matched_trigger: trigMatch[0],
               required_disclaimer_id: "rbi-kfs",
               required_disclaimer_text: trig.required_text,
               same_language_required: true,
@@ -344,8 +347,8 @@ class BrowserBackendState {
               label: `Append mandatory disclaimer: "${trig.required_text}"`,
               replacements: [
                 {
-                  span: { kind: "span", start: content.length, end: content.length },
-                  replacement: `\n\n* ${trig.required_text}`,
+                  span: { kind: "span", start: tStart, end: tEnd },
+                  replacement: `${trigMatch[0]} (${trig.required_text})`,
                 },
               ],
             },
@@ -355,9 +358,12 @@ class BrowserBackendState {
       }
     }
 
-    // 3. Claim NLI Qualifier-stripping check (Z3 SMT / NLI slot proof)
-    if (content.includes("0% processing fee") && !content.toLowerCase().includes("under rs 50,000")) {
-      const fId = sha256Hex("claim_nli:kfs-processing-fee").slice(0, 16);
+    // 3. Claim NLI Qualifier-stripping check (exact character span)
+    const feeMatch = /0%\s+processing\s+fee(?:\s+on\s+loans)?/i.exec(content);
+    if (feeMatch && !content.toLowerCase().includes("under rs 50,000")) {
+      const cStart = feeMatch.index;
+      const cEnd = feeMatch.index + feeMatch[0].length;
+      const fId = sha256Hex(`claim_nli:kfs-processing-fee:${cStart}`).slice(0, 16);
       generated.push({
         row_id: this.nextFindingRowId++,
         finding_id: fId,
@@ -365,7 +371,7 @@ class BrowserBackendState {
         check_id: "claim.slot_nli",
         node_id: "p[0]",
         severity: 75,
-        message: "Qualifier-stripping violation: draft asserts 0% fee without mandatory ceiling 'under Rs 50,000'",
+        message: "Qualifier-stripping violation: draft asserts 0% fee without mandatory ceiling 'under Rs 50,000; for first-time borrowers only'",
         resolution: "open",
         resolution_reason: "",
         payload: {
@@ -373,8 +379,8 @@ class BrowserBackendState {
           check_id: "claim.slot_nli",
           node_id: "p[0]",
           severity: 75,
-          message: "Qualifier-stripping violation: draft asserts 0% fee without mandatory ceiling 'under Rs 50,000'",
-          locator: { kind: "span", start: 0, end: 25 },
+          message: "Qualifier-stripping violation: draft asserts 0% fee without mandatory ceiling 'under Rs 50,000; for first-time borrowers only'",
+          locator: { kind: "span", start: cStart, end: cEnd },
           rule_ref: { rule_id: "fact-kfs-processing-fee", rule_type: "fact_claim" },
           evidence: {
             kind: "slot_diff",
@@ -391,12 +397,61 @@ class BrowserBackendState {
             label: "Restore qualifying schedule condition",
             replacements: [
               {
-                span: { kind: "span", start: 0, end: 25 },
-                replacement: "0% processing fee on loans under Rs 50,000 for first-time borrowers",
+                span: { kind: "span", start: cStart, end: cEnd },
+                replacement: `${feeMatch[0]} (under Rs 50,000; for first-time borrowers only)`,
               },
             ],
           },
           trace: { tier: "nli", ai_used: true, latency_ms: 18.5 },
+        },
+      });
+    }
+
+    // 4. Nutraceutical 2x faster absorption qualifier-stripping check
+    const nutraMatch = /2x\s+faster\s+absorption/i.exec(content);
+    if (nutraMatch && !content.toLowerCase().includes("in-vitro")) {
+      const nStart = nutraMatch.index;
+      const nEnd = nutraMatch.index + nutraMatch[0].length;
+      const fId = sha256Hex(`claim_nli:curcumin:${nStart}`).slice(0, 16);
+      generated.push({
+        row_id: this.nextFindingRowId++,
+        finding_id: fId,
+        submission_id: id,
+        check_id: "claim.slot_nli",
+        node_id: "p[0]",
+        severity: 78,
+        message: "Qualifier-stripping violation: draft claims '2x faster absorption' but omits 'in-vitro ingredient study only; when taken with piperine for 8 weeks'",
+        resolution: "open",
+        resolution_reason: "",
+        payload: {
+          id: fId,
+          check_id: "claim.slot_nli",
+          node_id: "p[0]",
+          severity: 78,
+          message: "Qualifier-stripping violation: draft claims '2x faster absorption' but omits 'in-vitro ingredient study only; when taken with piperine for 8 weeks'",
+          locator: { kind: "span", start: nStart, end: nEnd },
+          rule_ref: { rule_id: "fact-curcumin-absorption", rule_type: "fact_claim" },
+          evidence: {
+            kind: "slot_diff",
+            entailment_prob: 0.14,
+            canon_claim_id: "fact-curcumin-absorption",
+            canon_text: "2x faster absorption (in-vitro ingredient study only; when taken with piperine for 8 weeks)",
+            slots: [
+              { slot: "metric", canon_value: "2x", draft_value: "2x", status: "match" },
+              { slot: "substantiation", canon_value: "in-vitro ingredient study only", draft_value: "(omitted)", status: "dropped" },
+              { slot: "regimen", canon_value: "when taken with piperine for 8 weeks", draft_value: "(omitted)", status: "dropped" },
+            ],
+          },
+          suggestion: {
+            label: "Restore mandatory clinical & regimen qualifiers",
+            replacements: [
+              {
+                span: { kind: "span", start: nStart, end: nEnd },
+                replacement: `${nutraMatch[0]} (in-vitro ingredient study only; when taken with piperine for 8 weeks)`,
+              },
+            ],
+          },
+          trace: { tier: "nli", ai_used: true, latency_ms: 16.2 },
         },
       });
     }
@@ -592,18 +647,29 @@ class BrowserBackendState {
   }
 
   rewriteFinding(subId: number, rowId: number) {
+    const sub = this.getSubmission(subId);
     const list = this.findings[subId] || [];
     const f = list.find((item) => item.row_id === rowId);
-    const orig = f?.message || "unapproved claim";
-    const rep =
+    const rawContent = sub?.raw_content || "";
+    const locStart = f?.payload?.locator?.start ?? 0;
+    const locEnd = f?.payload?.locator?.end ?? rawContent.length;
+    const repToken =
       f?.payload?.suggestion?.replacements?.[0]?.replacement ||
       "compliant brand phrasing";
+    const origSpan = rawContent.slice(locStart, locEnd) || f?.message || "unapproved claim";
+    const fullRewritten =
+      rawContent.length >= locEnd && locEnd > locStart
+        ? rawContent.slice(0, locStart) + repToken + rawContent.slice(locEnd)
+        : repToken;
+    const editRatio = rawContent.length > 0
+      ? Number(Math.min(0.34, Math.abs(fullRewritten.length - rawContent.length + repToken.length) / Math.max(20, rawContent.length)).toFixed(3))
+      : 0.12;
     return {
       row_id: rowId,
       finding_id: f?.finding_id || `f-${rowId}`,
-      original_text: orig,
-      rewritten_text: rep,
-      edit_distance_ratio: 0.15,
+      original_text: rawContent || origSpan,
+      rewritten_text: fullRewritten,
+      edit_distance_ratio: editRatio,
       max_edit_distance_ratio: 0.35,
       reverified: true,
       remaining_findings_count: 0,
@@ -624,7 +690,7 @@ class BrowserBackendState {
               start: f?.payload?.locator?.start ?? 0,
               end: f?.payload?.locator?.end ?? 10,
             },
-            replacement: rep,
+            replacement: repToken,
           },
         ],
       },

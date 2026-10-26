@@ -76,7 +76,8 @@ CREATE TABLE IF NOT EXISTS workflow_events (
     comment TEXT NOT NULL DEFAULT '',
     prev_hash TEXT NOT NULL,
     event_hash TEXT NOT NULL,
-    created_at TEXT NOT NULL
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
 INSERT OR IGNORE INTO users (id, username, display_name, role, password_hash)
 VALUES (
     1, 'creative_lead', 'Agency Creative Lead', 'creator',

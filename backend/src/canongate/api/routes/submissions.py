@@ -595,19 +595,41 @@ async def rewrite_finding_span(
 
     canon = get_canon(sub.canon_id)
     ast = _parse_submission_ast(sub.raw_content)
+    text_nodes = [n for n in ast.of_kind(NodeKind.TEXT) if isinstance(n, TextNode)]
     target_node = next(
-        (
-            n
-            for n in ast.of_kind(NodeKind.TEXT)
-            if isinstance(n, TextNode) and str(n.id) == str(row.node_id)
-        ),
+        (n for n in text_nodes if str(n.id) == str(row.node_id)),
         None,
     )
     if target_node is None:
-        text_nodes = [n for n in ast.of_kind(NodeKind.TEXT) if isinstance(n, TextNode)]
         if not text_nodes:
             raise HTTPException(status_code=400, detail="Finding is not attached to a text node")
-        target_node = text_nodes[0]
+        domain_f_tmp = Finding.model_validate_json(row.payload_json)
+        loc_tmp = domain_f_tmp.locator.model_dump()
+        s_tmp = int(loc_tmp.get("start", -1))
+        e_tmp = int(loc_tmp.get("end", -1))
+        ev_tmp = domain_f_tmp.evidence.model_dump()
+        probe_tmp = (
+            str(
+                ev_tmp.get("draft_value")
+                or ev_tmp.get("matched_text")
+                or ev_tmp.get("trigger_matched")
+                or ""
+            )
+            .strip()
+            .lower()
+        )
+        for cand in text_nodes:
+            if 0 <= s_tmp < e_tmp <= len(cand.text):
+                slice_txt = cand.text[s_tmp:e_tmp].lower()
+                if not probe_tmp or probe_tmp in slice_txt or slice_txt in probe_tmp:
+                    target_node = cand
+                    break
+        if target_node is None:
+            target_node = (
+                text_nodes[-1]
+                if len(text_nodes) > 1 and text_nodes[0].text.startswith("#")
+                else text_nodes[0]
+            )
 
     domain_finding = Finding.model_validate_json(row.payload_json)
     result = await default_constrained_rewriter.rewrite(

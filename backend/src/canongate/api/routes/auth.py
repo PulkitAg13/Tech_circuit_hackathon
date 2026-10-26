@@ -43,7 +43,10 @@ class TokenResponse(BaseModel):
 
 
 @router.post("/register", response_model=TokenResponse)
-async def register(req: RegisterRequest, session: SessionDep) -> TokenResponse:
+async def register(
+    req: RegisterRequest,
+    session: SessionDep,
+) -> TokenResponse:
     existing = await get_user_by_username(session, req.username)
     if existing:
         raise HTTPException(status_code=409, detail="Username already taken")

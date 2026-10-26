@@ -372,7 +372,11 @@ def detect_text_band_boxes(rgb_or_gray: np.ndarray, *, min_width: int = 16) -> t
 
     grad_x = cv2.Sobel(gray, ddepth=cv2.CV_16S, dx=1, dy=0, ksize=3)
     abs_grad = cv2.convertScaleAbs(grad_x)
-    _, thresh = cv2.threshold(abs_grad, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+    otsu_t, _ = cv2.threshold(abs_grad, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+    eff_t = max(24.0, min(float(otsu_t), 40.0))
+    _, thresh = cv2.threshold(abs_grad, eff_t, 255, cv2.THRESH_BINARY)
+    v_kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (1, max(60, int(h * 0.55))))
+    thresh = cv2.subtract(thresh, cv2.morphologyEx(thresh, cv2.MORPH_OPEN, v_kernel))
 
     kw = max(9, w // 25)
     kh = max(3, h // 80)

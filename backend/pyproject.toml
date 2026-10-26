@@ -104,3 +104,6 @@ name = "engine must not import store or api"
 type = "forbidden"
 source_modules = ["canongate.engine"]
 forbidden_modules = ["canongate.store", "canongate.api", "canongate.ledger", "canongate.mcp"]
+
+[tool.ruff.lint.flake8-bugbear]
+extend-immutable-calls = ["fastapi.Depends", "fastapi.Header", "fastapi.Query"]

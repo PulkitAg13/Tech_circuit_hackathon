@@ -114,8 +114,8 @@ _QUALIFIER_CLAUSE_RE = re.compile(
     r"\b("
     r"(?:only\s+)?(?:on|for|under|below|above|over|up\s+to|within|subject\s+to|"
     r"valid\s+(?:until|till|for)|as\s+of|across|in\s+vitro|clinical)\s+"
-    r"(?:\d[\d,]*|[^.;,\n()]){3,90}?"
-    r")(?=\s+(?:valid\s+(?:until|till|for)|subject\s+to|as\s+of)\b|[.;,\n()]|$)",
+    r"(?:Rs\.|p\.a\.|\d[\d,]*(?:\.\d+)?|[^.;,\n()]){3,95}?"
+    r")(?=\s+(?:valid\s+(?:until|till|for)|subject\s+to|as\s+of)\b|(?<!\bRs)\.(?!\d)|[;,\n()]|$)",
     re.IGNORECASE,
 )
 

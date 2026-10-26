@@ -360,8 +360,21 @@ class BannerOCREngine:
             roi = gray[b.y : b.y + b.h, b.x : b.x + b.w]
             if roi.size == 0:
                 continue
-            mid = roi[roi.shape[0] // 2, :]
-            transitions = int(np.sum(np.abs(np.diff(mid.astype(np.int16))) > 20))
+            transitions = max(
+                int(
+                    np.sum(
+                        np.abs(
+                            np.diff(
+                                roi[min(roi.shape[0] - 1, int(roi.shape[0] * q)), :].astype(
+                                    np.int16
+                                )
+                            )
+                        )
+                        > 20
+                    )
+                )
+                for q in (0.25, 0.50, 0.75)
+            )
             if transitions >= 6:
                 stroke_boxes.append(b)
 
@@ -680,7 +693,11 @@ def detect_banner_text_boxes(gray_img: np.ndarray, *, min_width: int = 16) -> tu
 
     grad_x = cv2.Sobel(gray_img, ddepth=cv2.CV_16S, dx=1, dy=0, ksize=3)
     abs_grad = cv2.convertScaleAbs(grad_x)
-    _, thresh = cv2.threshold(abs_grad, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+    otsu_t, _ = cv2.threshold(abs_grad, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+    eff_t = max(24.0, min(float(otsu_t), 40.0))
+    _, thresh = cv2.threshold(abs_grad, eff_t, 255, cv2.THRESH_BINARY)
+    v_kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (1, max(60, int(h * 0.55))))
+    thresh = cv2.subtract(thresh, cv2.morphologyEx(thresh, cv2.MORPH_OPEN, v_kernel))
 
     kw = max(9, w // 25)
     kh = max(3, h // 80)
