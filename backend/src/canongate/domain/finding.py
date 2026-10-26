@@ -128,6 +128,18 @@ class ColorDistance(FrozenModel, frozen=True):
     max_allowed: float
 
 
+class VisualAlternativeItem(FrozenModel, frozen=True):
+    """A re-verified visual repair alternative synthesized by `DesignAlternativeProvider`."""
+
+    candidate_id: str
+    label: str
+    foreground_hex: str
+    background_hex: str
+    contrast_ratio: float
+    delta_e_from_brand: float = 0.0
+    reverified: bool = True
+
+
 class ContrastEvidence(FrozenModel, frozen=True):
     """Evidence: WCAG 2.1 AA/AAA relative luminance contrast failure."""
 
@@ -138,6 +150,7 @@ class ContrastEvidence(FrozenModel, frozen=True):
     required_ratio: float
     wcag_level: Literal["AA", "AAA"] = "AA"
     suggested_fg_hex: str | None = None
+    design_alternatives: tuple[VisualAlternativeItem, ...] = ()
 
 
 class LegibilityEvidence(FrozenModel, frozen=True):

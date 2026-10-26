@@ -19,6 +19,7 @@ import re
 from typing import ClassVar
 
 from canongate.checks._vision import (
+    default_design_alternative_provider,
     detect_text_band_boxes,
     hex_to_rgb,
     load_rgb_image,
@@ -38,6 +39,7 @@ from canongate.domain.finding import (
     Suggestion,
     Tier,
     Trace,
+    VisualAlternativeItem,
 )
 from canongate.engine.check import Check
 
@@ -63,12 +65,12 @@ class AccessibilityContrastCheck(Check):
 
     def run(self, node: Node, canon: Canon) -> list[Finding]:
         if isinstance(node, TextNode):
-            return self._check_text_node(node)
+            return self._check_text_node(node, canon)
         if isinstance(node, ImageNode):
             return self._check_image_node(node, canon)
         return []
 
-    def _check_text_node(self, node: TextNode) -> list[Finding]:
+    def _check_text_node(self, node: TextNode, canon: Canon | None = None) -> list[Finding]:
         findings: list[Finding] = []
         rule_ref = Rule(
             rule_id="wcag-21-aa-contrast",
@@ -95,6 +97,25 @@ class AccessibilityContrastCheck(Check):
                 fg_hex = rgb_to_hex(fg_rgb)
                 bg_hex = rgb_to_hex(bg_rgb)
                 suggested_hex = suggest_compliant_fg_hex(fg_rgb, bg_rgb, required)
+                palette_hexes = tuple(t.hex for t in canon.palette) if canon is not None else ()
+                raw_alts = default_design_alternative_provider.suggest_alternatives(
+                    fg_rgb,
+                    bg_rgb,
+                    brand_palette_hexes=palette_hexes,
+                    required_ratio=required,
+                )
+                alt_items = tuple(
+                    VisualAlternativeItem(
+                        candidate_id=a.candidate_id,
+                        label=a.label,
+                        foreground_hex=a.foreground_hex,
+                        background_hex=a.background_hex,
+                        contrast_ratio=a.contrast_ratio,
+                        delta_e_from_brand=a.delta_e_from_brand,
+                        reverified=a.reverified,
+                    )
+                    for a in raw_alts
+                )
                 fg_span = Span(start=match.start(fg_group_idx), end=match.end(fg_group_idx))
                 findings.append(
                     self.finding(
@@ -114,6 +135,7 @@ class AccessibilityContrastCheck(Check):
                             required_ratio=required,
                             wcag_level="AA",
                             suggested_fg_hex=suggested_hex,
+                            design_alternatives=alt_items,
                         ),
                         suggestion=Suggestion(
                             label=f"Use WCAG AA compliant {suggested_hex}",
@@ -198,6 +220,25 @@ class AccessibilityContrastCheck(Check):
                 fg_hex = rgb_to_hex(fg_rgb)
                 bg_hex = rgb_to_hex(bg_rgb)
                 suggested_hex = suggest_compliant_fg_hex(fg_rgb, bg_rgb, required)
+                palette_hexes = tuple(t.hex for t in canon.palette)
+                raw_alts = default_design_alternative_provider.suggest_alternatives(
+                    fg_rgb,
+                    bg_rgb,
+                    brand_palette_hexes=palette_hexes,
+                    required_ratio=required,
+                )
+                alt_items = tuple(
+                    VisualAlternativeItem(
+                        candidate_id=a.candidate_id,
+                        label=a.label,
+                        foreground_hex=a.foreground_hex,
+                        background_hex=a.background_hex,
+                        contrast_ratio=a.contrast_ratio,
+                        delta_e_from_brand=a.delta_e_from_brand,
+                        reverified=a.reverified,
+                    )
+                    for a in raw_alts
+                )
                 findings.append(
                     self.finding(
                         node=node,
@@ -216,6 +257,7 @@ class AccessibilityContrastCheck(Check):
                             required_ratio=required,
                             wcag_level="AA",
                             suggested_fg_hex=suggested_hex,
+                            design_alternatives=alt_items,
                         ),
                         trace=Trace(tier=Tier.DETERMINISTIC),
                     )

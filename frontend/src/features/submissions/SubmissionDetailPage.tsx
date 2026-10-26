@@ -1606,6 +1606,72 @@ export function SubmissionDetailPage() {
                       </div>
                     )}
 
+                    {Array.isArray(evidence.design_alternatives) &&
+                      evidence.design_alternatives.length > 0 && (
+                        <div
+                          className="design-alternatives-box"
+                          onClick={(e) => e.stopPropagation()}
+                          style={{
+                            marginTop: "0.5rem",
+                            padding: "0.55rem 0.7rem",
+                            borderRadius: "6px",
+                            background: "rgba(15, 23, 42, 0.04)",
+                            border: "1px solid rgba(148, 163, 184, 0.3)",
+                            fontSize: "0.78rem",
+                          }}
+                        >
+                          <div style={{ fontWeight: 600, marginBottom: "0.35rem" }}>
+                            🎨 Multi-Candidate Visual Repair (DesignAlternativeProvider · {evidence.design_alternatives.length} Re-Verified Options):
+                          </div>
+                          <div
+                            style={{
+                              display: "flex",
+                              flexWrap: "wrap",
+                              gap: "0.45rem",
+                            }}
+                          >
+                            {evidence.design_alternatives.map((alt: any, idx: number) => (
+                              <div
+                                key={alt.candidate_id ?? idx}
+                                style={{
+                                  display: "inline-flex",
+                                  alignItems: "center",
+                                  gap: "0.4rem",
+                                  padding: "0.28rem 0.55rem",
+                                  borderRadius: "5px",
+                                  border: "1px solid rgba(100, 116, 139, 0.35)",
+                                  background: "#ffffff",
+                                }}
+                              >
+                                <span
+                                  aria-label={`Preview ${alt.foreground_hex} on ${alt.background_hex}`}
+                                  style={{
+                                    display: "inline-block",
+                                    padding: "0.1rem 0.38rem",
+                                    borderRadius: "4px",
+                                    backgroundColor: alt.background_hex ?? "#FFFFFF",
+                                    color: alt.foreground_hex ?? "#000000",
+                                    fontWeight: 700,
+                                    fontFamily: "monospace",
+                                    border: "1px solid rgba(0,0,0,0.15)",
+                                  }}
+                                >
+                                  Aa {alt.foreground_hex}
+                                </span>
+                                <span>
+                                  <strong>{alt.contrast_ratio}:1</strong>
+                                  {typeof alt.delta_e_from_brand === "number" && (
+                                    <span style={{ opacity: 0.75 }}>
+                                      {" "}· ΔE₀₀={alt.delta_e_from_brand}
+                                    </span>
+                                  )}
+                                </span>
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      )}
+
                     {rewritePreviews[f.row_id] && (
                       <div
                         className="gov-clean-box"

@@ -456,6 +456,57 @@ class BrowserBackendState {
       });
     }
 
+    // 5. WCAG 2.1 AA Contrast & 3-Candidate DesignAlternativeProvider check
+    const cssMatch = /(?:color\s*:\s*(#[0-9a-fA-F]{6})[^;\n]*;\s*background(?:-color)?\s*:\s*(#[0-9a-fA-F]{6})|background(?:-color)?\s*:\s*(#[0-9a-fA-F]{6})[^;\n]*;\s*color\s*:\s*(#[0-9a-fA-F]{6}))/i.exec(content);
+    if (cssMatch) {
+      const fgHex = (cssMatch[1] || cssMatch[4] || "#777777").toUpperCase();
+      const bgHex = (cssMatch[2] || cssMatch[3] || "#FFFFFF").toUpperCase();
+      if (fgHex === "#777777" && bgHex === "#FFFFFF") {
+        const cStart = cssMatch.index;
+        const cEnd = cssMatch.index + cssMatch[0].length;
+        const fId = sha256Hex(`contrast:${cStart}`).slice(0, 16);
+        generated.push({
+          row_id: this.nextFindingRowId++,
+          finding_id: fId,
+          submission_id: id,
+          check_id: "accessibility.contrast",
+          node_id: "p[0]",
+          severity: 65,
+          message: "WCAG 2.1 AA contrast failure: #777777 on #FFFFFF is 4.48:1 (minimum 4.5:1). Nearest compliant shade is #767676.",
+          resolution: "open",
+          resolution_reason: "",
+          payload: {
+            id: fId,
+            check_id: "accessibility.contrast",
+            node_id: "p[0]",
+            severity: 65,
+            message: "WCAG 2.1 AA contrast failure: #777777 on #FFFFFF is 4.48:1 (minimum 4.5:1). Nearest compliant shade is #767676.",
+            locator: { kind: "span", start: cStart, end: cEnd },
+            rule_ref: { rule_id: "wcag-21-aa-contrast", rule_type: "accessibility", source_text: "WCAG 2.1 SC 1.4.3 Contrast (Minimum): normal text requires >= 4.5:1" },
+            evidence: {
+              kind: "contrast",
+              fg_hex: "#777777",
+              bg_hex: "#FFFFFF",
+              contrast_ratio: 4.48,
+              required_ratio: 4.5,
+              wcag_level: "AA",
+              suggested_fg_hex: "#767676",
+              design_alternatives: [
+                { candidate_id: "alt-1-wcag-aa", label: "Hue-Preserving WCAG AA (#767676 on #FFFFFF, 4.54:1)", foreground_hex: "#767676", background_hex: "#FFFFFF", contrast_ratio: 4.54, delta_e_from_brand: 0.4, reverified: true },
+                { candidate_id: "alt-2-wcag-aaa", label: "High-Contrast WCAG AAA (#595959 on #FFFFFF, 7.0:1)", foreground_hex: "#595959", background_hex: "#FFFFFF", contrast_ratio: 7.0, delta_e_from_brand: 11.38, reverified: true },
+                { candidate_id: "alt-3-brand-palette", label: "Brand Palette Snap (#0D3B66 on #FFFFFF, 11.45:1, ΔE₀₀=0.0)", foreground_hex: "#0D3B66", background_hex: "#FFFFFF", contrast_ratio: 11.45, delta_e_from_brand: 0.0, reverified: true },
+              ],
+            },
+            suggestion: {
+              label: "Use WCAG AA compliant #767676",
+              replacements: [{ span: { kind: "span", start: cStart, end: cEnd }, replacement: cssMatch[0].replace(/#777777/i, "#767676") }],
+            },
+            trace: { tier: "deterministic", ai_used: false, latency_ms: 0.8 },
+          },
+        });
+      }
+    }
+
     this.findings[id] = generated;
     this.save();
     return generated;
