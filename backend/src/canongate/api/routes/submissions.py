@@ -7,15 +7,14 @@ rewriting, and deterministic replay manifests.
 from __future__ import annotations
 
 import base64
+import contextlib
 import datetime as dt
-import hashlib
 import json
 import re
 from collections.abc import AsyncIterator
 from pathlib import Path
 from typing import Any
 
-from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import Response, StreamingResponse
 from pydantic import BaseModel
@@ -66,7 +65,7 @@ from canongate.engine.conformal import default_calibrator
 from canongate.engine.rewriter import default_constrained_rewriter
 from canongate.engine.runner import run_checks, run_checks_collect
 from canongate.ledger.c2pa_outbound import build_governance_manifest, sign_approved_asset
-from canongate.ledger.certificate import GovernanceCertificate
+from canongate.ledger.certificate import GovernanceCertificate, derive_audit_signing_key
 from canongate.ledger.chain import GENESIS_HASH, compute_event_hash
 from canongate.ledger.merkle import MerkleTree
 from canongate.parsers.bundle import default_bundle_parser
@@ -911,8 +910,7 @@ async def get_audit_trail(
     tree = MerkleTree(leaves)
     merkle_root = tree.root_hex
 
-    seed = hashlib.sha256(f"canongate-audit-{submission_id}".encode()).digest()
-    server_key = Ed25519PrivateKey.from_private_bytes(seed)
+    server_key = derive_audit_signing_key(submission_id)
     now_iso = dt.datetime.now(dt.UTC).isoformat()
     sth = tree.sign_head(now_iso, server_key)
     sth_dict = sth.to_dict()
@@ -955,8 +953,7 @@ async def get_audit_tree_head(
 
     leaves = [e.event_hash.encode() for e in events]
     tree = MerkleTree(leaves)
-    seed = hashlib.sha256(f"canongate-audit-{submission_id}".encode()).digest()
-    server_key = Ed25519PrivateKey.from_private_bytes(seed)
+    server_key = derive_audit_signing_key(submission_id)
     now_iso = dt.datetime.now(dt.UTC).isoformat()
     sth = tree.sign_head(now_iso, server_key)
     return sth.to_dict()
@@ -983,7 +980,48 @@ async def get_governance_certificate(
         canon_hash=sub.canon_hash,
         event_rows=events,
     )
-    return cert.to_dict()
+    out = cert.to_dict()
+    img_nodes = list(_parse_submission_ast(sub.raw_content).of_kind(NodeKind.IMAGE))
+    c2pa_manifests: list[dict[str, Any]] = []
+    for img in img_nodes:
+        src_p = Path(img.asset_path)
+        sidecar_p = src_p.with_name(f"{src_p.stem}_signed{src_p.suffix}.c2pa.json")
+        if sidecar_p.is_file():
+            with contextlib.suppress(Exception):
+                c2pa_manifests.append(json.loads(sidecar_p.read_text(encoding="utf-8")))
+    if c2pa_manifests:
+        out["c2pa_manifests"] = c2pa_manifests
+    return out
+
+
+@router.get("/{submission_id}/c2pa")
+async def get_submission_c2pa_manifests(
+    submission_id: int,
+    session: SessionDep,
+    user: CurrentUser,
+) -> dict[str, Any]:
+    """Return signed outbound C2PA v2.3 manifests and X.509 certificates for visual assets."""
+    sub = await repos.get_submission(session, submission_id)
+    if not sub:
+        raise HTTPException(status_code=404, detail="Submission not found")
+    img_nodes = list(_parse_submission_ast(sub.raw_content).of_kind(NodeKind.IMAGE))
+    manifests: list[dict[str, Any]] = []
+    for img in img_nodes:
+        src_p = Path(img.asset_path)
+        signed_p = src_p.with_name(f"{src_p.stem}_signed{src_p.suffix}")
+        sidecar_p = src_p.with_name(f"{src_p.stem}_signed{src_p.suffix}.c2pa.json")
+        if sidecar_p.is_file():
+            with contextlib.suppress(Exception):
+                sc = json.loads(sidecar_p.read_text(encoding="utf-8"))
+                sc["node_id"] = str(img.id)
+                sc["signed_asset_exists"] = signed_p.is_file()
+                manifests.append(sc)
+    return {
+        "submission_id": sub.id,
+        "status": sub.status,
+        "c2pa_count": len(manifests),
+        "manifests": manifests,
+    }
 
 
 @router.get("/{submission_id}/versions", response_model=list[SubmissionVersionResponse])

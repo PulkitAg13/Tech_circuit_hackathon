@@ -10,6 +10,8 @@ from __future__ import annotations
 
 import datetime as dt
 import hashlib
+import hmac
+import os
 import re
 from collections.abc import Sequence
 from dataclasses import dataclass
@@ -26,6 +28,31 @@ from canongate.ledger.merkle import (
 )
 
 _SHA256_HEX_RE = re.compile(r"^[0-9a-fA-F]{64}$")
+
+
+def derive_audit_signing_key(
+    submission_id: int,
+    *,
+    secret: str | None = None,
+) -> Ed25519PrivateKey:
+    """Derive a deterministic Ed25519 signing key using HMAC-SHA256 with the server secret.
+
+    Prevents external forgery of `GovernanceCertificate` or `SignedTreeHead` from a
+    public integer `submission_id` while keeping offline verification stateless via the
+    embedded `public_key_hex`.
+    """
+    server_secret = (
+        secret
+        or os.environ.get("CANONGATE_JWT_SECRET")
+        or os.environ.get("JWT_SECRET")
+        or "dev-secret-change-me"
+    )
+    seed = hmac.new(
+        server_secret.encode("utf-8"),
+        f"canongate-audit-v2:{submission_id}".encode(),
+        hashlib.sha256,
+    ).digest()
+    return Ed25519PrivateKey.from_private_bytes(seed)
 
 
 @dataclass(frozen=True, slots=True)
@@ -87,8 +114,7 @@ class GovernanceCertificate:
         """Construct and sign a `GovernanceCertificate` from persisted workflow event rows."""
         now_iso = issued_at or dt.datetime.now(dt.UTC).isoformat()
         if private_key is None:
-            seed = hashlib.sha256(f"canongate-audit-{submission_id}".encode()).digest()
-            private_key = Ed25519PrivateKey.from_private_bytes(seed)
+            private_key = derive_audit_signing_key(submission_id)
 
         leaves = [str(e.event_hash).encode("utf-8") for e in event_rows]
         tree = MerkleTree(leaves)

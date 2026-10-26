@@ -1378,6 +1378,8 @@ async def run_stdio_server_async(
             out_stream.write(wire_line + "\n")
             out_stream.flush()
 
+    for job in active_server._batch_manager.list_jobs():
+        active_server._batch_manager.cancel_job(job.job_id)
     return 0
 
 

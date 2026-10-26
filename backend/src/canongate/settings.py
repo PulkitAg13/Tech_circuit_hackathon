@@ -75,17 +75,25 @@ class Settings(_BaseSettings):
         "https://canongate-web.onrender.com",
     ]
 
-    # Auth
+    # Auth & Cryptographic Ledger Signing
     jwt_secret: str = "dev-secret-change-me"
     jwt_algorithm: str = "HS256"
     jwt_expire_minutes: int = 60 * 24  # 24h
+
+    # Voyage AI Dense Embeddings (Voyage 4 series) & Instruction-Following Reranker NLI
+    voyage_api_key: str = ""
+    voyage_base_url: str = "https://api.voyageai.com/v1"
+    voyage_embed_model: str = "voyage-4-lite"
+    voyage_embed_dim: int = 512
+    voyage_rerank_model: str = "rerank-2.5"
+    voyage_rerank_fallback_model: str = "rerank-2.5-lite"
+    voyage_timeout_s: float = 3.5
 
     # Multi-Provider LLM Configuration (for complex tables & Pipeline A Canon compilation)
     # Supported values: "auto" | "gemini" | "openai" | "groq" | "ollama" | "none"
     llm_provider: str = "auto"
     gemini_api_key: str = ""
     gemini_model: str = "gemini-3.8-flash"
-    voyage_api_key: str = ""
     openai_api_key: str = ""
     openai_base_url: str = "https://api.openai.com/v1"
     openai_model: str = "gpt-4o-mini"
@@ -100,14 +108,27 @@ class Settings(_BaseSettings):
         )
         for field_name in fields:
             env_key = f"CANONGATE_{field_name.upper()}"
+            fallback_env_key = field_name.upper()
+            raw_val: Any = None
             if env_key in os.environ and field_name not in values:
-                val: Any = os.environ[env_key]
-                if isinstance(val, str) and val.startswith(("[", "{")) and val.endswith(("]", "}")):
+                raw_val = os.environ[env_key]
+            elif (
+                fallback_env_key in os.environ
+                and field_name not in values
+                and field_name.startswith(("voyage_", "gemini_", "openai_"))
+            ):
+                raw_val = os.environ[fallback_env_key]
+            if raw_val is not None:
+                if (
+                    isinstance(raw_val, str)
+                    and raw_val.startswith(("[", "{"))
+                    and raw_val.endswith(("]", "}"))
+                ):
                     try:
                         import json
 
-                        val = json.loads(val)
+                        raw_val = json.loads(raw_val)
                     except Exception:
                         pass
-                env_overrides[field_name] = val
+                env_overrides[field_name] = raw_val
         super().__init__(**{**env_overrides, **values})

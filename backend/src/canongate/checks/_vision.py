@@ -1,17 +1,20 @@
-r"""Shared deterministic vision, colourimetric (CIE Lab / CIEDE2000), and WCAG 2.1 math.
+r"""Shared deterministic vision, colourimetric (CIE Lab / CIEDE2000), WCAG 2.1,
+and DesignAlternativeProvider visual repair synthesis.
 
 Why this module lives inside `canongate.checks`:
 1. `import-linter` forbids `canongate.checks` from importing `canongate.parsers`.
 2. Provides exact W3C WCAG 2.1 relative luminance, CIE L*a*b* (D65) conversion,
-   and vectorized Sharma, Wu, & Dalal (2005) CIEDE2000 (`delta_e_ciede2000`)
-   using `scikit-image` when installed and falling back to exact NumPy math
-   when running in minimal environments.
+   vectorized Sharma, Wu, & Dalal (2005) CIEDE2000 (`delta_e_ciede2000`), and
+   `DesignAlternativeProvider` multi-candidate visual repair synthesis.
 """
 
 from __future__ import annotations
 
+from collections.abc import Sequence
+from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
+from typing import Protocol, runtime_checkable
 
 import cv2
 import numpy as np
@@ -237,6 +240,127 @@ def delta_e_ciede2000(
     term_c = delta_c_p / s_c
     term_h = delta_big_h_p / s_h
     return float(np.sqrt(term_l**2 + term_c**2 + term_h**2 + r_t * term_c * term_h))
+
+
+@dataclass(frozen=True, slots=True)
+class VisualAlternativeCandidate:
+    """A re-verified visual repair candidate for a failing banner or contrast region."""
+
+    candidate_id: str
+    label: str
+    foreground_hex: str
+    background_hex: str
+    contrast_ratio: float
+    delta_e_from_brand: float
+    reverified: bool
+
+
+@runtime_checkable
+class DesignAlternativeProvider(Protocol):
+    """Pluggable provider hook (`DesignAlternativeProvider`) for generating visual repairs."""
+
+    def suggest_alternatives(
+        self,
+        fg_rgb: tuple[int, int, int],
+        bg_rgb: tuple[int, int, int],
+        *,
+        brand_palette_hexes: Sequence[str] = (),
+        required_ratio: float = 4.5,
+        max_candidates: int = 3,
+    ) -> list[VisualAlternativeCandidate]:
+        """Return up to `max_candidates` re-verified visual repair alternatives."""
+
+
+class CielabDesignAlternativeProvider:
+    """Default deterministic CIELAB + WCAG 2.1 `DesignAlternativeProvider` implementation.
+
+    Synthesizes up to 3 distinct, re-verified compliant visual alternatives:
+    1. Minimal `L*` lightness shift preserving original hue/chroma (`WCAG AA >= 4.5:1`).
+    2. High-contrast `WCAG AAA >= 7.0:1` editorial variant for fine-print legibility.
+    3. Nearest Canon brand palette token snap (minimizing $\\Delta E_{00}$ while meeting contrast).
+    """
+
+    def suggest_alternatives(
+        self,
+        fg_rgb: tuple[int, int, int],
+        bg_rgb: tuple[int, int, int],
+        *,
+        brand_palette_hexes: Sequence[str] = (),
+        required_ratio: float = 4.5,
+        max_candidates: int = 3,
+    ) -> list[VisualAlternativeCandidate]:
+        bg_hex = rgb_to_hex(bg_rgb)
+        fg_lab = rgb_to_lab(fg_rgb)
+        candidates: list[VisualAlternativeCandidate] = []
+
+        # Candidate 1: Hue-preserving WCAG AA lightness shift
+        aa_hex = suggest_compliant_fg_hex(fg_rgb, bg_rgb, required_ratio=required_ratio)
+        aa_rgb = hex_to_rgb(aa_hex)
+        aa_ratio = round(wcag_contrast_ratio(aa_rgb, bg_rgb), 2)
+        aa_de = round(delta_e_ciede2000(fg_lab, rgb_to_lab(aa_rgb)), 2)
+        candidates.append(
+            VisualAlternativeCandidate(
+                candidate_id="alt-1-wcag-aa",
+                label=f"Hue-Preserving WCAG AA ({aa_hex} on {bg_hex}, {aa_ratio}:1)",
+                foreground_hex=aa_hex,
+                background_hex=bg_hex,
+                contrast_ratio=aa_ratio,
+                delta_e_from_brand=aa_de,
+                reverified=aa_ratio >= required_ratio,
+            )
+        )
+
+        # Candidate 2: High-legibility WCAG AAA (>= 7.0:1) variant
+        aaa_target = max(7.0, required_ratio + 1.5)
+        aaa_hex = suggest_compliant_fg_hex(fg_rgb, bg_rgb, required_ratio=aaa_target)
+        if aaa_hex != aa_hex:
+            aaa_rgb = hex_to_rgb(aaa_hex)
+            aaa_ratio = round(wcag_contrast_ratio(aaa_rgb, bg_rgb), 2)
+            aaa_de = round(delta_e_ciede2000(fg_lab, rgb_to_lab(aaa_rgb)), 2)
+            candidates.append(
+                VisualAlternativeCandidate(
+                    candidate_id="alt-2-wcag-aaa",
+                    label=f"High-Contrast WCAG AAA ({aaa_hex} on {bg_hex}, {aaa_ratio}:1)",
+                    foreground_hex=aaa_hex,
+                    background_hex=bg_hex,
+                    contrast_ratio=aaa_ratio,
+                    delta_e_from_brand=aaa_de,
+                    reverified=aaa_ratio >= required_ratio,
+                )
+            )
+
+        # Candidate 3: Nearest Canon Brand Palette Token adjusted for contrast
+        if brand_palette_hexes:
+            best_brand: VisualAlternativeCandidate | None = None
+            for b_hex in brand_palette_hexes:
+                try:
+                    b_rgb = hex_to_rgb(b_hex)
+                except ValueError:
+                    continue
+                adj_hex = suggest_compliant_fg_hex(b_rgb, bg_rgb, required_ratio=required_ratio)
+                adj_rgb = hex_to_rgb(adj_hex)
+                adj_ratio = round(wcag_contrast_ratio(adj_rgb, bg_rgb), 2)
+                de = round(delta_e_ciede2000(rgb_to_lab(b_rgb), rgb_to_lab(adj_rgb)), 2)
+                cand = VisualAlternativeCandidate(
+                    candidate_id="alt-3-brand-palette",
+                    label=f"Brand Palette Snap ({adj_hex} on {bg_hex}, {adj_ratio}:1, ΔE₀₀={de})",
+                    foreground_hex=adj_hex,
+                    background_hex=bg_hex,
+                    contrast_ratio=adj_ratio,
+                    delta_e_from_brand=de,
+                    reverified=adj_ratio >= required_ratio,
+                )
+                if best_brand is None or cand.delta_e_from_brand < best_brand.delta_e_from_brand:
+                    best_brand = cand
+            if best_brand is not None and all(
+                c.foreground_hex != best_brand.foreground_hex for c in candidates
+            ):
+                candidates.append(best_brand)
+
+        return candidates[: max(1, max_candidates)]
+
+
+default_design_alternative_provider: DesignAlternativeProvider = CielabDesignAlternativeProvider()
 
 
 def detect_text_band_boxes(rgb_or_gray: np.ndarray, *, min_width: int = 16) -> tuple[BBox, ...]:

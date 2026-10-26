@@ -29,7 +29,13 @@ import {
   type ImageNodeMeta,
 } from "../../api/client";
 import { useAuth } from "../auth/context";
-import { codepointIndexToUtf16Offset } from "./FindingHighlightsExtension";
+import { useEditor, EditorContent } from "@tiptap/react";
+import StarterKit from "@tiptap/starter-kit";
+import {
+  FindingHighlightsExtension,
+  findingHighlightsPluginKey,
+  codepointIndexToUtf16Offset,
+} from "./FindingHighlightsExtension";
 
 const ROLE_DISPLAY: Record<string, string> = {
   creator: "Creator · Stage 1",
@@ -328,7 +334,7 @@ function extractBannerOverlays(
 export function SubmissionDetailPage() {
   const { id } = useParams<{ id: string }>();
   const submissionId = Number(id);
-  const { username, displayName, role, logout } = useAuth();
+  const { username, displayName, role, switchRole, logout } = useAuth();
   const navigate = useNavigate();
 
   const [submission, setSubmission] = useState<Submission | null>(null);
@@ -699,6 +705,53 @@ export function SubmissionDetailPage() {
     }
   }, []);
 
+  const tiptapDocContent = useMemo(
+    () => ({
+      type: "doc",
+      content:
+        textBlocks.length > 0
+          ? textBlocks.map((block) => ({
+              type: "paragraph",
+              content: block ? [{ type: "text", text: block }] : [],
+            }))
+          : [{ type: "paragraph" }],
+    }),
+    [textBlocks],
+  );
+
+  const tiptapEditor = useEditor({
+    extensions: [
+      StarterKit,
+      FindingHighlightsExtension.configure({
+        onSelectFinding: handleSelectFindingFromSpan,
+      }),
+    ],
+    content: tiptapDocContent,
+    editable: false,
+  });
+
+  useEffect(() => {
+    if (!tiptapEditor || tiptapEditor.isDestroyed) return;
+    const currentText = tiptapEditor.getText({ blockSeparator: "\n\n" });
+    const nextText = textBlocks.join("\n\n");
+    if (currentText !== nextText) {
+      tiptapEditor.commands.setContent(tiptapDocContent, false);
+    }
+    const tr = tiptapEditor.state.tr.setMeta(findingHighlightsPluginKey, {
+      findings,
+      paragraphNodeIds,
+      selectedRowId: selectedFindingId,
+    });
+    tiptapEditor.view.dispatch(tr);
+  }, [
+    tiptapEditor,
+    tiptapDocContent,
+    textBlocks,
+    findings,
+    paragraphNodeIds,
+    selectedFindingId,
+  ]);
+
   if (loading) {
     return (
       <div className="detail-page">
@@ -783,16 +836,38 @@ export function SubmissionDetailPage() {
             </div>
           </div>
 
-          <span
+          <label
             className="status-badge status-approved"
             style={{
-              padding: "0.36rem 0.72rem",
+              padding: "0.24rem 0.62rem",
               fontSize: "0.74rem",
+              display: "inline-flex",
+              alignItems: "center",
+              gap: "0.35rem",
             }}
-            title="Role is bound to your signed-in account"
+            title="Switch active RBAC role in-session (POST /api/auth/switch-role)"
           >
-            🔒 Role: {ROLE_DISPLAY[role || "creator"] ?? role}
-          </span>
+            <span>🔒 Role:</span>
+            <select
+              aria-label="Active Governance Role"
+              value={role || "creator"}
+              onChange={(e) => {
+                void switchRole(e.target.value);
+              }}
+              style={{
+                background: "transparent",
+                border: "none",
+                color: "inherit",
+                fontWeight: 700,
+                fontSize: "0.74rem",
+                cursor: "pointer",
+              }}
+            >
+              <option value="creator">{ROLE_DISPLAY.creator}</option>
+              <option value="reviewer">{ROLE_DISPLAY.reviewer}</option>
+              <option value="admin">{ROLE_DISPLAY.admin}</option>
+            </select>
+          </label>
 
           <button
             type="button"
@@ -1181,22 +1256,26 @@ export function SubmissionDetailPage() {
             ) : (
               <div className="content-preview tiptap-wrapper">
                 {textBlocks.length > 0 ? (
-                  <div className="ProseMirror">
-                    {textBlocks.map((block, idx) => (
-                      <p
-                        key={paragraphNodeIds[idx] ?? idx}
-                        style={{ margin: "0 0 0.85rem" }}
-                      >
-                        {renderHighlightedBlock(
-                          block,
-                          paragraphNodeIds[idx],
-                          findings,
-                          selectedFindingId,
-                          handleSelectFindingFromSpan,
-                        )}
-                      </p>
-                    ))}
-                  </div>
+                  tiptapEditor ? (
+                    <EditorContent editor={tiptapEditor} />
+                  ) : (
+                    <div className="ProseMirror">
+                      {textBlocks.map((block, idx) => (
+                        <p
+                          key={paragraphNodeIds[idx] ?? idx}
+                          style={{ margin: "0 0 0.85rem" }}
+                        >
+                          {renderHighlightedBlock(
+                            block,
+                            paragraphNodeIds[idx],
+                            findings,
+                            selectedFindingId,
+                            handleSelectFindingFromSpan,
+                          )}
+                        </p>
+                      ))}
+                    </div>
+                  )
                 ) : (
                   <p className="text-muted">
                     No text content blocks in this bundle.

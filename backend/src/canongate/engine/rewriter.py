@@ -95,6 +95,8 @@ DEFAULT_GEMINI_MODEL_CASCADE: tuple[str, ...] = (
     "gemini-3.6-flash",
     "gemini-3.5-flash",
     "gemini-3.5-flash-lite",
+    "gemini-2.5-flash",
+    "gemini-2.0-flash",
     "gemini-3-flash-preview",
     "gemini-flash-lite-latest",
     "gemini-3.1-flash-lite-preview",
@@ -759,7 +761,7 @@ class ConstrainedRewriter:
                 choices = resp.get("choices") or []
                 if not choices:
                     self._circuit_breaker.record_failure()
-                    return None
+                    return None, active_model
                 raw_txt = str((choices[0].get("message") or {}).get("content") or "")
 
             raw_txt = raw_txt.strip()

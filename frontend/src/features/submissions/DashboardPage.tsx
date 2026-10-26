@@ -110,7 +110,7 @@ function getStageMeta(status: string) {
 }
 
 export function DashboardPage() {
-  const { username, displayName, role, logout } = useAuth();
+  const { username, displayName, role, switchRole, logout } = useAuth();
   const navigate = useNavigate();
 
   const [activeTab, setActiveTab] = useState<"submissions" | "governance">(
@@ -655,17 +655,39 @@ export function DashboardPage() {
             </div>
           </div>
 
-          <span
+          <label
             className="status-badge status-approved"
             style={{
-              padding: "0.38rem 0.78rem",
+              padding: "0.26rem 0.68rem",
               fontSize: "0.76rem",
               letterSpacing: "0.02em",
+              display: "inline-flex",
+              alignItems: "center",
+              gap: "0.35rem",
             }}
-            title="Your role is bound to your authenticated account for tamper-evident RBAC audit integrity"
+            title="Switch active RBAC role in-session (POST /api/auth/switch-role)"
           >
-            🔒 Role: {currentRoleMeta.shortLabel}
-          </span>
+            <span>🔒 Role:</span>
+            <select
+              aria-label="Active Governance Role"
+              value={role || "creator"}
+              onChange={(e) => {
+                void switchRole(e.target.value);
+              }}
+              style={{
+                background: "transparent",
+                border: "none",
+                color: "inherit",
+                fontWeight: 700,
+                fontSize: "0.76rem",
+                cursor: "pointer",
+              }}
+            >
+              <option value="creator">Creator (Stage 1)</option>
+              <option value="reviewer">Brand Manager (Stage 2)</option>
+              <option value="admin">Legal Reviewer (Stage 3)</option>
+            </select>
+          </label>
 
           <button
             type="button"

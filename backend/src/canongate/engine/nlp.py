@@ -1,4 +1,4 @@
-"""Unified NLP, Linguistic Dependency, Hybrid Retrieval, QASem Slot Aligner & ONNX NLI Engine.
+"""Unified NLP, Linguistic Dependency, Voyage 4 Hybrid Retrieval, QASem & NLI Engine.
 
 Centralizes all shared natural-language and neural entailment primitives across
 Pipeline A (`canon/compiler.py`) and Pipeline B (`checks/terminology_banned.py`,
@@ -6,18 +6,20 @@ Pipeline A (`canon/compiler.py`) and Pipeline B (`checks/terminology_banned.py`,
 boundaries (`canongate.engine` only imports `canongate.domain`):
 
 1. **Linguistic & POS/Dependency Engine (`SpacyLinguisticAnalyzer`):**
-   - Loads `spacy` (`en_core_web_sm` / `spacy.blank("en")`) when installed and falls
+   - Loads `spacy` (`en_core_web_sm` / `en_core_web_md`) when installed and falls
      back to a deterministic Penn-Treebank / Universal POS + dependency state machine.
    - Provides `matches_pos_constraint()` for `TermRule.pos_constraint` (`NOUN`, `VERB`,
      `ADJ`, `ADV`, `PROPN`) in `TerminologyBannedCheck`.
    - Provides `extract_value_anchors()` and `extract_restrictive_qualifiers()` for
      Pipeline A Guard 1 (`canon/compiler.py`) and Tier 2 SlotDiff (`claim_slot_nli.py`).
 
-2. **Hybrid BM25 + Dense Vector Fact Retriever (`HybridFactRetriever`):**
-   - Implements Okapi BM25 ($k_1 = 1.5, b = 0.75$, using `rank_bm25.BM25Okapi` when
-     installed or exact analytical BM25) combined with 128-D character/word n-gram
-     feature hashing (`pgvector`-compatible L2-normalized cosine similarity) to
-     retrieve the top-$k$ ($k=3$) `FactClaim`s per draft sentence.
+2. **Hybrid BM25 + Voyage 4 Dense Vector Fact Retriever (`HybridFactRetriever`):**
+   - Implements Okapi BM25 ($k_1 = 1.5, b = 0.75$) combined with **Voyage 4** dense
+     embeddings (`voyage-4-lite` / `voyage-4` / `voyage-4-large` via `VOYAGE_API_KEY`,
+     Matryoshka `output_dimension=512`, `input_type="document" | "query"`, with automatic
+     DPDP PII scrubbing before wire calls and `OrderedDict` LRU caching).
+   - Falls back deterministically in air-gapped/offline environments to a 128-D L2-normalized
+     feature-hashed vector (`offline-feature-hash-128d`).
 
 3. **QASem Predicate-Argument Slot Aligner (`QASemSlotAligner`):**
    - Aligns predicate-argument and QA-SRL slots (`subject`, `metric`, `condition`,
@@ -25,21 +27,25 @@ boundaries (`canongate.engine` only imports `canongate.domain`):
      sentence, classifying value anchors by semantic category (`year`, `percent`,
      `currency`, `multiplier`, `quarter`, `iso_date`, `scalar`).
 
-4. **ONNX Runtime Calibrated NLI Scorer (`MiniCheckNliScorer`):**
-   - Runs `onnxruntime.InferenceSession` over an in-memory or disk-backed ONNX neural
-     entailment graph (`MiniCheck-Flan-T5-Large` primary + `MiniCheck-DeBERTa-v3-Large`
-     400ms latency fallback) with temperature scaling ($T = 1.15$).
-   - Used by both Tier 2 (`ClaimSlotNliCheck`) and Pipeline A Guard 3
-     (`verify_round_trip_nli` bidirectional entailment).
+4. **Voyage `rerank-2.5` & ONNX Runtime Calibrated NLI Scorer (`MiniCheckNliScorer`):**
+   - When `VOYAGE_API_KEY` is configured (or a custom HTTP transport is provided), scores
+     factual entailment via Voyage AI's instruction-following cross-encoders (`rerank-2.5`
+     primary + `rerank-2.5-lite` 400ms latency fallback) over PII-scrubbed text combined
+     with QASem structural slot verification.
+   - In offline/air-gapped environments without an API key, executes a local `onnxruntime`
+     calibrated 8-feature QASem slot-entailment head with temperature scaling ($T = 1.15$).
 """
 
 from __future__ import annotations
 
 import hashlib
+import json
 import logging
 import math
 import os
 import re
+import urllib.request
+from collections import OrderedDict
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from typing import Any, ClassVar
@@ -48,10 +54,41 @@ import numpy as np
 
 from canongate.domain.canon import FactClaim
 from canongate.domain.finding import SlotEntry
+from canongate.domain.pii import default_pii_scrubber
 
 SlotDiffEntry = SlotEntry
 
 logger = logging.getLogger(__name__)
+
+VoyageHttpTransport = Callable[[str, dict[str, Any], dict[str, str], float], dict[str, Any]]
+
+
+def _default_voyage_http_post(
+    url: str,
+    payload: dict[str, Any],
+    headers: dict[str, str],
+    timeout_s: float,
+) -> dict[str, Any]:
+    body = json.dumps(payload).encode("utf-8")
+    req = urllib.request.Request(url, data=body, headers=headers, method="POST")
+    with urllib.request.urlopen(req, timeout=timeout_s) as resp:
+        raw = resp.read().decode("utf-8", errors="replace")
+        return json.loads(raw)
+
+
+def _resolve_voyage_api_key() -> str:
+    return (
+        os.environ.get("CANONGATE_VOYAGE_API_KEY") or os.environ.get("VOYAGE_API_KEY") or ""
+    ).strip()
+
+
+def _resolve_voyage_base_url() -> str:
+    return (
+        os.environ.get("CANONGATE_VOYAGE_BASE_URL")
+        or os.environ.get("VOYAGE_BASE_URL")
+        or "https://api.voyageai.com/v1"
+    ).rstrip("/")
+
 
 # ---------------------------------------------------------------------------
 # Shared Regexes & Lexical Constants (Single Source of Truth)
@@ -601,7 +638,7 @@ class SpacyLinguisticAnalyzer:
 
 
 # ---------------------------------------------------------------------------
-# 2. HybridFactRetriever (BM25 + 128-D Dense Vector Cosine Top-K Retrieval)
+# 2. HybridFactRetriever (Okapi BM25 + Voyage 4 Dense Vector Cosine)
 # ---------------------------------------------------------------------------
 
 
@@ -613,19 +650,179 @@ class RetrievedFact:
     bm25_score: float
     vector_score: float
     hybrid_score: float
+    vector_backend: str = "offline-feature-hash-128d"
 
 
 class HybridFactRetriever:
-    """Retrieves top-$k$ `FactClaim`s via Okapi BM25 + 128-D L2-normalized vector cosine.
+    """Retrieves top-$k$ `FactClaim`s via Okapi BM25 + Voyage 4 Dense Vector Cosine.
 
-    Matches Round 1 Plan §3.4 ("Retrieves the top-3 Canon facts via pgvector + BM25").
+    When `VOYAGE_API_KEY` (or `CANONGATE_VOYAGE_API_KEY`) is configured, embeds Canon
+    `FactClaim` documents and PII-scrubbed draft queries in the shared **Voyage 4**
+    embedding space (`voyage-4-lite` / `voyage-4` / `voyage-4-large`, Matryoshka
+    `output_dimension=512`, `input_type="document" | "query"`).
+    Falls back cleanly to a deterministic 128-D L2-normalized feature-hashed vector
+    when offline or when no API key is configured.
     """
 
     EMBED_DIM: ClassVar[int] = 128
+    SUPPORTED_VOYAGE_MODELS: ClassVar[tuple[str, ...]] = (
+        "voyage-4-large",
+        "voyage-4",
+        "voyage-4-lite",
+        "voyage-4-nano",
+    )
+
+    def __init__(
+        self,
+        *,
+        http_transport: VoyageHttpTransport | None = None,
+        voyage_model: str | None = None,
+        output_dimension: int | None = None,
+        timeout_s: float = 3.5,
+    ) -> None:
+        self._http_transport = http_transport or _default_voyage_http_post
+        self._voyage_model_override = voyage_model
+        self._output_dim_override = output_dimension
+        self._timeout_s = timeout_s
+        self._doc_vec_cache: OrderedDict[tuple[str, int, str], np.ndarray] = OrderedDict()
+        self._query_vec_cache: OrderedDict[tuple[str, int, str], np.ndarray] = OrderedDict()
+
+    def _active_voyage_config(self) -> tuple[str, str, str, int] | None:
+        api_key = _resolve_voyage_api_key()
+        if not api_key and self._http_transport is _default_voyage_http_post:
+            return None
+        base_url = _resolve_voyage_base_url()
+        model = (
+            self._voyage_model_override
+            or os.environ.get("CANONGATE_VOYAGE_EMBED_MODEL")
+            or os.environ.get("VOYAGE_EMBED_MODEL")
+            or "voyage-4-lite"
+        ).strip()
+        dim_raw = self._output_dim_override or int(
+            os.environ.get("CANONGATE_VOYAGE_EMBED_DIM")
+            or os.environ.get("VOYAGE_EMBED_DIM")
+            or "512"
+        )
+        dim = dim_raw if dim_raw in (256, 512, 1024, 2048) else 512
+        return (api_key or "mock-voyage-key", base_url, model, dim)
+
+    def _embed_via_voyage(
+        self,
+        texts: Sequence[str],
+        *,
+        input_type: str,
+        api_key: str,
+        base_url: str,
+        model: str,
+        dim: int,
+    ) -> list[np.ndarray] | None:
+        if not texts:
+            return []
+        scrubbed_texts = [
+            default_pii_scrubber.scrub(t).masked_text if input_type == "query" else t for t in texts
+        ]
+        url = f"{base_url}/embeddings"
+        payload: dict[str, Any] = {
+            "input": list(scrubbed_texts),
+            "model": model,
+            "input_type": input_type,
+            "output_dimension": dim,
+        }
+        headers = {
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {api_key}",
+        }
+        try:
+            resp = self._http_transport(url, payload, headers, self._timeout_s)
+            data_items = resp.get("data")
+            if not isinstance(data_items, list) or len(data_items) != len(texts):
+                return None
+            out: list[np.ndarray] = []
+            for item in data_items:
+                emb = item.get("embedding") if isinstance(item, dict) else None
+                if not isinstance(emb, list) or not emb:
+                    return None
+                arr = np.asarray(emb, dtype=np.float32)
+                norm = float(np.linalg.norm(arr))
+                if norm > 1e-8:
+                    arr = arr / norm
+                out.append(arr)
+            return out
+        except Exception as exc:
+            logger.debug("Voyage 4 embedding call failed; falling back to local vector: %s", exc)
+            return None
+
+    def _get_voyage_vectors(
+        self,
+        query: str,
+        corpus_texts: Sequence[str],
+    ) -> tuple[np.ndarray, list[np.ndarray], str] | None:
+        cfg = self._active_voyage_config()
+        if cfg is None:
+            return None
+        api_key, base_url, model, dim = cfg
+
+        # 1. Fetch or compute query vector
+        q_key = (model, dim, query)
+        q_vec = self._query_vec_cache.get(q_key)
+        if q_vec is not None:
+            self._query_vec_cache.move_to_end(q_key)
+        else:
+            q_res = self._embed_via_voyage(
+                [query],
+                input_type="query",
+                api_key=api_key,
+                base_url=base_url,
+                model=model,
+                dim=dim,
+            )
+            if not q_res:
+                return None
+            q_vec = q_res[0]
+            self._query_vec_cache[q_key] = q_vec
+            if len(self._query_vec_cache) > 1024:
+                self._query_vec_cache.popitem(last=False)
+
+        # 2. Fetch or batch-compute missing Canon document vectors
+        missing_indices: list[int] = []
+        missing_texts: list[str] = []
+        doc_vecs: list[np.ndarray | None] = [None] * len(corpus_texts)
+        for idx, doc_txt in enumerate(corpus_texts):
+            d_key = (model, dim, doc_txt)
+            cached_d = self._doc_vec_cache.get(d_key)
+            if cached_d is not None:
+                self._doc_vec_cache.move_to_end(d_key)
+                doc_vecs[idx] = cached_d
+            else:
+                missing_indices.append(idx)
+                missing_texts.append(doc_txt)
+
+        if missing_texts:
+            d_res = self._embed_via_voyage(
+                missing_texts,
+                input_type="document",
+                api_key=api_key,
+                base_url=base_url,
+                model=model,
+                dim=dim,
+            )
+            if not d_res or len(d_res) != len(missing_indices):
+                return None
+            for i_pos, vec in zip(missing_indices, d_res, strict=False):
+                doc_vecs[i_pos] = vec
+                d_key = (model, dim, corpus_texts[i_pos])
+                self._doc_vec_cache[d_key] = vec
+                if len(self._doc_vec_cache) > 2048:
+                    self._doc_vec_cache.popitem(last=False)
+
+        final_docs = [v for v in doc_vecs if v is not None]
+        if len(final_docs) != len(corpus_texts):
+            return None
+        return (q_vec, final_docs, f"voyage:{model}")
 
     @classmethod
     def embed_text(cls, text: str) -> np.ndarray:
-        """Compute a deterministic 128-D L2-normalized dense semantic embedding."""
+        """Compute a deterministic 128-D L2-normalized offline feature-hashed vector."""
         vec = np.zeros(cls.EMBED_DIM, dtype=np.float32)
         words = [normalize_stem(w) for w in content_words(text)]
         anchors = [m.group(0).lower().strip() for m in _VALUE_TOKEN_RE.finditer(text)]
@@ -663,7 +860,7 @@ class HybridFactRetriever:
         *,
         k: int = 3,
     ) -> list[RetrievedFact]:
-        """Rank `facts` against `query` using 0.60 * normalized_BM25 + 0.40 * dense_cosine."""
+        """Rank `facts` against `query` using Okapi BM25 + Voyage 4 dense cosine similarity."""
         if not facts:
             return []
 
@@ -679,19 +876,28 @@ class HybridFactRetriever:
         bm25_scores = self._compute_bm25_scores(q_tokens, corpus_tokens)
         max_bm25 = max(bm25_scores, default=0.0)
 
-        q_vec = self.embed_text(query)
+        voyage_bundle = self._get_voyage_vectors(query, corpus_texts)
+        if voyage_bundle is not None:
+            q_vec, doc_vecs, backend_label = voyage_bundle
+            bm25_weight, vec_weight = (0.50, 0.50)
+        else:
+            q_vec = self.embed_text(query)
+            doc_vecs = [self.embed_text(doc) for doc in corpus_texts]
+            backend_label = "offline-feature-hash-128d"
+            bm25_weight, vec_weight = (0.60, 0.40)
+
         ranked: list[RetrievedFact] = []
         for idx, fact in enumerate(facts):
             norm_bm25 = (bm25_scores[idx] / max_bm25) if max_bm25 > 1e-8 else 0.0
-            doc_vec = self.embed_text(corpus_texts[idx])
-            vec_sim = max(0.0, self.cosine_similarity(q_vec, doc_vec))
-            hybrid = 0.60 * norm_bm25 + 0.40 * vec_sim
+            vec_sim = max(0.0, self.cosine_similarity(q_vec, doc_vecs[idx]))
+            hybrid = bm25_weight * norm_bm25 + vec_weight * vec_sim
             ranked.append(
                 RetrievedFact(
                     fact=fact,
                     bm25_score=bm25_scores[idx],
                     vector_score=vec_sim,
                     hybrid_score=hybrid,
+                    vector_backend=backend_label,
                 )
             )
 
@@ -982,7 +1188,7 @@ class QASemSlotAligner:
 
 
 # ---------------------------------------------------------------------------
-# 4. MiniCheckNliScorer (Real ONNX Runtime InferenceSession + Calibration)
+# 4. MiniCheckNliScorer (Voyage `rerank-2.5` Cross-Encoder + ONNX QASem Head)
 # ---------------------------------------------------------------------------
 
 
@@ -1043,9 +1249,9 @@ def _pb_node(op_type: str, inputs: Sequence[str], outputs: Sequence[str], name: 
 
 
 def _build_nli_onnx_model_bytes(weights: Sequence[float], bias: float, graph_name: str) -> bytes:
-    """Construct an ONNX IR v7 neural NLI classification graph (`MatMul -> Add -> Sigmoid`).
+    """Construct an ONNX IR v7 QASem slot-entailment graph (`MatMul -> Add -> Sigmoid`).
 
-    Takes a `(1, 8)` slot-entailment feature tensor `features` and outputs a `(1, 1)`
+    Takes a `(1, 8)` QASem slot-entailment feature tensor `features` and outputs a `(1, 1)`
     entailment probability tensor `prob` executed via `onnxruntime.InferenceSession`.
     """
     n_feat = len(weights)
@@ -1072,7 +1278,7 @@ def _build_nli_onnx_model_bytes(weights: Sequence[float], bias: float, graph_nam
     opset_pb = _pb_str(1, "") + _pb_field(2, 0, 13)
     model_pb = (
         _pb_field(1, 0, 7)  # ir_version = 7
-        + _pb_str(2, "canongate-minicheck-onnx")
+        + _pb_str(2, "canongate-qasem-onnx-head")
         + _pb_field(7, 2, graph_pb)
         + _pb_field(8, 2, opset_pb)
     )
@@ -1080,23 +1286,24 @@ def _build_nli_onnx_model_bytes(weights: Sequence[float], bias: float, graph_nam
 
 
 class MiniCheckNliScorer:
-    """ONNX Runtime MiniCheck NLI Entailment Scorer with DeBERTa-v3 fallback & scaling.
+    """Tier 2 Entailment Scorer combining Voyage `rerank-2.5` Cross-Encoder & ONNX QASem Head.
 
-    Executes an `onnxruntime.InferenceSession` over an 8-dimensional QASem & lexical-anchor
-    feature representation:
-      `[core_lexical_recall, anchor_recall, cond_match_ratio, cond_unverified_ratio,
-        cond_dropped_ratio, metric_contradicted, substantiation_contradicted,
-        negation_contradicted]`
-    calibrated so that:
-      - Fully entailed claims with all qualifiers intact score $P \\ge 0.92$ (`PASS`).
-      - Paraphrased / partially verified qualifiers score $0.45 \\le P < 0.85$ (`WARNING`:
-        `"Partially Supported — Needs Human Review"`).
-      - Dropped qualifiers (`Rapido`, `Vajirao`, `loan cap`), contradicted metrics, or
-        `ingredient_in_vitro` substantiation violations score $P < 0.45$ (`BLOCKER`).
+    1. **When `VOYAGE_API_KEY` is configured** (or a custom `http_transport` is provided):
+       Calls Voyage AI's instruction-following cross-encoder API (`POST /v1/rerank` with
+       `model="rerank-2.5"` primary or `"rerank-2.5-lite"` on 400ms latency fallback) over
+       PII-scrubbed text, combining the neural cross-encoder relevance score with QASem
+       slot-alignment structural constraints.
+    2. **When running offline / air-gapped**:
+       Executes a local `onnxruntime.InferenceSession` over the 8-dimensional QASem
+       slot-alignment feature vector (`[core_lexical_recall, anchor_recall, cond_match_ratio,
+       cond_unverified_ratio, cond_dropped_ratio, metric_contradicted,
+       substantiation_contradicted, negation_contradicted]`).
     """
 
     PRIMARY_MODEL_SHA: ClassVar[str] = "minicheck-flan-t5-large-onnx-int8"
     FALLBACK_MODEL_SHA: ClassVar[str] = "minicheck-deberta-v3-fallback"
+    VOYAGE_PRIMARY_SHA: ClassVar[str] = "voyage-rerank-2.5"
+    VOYAGE_FALLBACK_SHA: ClassVar[str] = "voyage-rerank-2.5-lite"
 
     # Calibrated weights for [lex_recall, anchor_recall, cond_match, cond_unver, cond_drop,
     #                         metric_contra, subst_contra, neg_contra]
@@ -1124,11 +1331,93 @@ class MiniCheckNliScorer:
     )
     _DEBERTA_BIAS: ClassVar[float] = -1.70
 
-    def __init__(self, temperature: float = 1.15) -> None:
+    def __init__(
+        self,
+        temperature: float = 1.15,
+        *,
+        http_transport: VoyageHttpTransport | None = None,
+        timeout_s: float = 3.5,
+    ) -> None:
         self.temperature = temperature
+        self._http_transport = http_transport or _default_voyage_http_post
+        self._timeout_s = timeout_s
         self._ft5_session: Any = None
         self._deberta_session: Any = None
         self._sessions_initialized = False
+        self._rerank_cache: OrderedDict[tuple[str, str, str], float] = OrderedDict()
+
+    def _active_voyage_rerank_config(self, *, use_fallback: bool) -> tuple[str, str, str] | None:
+        api_key = _resolve_voyage_api_key()
+        if not api_key and self._http_transport is _default_voyage_http_post:
+            return None
+        base_url = _resolve_voyage_base_url()
+        if use_fallback:
+            model = (
+                os.environ.get("CANONGATE_VOYAGE_RERANK_FALLBACK_MODEL")
+                or os.environ.get("VOYAGE_RERANK_FALLBACK_MODEL")
+                or "rerank-2.5-lite"
+            ).strip()
+        else:
+            model = (
+                os.environ.get("CANONGATE_VOYAGE_RERANK_MODEL")
+                or os.environ.get("VOYAGE_RERANK_MODEL")
+                or "rerank-2.5"
+            ).strip()
+        return (api_key or "mock-voyage-key", base_url, model)
+
+    def _score_via_voyage_rerank(
+        self,
+        canon_doc: str,
+        draft_claim: str,
+        *,
+        use_fallback: bool,
+    ) -> tuple[float, str] | None:
+        cfg = self._active_voyage_rerank_config(use_fallback=use_fallback)
+        if cfg is None:
+            return None
+        api_key, base_url, model = cfg
+        scrubbed_draft = default_pii_scrubber.scrub(draft_claim).masked_text
+
+        cache_key = (model, canon_doc, scrubbed_draft)
+        cached = self._rerank_cache.get(cache_key)
+        if cached is not None:
+            self._rerank_cache.move_to_end(cache_key)
+            return (cached, f"voyage:{model}")
+
+        instruction_query = (
+            "Instruction: Evaluate strict factual entailment for regulatory compliance. "
+            "Score 1.0 only if the draft claim preserves all mandatory conditions, numeric caps, "
+            "dates, and substantiation scope from the approved fact "
+            "without omission or contradiction.\n"
+            f"Approved Fact: {canon_doc}"
+        )
+        url = f"{base_url}/rerank"
+        payload: dict[str, Any] = {
+            "model": model,
+            "query": instruction_query,
+            "documents": [scrubbed_draft],
+            "top_k": 1,
+        }
+        headers = {
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {api_key}",
+        }
+        try:
+            resp = self._http_transport(url, payload, headers, self._timeout_s)
+            results = resp.get("results") or resp.get("data")
+            if not isinstance(results, list) or not results:
+                return None
+            first = results[0]
+            if not isinstance(first, dict) or "relevance_score" not in first:
+                return None
+            score = float(np.clip(float(first["relevance_score"]), 0.0, 1.0))
+            self._rerank_cache[cache_key] = score
+            if len(self._rerank_cache) > 1024:
+                self._rerank_cache.popitem(last=False)
+            return (score, f"voyage:{model}")
+        except Exception as exc:
+            logger.debug("Voyage rerank NLI call failed; falling back to local ONNX head: %s", exc)
+            return None
 
     def _ensure_sessions(self) -> None:
         if self._sessions_initialized:
@@ -1203,11 +1492,12 @@ class MiniCheckNliScorer:
         use_deberta_fallback: bool = False,
     ) -> tuple[float, float, str]:
         """Return `(raw_prob, calibrated_prob, model_sha)` for a `SlotAlignment`."""
+        canon_doc = alignment.fact.text
+        if alignment.fact.conditions:
+            canon_doc = f"{alignment.fact.text} ({'; '.join(alignment.fact.conditions)})"
+        draft_sent = alignment.draft_sentence or alignment.slot_entries[1].draft_value or ""
+
         if external_scorer is not None and not use_deberta_fallback:
-            canon_doc = alignment.fact.text
-            if alignment.fact.conditions:
-                canon_doc = f"{alignment.fact.text} ({'; '.join(alignment.fact.conditions)})"
-            draft_sent = alignment.draft_sentence or alignment.slot_entries[1].draft_value or ""
             raw_p = float(external_scorer(canon_doc, draft_sent))
             sha_label = getattr(external_scorer, "model_sha", "minicheck-flan-t5-large-onnx")
             return (
@@ -1242,10 +1532,36 @@ class MiniCheckNliScorer:
             ],
             dtype=np.float32,
         )
-        raw_p = self._run_onnx_features(features, use_deberta_fallback=use_deberta_fallback)
-        cal_p = temperature_scale_prob(raw_p, self.temperature)
+        onnx_raw_p = self._run_onnx_features(features, use_deberta_fallback=use_deberta_fallback)
+
+        # If Voyage AI rerank-2.5 / rerank-2.5-lite is configured, fuse the cross-encoder
+        # score with QASem structural slot guards so dropped qualifiers or contradicted
+        # metrics remain strictly bounded while valid semantic paraphrases are recognized.
+        voyage_res = self._score_via_voyage_rerank(
+            canon_doc,
+            draft_sent,
+            use_fallback=use_deberta_fallback,
+        )
+        if voyage_res is not None:
+            rerank_score, voyage_sha = voyage_res
+            has_hard_violation = (
+                cond_drop_ratio > 0.0
+                or alignment.is_metric_contradicted
+                or alignment.substantiation_contradicted
+                or alignment.negation_contradicted
+            )
+            if has_hard_violation:
+                raw_p = min(onnx_raw_p, 0.5 * onnx_raw_p + 0.5 * rerank_score)
+            elif cond_unver_ratio > 0.0:
+                raw_p = 0.55 * onnx_raw_p + 0.45 * rerank_score
+            else:
+                raw_p = 0.35 * onnx_raw_p + 0.65 * rerank_score
+            cal_p = temperature_scale_prob(raw_p, self.temperature)
+            return raw_p, cal_p, voyage_sha
+
+        cal_p = temperature_scale_prob(onnx_raw_p, self.temperature)
         sha = self.FALLBACK_MODEL_SHA if use_deberta_fallback else self.PRIMARY_MODEL_SHA
-        return raw_p, cal_p, sha
+        return onnx_raw_p, cal_p, sha
 
     def score_pair(
         self,
@@ -1333,12 +1649,12 @@ def extract_restrictive_qualifiers(text: str) -> list[str]:
 
 
 class MiniCheckFlanT5ExternalScorer:
-    """Pluggable `MiniCheck-Flan-T5-Large` external NLI scorer adapter (`(doc, claim) -> float`).
+    """Pluggable `MiniCheck-Flan-T5-Large` / Voyage `rerank-2.5` external NLI scorer adapter.
 
     Can be registered via `ClaimSlotNliCheck.set_external_scorer(MiniCheckFlanT5ExternalScorer())`
     or `ClaimSlotNliCheck.use_minicheck_flan_t5_large()`. Supports:
-    1. Custom ONNX model path (`model_path` or `CANONGATE_MINICHECK_ONNX_PATH`).
-    2. Optional HuggingFace `transformers` seq2seq checkpoint if locally cached.
+    1. Voyage AI `rerank-2.5` instruction-following cross-encoder when `VOYAGE_API_KEY` is set.
+    2. Custom ONNX model path (`model_path` or `CANONGATE_MINICHECK_ONNX_PATH`).
     3. Local ONNX Runtime `MiniCheckNliScorer` graph execution over full `(premise, hypothesis)`
        sentences with QASem qualifier, metric, and substantiation verification.
     """
@@ -1371,9 +1687,11 @@ class MiniCheckFlanT5ExternalScorer:
             conds = tuple(c.strip() for c in m_cond.group(2).split(";") if c.strip())
         temp_fact = FactClaim(id="ext-fact", text=core_text, conditions=conds)
         alignment = self._aligner.align(temp_fact, draft_claim)
-        raw_p, _cal_p, _sha = self._scorer.score_alignment(
+        raw_p, _cal_p, sha = self._scorer.score_alignment(
             alignment,
             external_scorer=None,
             use_deberta_fallback=False,
         )
+        if sha.startswith("voyage:"):
+            self.model_sha = sha
         return float(raw_p)

@@ -1,12 +1,15 @@
 /**
- * ProseMirror & React UTF-16 Span Coordinate Translation Utilities.
+ * ProseMirror & React UTF-16 Span Coordinate Translation Utilities + Tiptap Extension.
  *
  * Converts 0-indexed Python Unicode codepoint offsets (`Span(start, end)`)
  * into exact JavaScript UTF-16 string slices and ProseMirror positions so
- * astral-plane characters (emojis, symbols) never drift.
+ * astral-plane characters (emojis, symbols) never drift, and wires a live
+ * ProseMirror `DecorationSet` plugin into Tiptap (`@tiptap/react`).
  */
 
 import { Extension } from "@tiptap/core";
+import { Plugin, PluginKey } from "@tiptap/pm/state";
+import { Decoration, DecorationSet } from "@tiptap/pm/view";
 import type { FindingItem } from "../../api/client";
 
 export type FindingResponse = FindingItem;
@@ -96,7 +99,7 @@ export interface FindingsPluginMeta {
 
 /**
  * Traverse a ProseMirror `doc` at the textblock level (`doc.descendants`)
- * and compute inline decoration specs for all open findings.
+ * and compute inline decoration specs for all findings.
  */
 export function computeFindingDecorationSpecs(
   doc: ProseMirrorNodeLike,
@@ -115,7 +118,7 @@ export function computeFindingDecorationSpecs(
       }
 
       for (const f of meta.findings) {
-        if (f.node_id !== nodeId || f.resolution !== "open") {
+        if (f.node_id !== nodeId) {
           continue;
         }
         const loc = f.payload?.locator;
@@ -133,14 +136,20 @@ export function computeFindingDecorationSpecs(
           if (range) {
             const isBlocker = f.severity >= 50;
             const isSelected = f.row_id === meta.selectedRowId;
+            const isResolved = f.resolution !== "open";
             specs.push({
               from: range.from,
               to: range.to,
               attrs: {
                 class: [
                   "cg-finding-span",
-                  isBlocker ? "cg-finding-blocker" : "cg-finding-warning",
-                  isSelected ? "cg-finding-selected" : "",
+                  "finding-inline-mark",
+                  isResolved
+                    ? "finding-mark-resolved"
+                    : isBlocker
+                      ? "cg-finding-blocker finding-mark-blocker"
+                      : "cg-finding-warning finding-mark-warning",
+                  isSelected ? "cg-finding-selected finding-mark-selected" : "",
                 ]
                   .filter(Boolean)
                   .join(" "),
@@ -179,6 +188,7 @@ export function createProseMirrorFindingsPlugin<
     create(doc: unknown, decorations: TDecoration[]): TDecorationSet;
   };
   Plugin: new (spec: Record<string, unknown>) => unknown;
+  onSelectFinding?: (rowId: number) => void;
 }) {
   return new pm.Plugin({
     key: pm.pluginKey,
@@ -215,6 +225,20 @@ export function createProseMirrorFindingsPlugin<
           state,
         );
       },
+      handleClick(_view: unknown, _pos: number, event: MouseEvent) {
+        if (!pm.onSelectFinding) return false;
+        const target = event.target as HTMLElement | null;
+        const spanEl = target?.closest?.("[data-finding-row-id]");
+        const rawRowId = spanEl?.getAttribute("data-finding-row-id");
+        if (rawRowId) {
+          const parsed = Number(rawRowId);
+          if (!Number.isNaN(parsed)) {
+            pm.onSelectFinding(parsed);
+            return true;
+          }
+        }
+        return false;
+      },
     },
   });
 }
@@ -229,16 +253,40 @@ export interface FindingDecorationRange {
 }
 
 export const findingHighlightsKey = "canongateFindingHighlights";
+export const findingHighlightsPluginKey = new PluginKey(findingHighlightsKey);
 
 export interface FindingHighlightsOptions {
   onSelectFinding?: (rowId: number) => void;
 }
 
-export const FindingHighlightsExtension = Extension.create<FindingHighlightsOptions>({
-  name: "findingHighlights",
-  addOptions() {
-    return {
-      onSelectFinding: undefined,
-    };
-  },
-});
+export const FindingHighlightsExtension =
+  Extension.create<FindingHighlightsOptions>({
+    name: "findingHighlights",
+    addOptions() {
+      return {
+        onSelectFinding: undefined,
+      };
+    },
+    addProseMirrorPlugins() {
+      const onSelect = this.options.onSelectFinding;
+      const plugin = createProseMirrorFindingsPlugin({
+        pluginKey: findingHighlightsPluginKey,
+        Decoration: Decoration as unknown as {
+          inline(
+            from: number,
+            to: number,
+            attrs: Record<string, string>,
+          ): Decoration;
+        },
+        DecorationSet: DecorationSet as unknown as {
+          empty: DecorationSet;
+          create(doc: unknown, decorations: Decoration[]): DecorationSet;
+        },
+        Plugin: Plugin as unknown as new (
+          spec: Record<string, unknown>,
+        ) => Plugin,
+        onSelectFinding: onSelect,
+      });
+      return [plugin as Plugin];
+    },
+  });

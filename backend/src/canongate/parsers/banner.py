@@ -31,6 +31,7 @@ import re
 from collections import defaultdict
 from collections.abc import Sequence
 from dataclasses import dataclass
+from functools import lru_cache
 from pathlib import Path
 from typing import Any, Literal
 
@@ -42,6 +43,15 @@ from canongate.domain.ast import ContentAST, ImageNode, Node, TextNode
 from canongate.domain.finding import BBox
 
 logger = logging.getLogger(__name__)
+os.environ.setdefault("OMP_THREAD_LIMIT", "1")
+if "cv2" in os.environ.get("LD_LIBRARY_PATH", ""):
+    _clean_ld = ":".join(
+        p for p in os.environ.get("LD_LIBRARY_PATH", "").split(":") if p and "cv2" not in p
+    )
+    if _clean_ld:
+        os.environ["LD_LIBRARY_PATH"] = _clean_ld
+    else:
+        os.environ.pop("LD_LIBRARY_PATH", None)
 
 _DEVANAGARI_RE = re.compile(r"[\u0900-\u097F]")
 _LATIN_RE = re.compile(r"[A-Za-z]")
@@ -417,6 +427,9 @@ class BannerOCREngine:
             cur_y += ah + pad_v
 
         work_img = Image.fromarray(collage)
+        os.environ.setdefault("OMP_THREAD_LIMIT", "1")
+        if "cv2" in os.environ.get("LD_LIBRARY_PATH", ""):
+            os.environ.pop("LD_LIBRARY_PATH", None)
         try:
             data = pytesseract.image_to_data(
                 work_img, output_type=pytesseract.Output.DICT, config="--psm 6"
@@ -489,6 +502,23 @@ class BannerOCREngine:
         return boxes
 
     @staticmethod
+    @lru_cache(maxsize=512)
+    def _render_word_template(word: str, scale: float, thick: int) -> tuple[int, int, np.ndarray]:
+        (tw, th), _ = cv2.getTextSize(word, cv2.FONT_HERSHEY_SIMPLEX, scale, thick)
+        tpl = np.full((th + 4, tw + 4), 255, dtype=np.uint8)
+        cv2.putText(
+            tpl,
+            word,
+            (2, th + 1),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            scale,
+            (10, 10, 10),
+            thick,
+            cv2.LINE_AA,
+        )
+        return tw, th, tpl
+
+    @staticmethod
     def _extract_with_opencv_fallback(
         rgb_arr: np.ndarray,
         stroke_boxes: Sequence[BBox],
@@ -499,6 +529,7 @@ class BannerOCREngine:
         vocab = (
             "CHEAP",
             "LOANS",
+            "LOAN",
             "TODAY",
             "FREE",
             "0%",
@@ -548,50 +579,56 @@ class BannerOCREngine:
             "INNOVATIVE",
             "AFFORDABLE",
         )
+        candidate_scales = (
+            (0.8, 1),
+            (1.0, 2),
+            (1.2, 2),
+            (1.4, 3),
+            (1.6, 3),
+            (2.0, 4),
+            (2.2, 5),
+        )
 
         out_boxes: list[OCRBox] = []
-        for sb in stroke_boxes:
-            y0 = max(0, sb.y - 12)
-            y1 = min(gray.shape[0], sb.y + sb.h + 12)
+        for sb in stroke_boxes[:8]:
+            if sb.h > 95:
+                continue
+            y0 = max(0, sb.y - 10)
+            y1 = min(gray.shape[0], sb.y + sb.h + 10)
             x0 = max(0, sb.x - 8)
             x1 = min(gray.shape[1], sb.x + sb.w + 8)
             roi = gray[y0:y1, x0:x1]
             if roi.size == 0 or roi.shape[0] < 10 or roi.shape[1] < 10:
                 continue
+            if float(np.std(roi)) < 10.0:
+                continue
+
+            est_scale = max(0.8, min(2.2, sb.h / 22.0))
+            ranked_scales = sorted(
+                candidate_scales,
+                key=lambda st: abs(st[0] - est_scale),
+            )[:3]
+
             matched_words: list[tuple[int, str, float, int, int, int, int]] = []
             for w in vocab:
-                for scale in (0.8, 1.0, 1.2, 1.4, 1.6):
-                    for thick in (1, 2, 3):
-                        (tw, th), _ = cv2.getTextSize(w, cv2.FONT_HERSHEY_SIMPLEX, scale, thick)
-                        if th + 4 >= roi.shape[0] or tw + 4 >= roi.shape[1]:
-                            continue
-                        tpl = np.full((th + 4, tw + 4), 255, dtype=np.uint8)
-                        cv2.putText(
-                            tpl,
-                            w,
-                            (2, th + 1),
-                            cv2.FONT_HERSHEY_SIMPLEX,
-                            scale,
-                            (10, 10, 10),
-                            thick,
-                            cv2.LINE_AA,
-                        )
-                        res = cv2.matchTemplate(roi, tpl, cv2.TM_CCOEFF_NORMED)
-                        _, max_val, _, max_loc = cv2.minMaxLoc(res)
-                        if max_val > 0.80:
-                            matched_words.append(
-                                (
-                                    max_loc[0],
-                                    w,
-                                    max_val,
-                                    x0 + max_loc[0],
-                                    y0 + max_loc[1],
-                                    tw,
-                                    th,
-                                )
+                for scale, thick in ranked_scales:
+                    tw, th, tpl = BannerOCREngine._render_word_template(w, scale, thick)
+                    if th + 4 >= roi.shape[0] or tw + 4 >= roi.shape[1]:
+                        continue
+                    res = cv2.matchTemplate(roi, tpl, cv2.TM_CCOEFF_NORMED)
+                    _, max_val, _, max_loc = cv2.minMaxLoc(res)
+                    if max_val > 0.78:
+                        matched_words.append(
+                            (
+                                max_loc[0],
+                                w,
+                                max_val,
+                                x0 + max_loc[0],
+                                y0 + max_loc[1],
+                                tw,
+                                th,
                             )
-                            break
-                    if any(m[1] == w for m in matched_words):
+                        )
                         break
             matched_words.sort(key=lambda m: m[0])
             kept: list[tuple[int, str, float, int, int, int, int]] = []
