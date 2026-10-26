@@ -610,7 +610,9 @@ class BrowserBackendState {
       pii_masked_count: 0,
       masked_prompt_preview:
         "Rewrite preserving factual claim while maintaining regulatory compliance.",
-      used_provider: "Constrained Local Rewriter",
+      used_provider: "no-api-key (deterministic-surgical)",
+      api_key_configured: false,
+      provider_notice: "No LLM API key configured (INKLOOM_API_KEY / OPENROUTER_API_KEY / GEMINI_API_KEY / OPENAI_API_KEY). Generated via 100% local deterministic AST surgical rule synthesis (Air-Gapped Privacy Lock active).",
       suggestion: {
         label:
           "Surgically rephrased claim to adhere to approved regulatory guidelines.",

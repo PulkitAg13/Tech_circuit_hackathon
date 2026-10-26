@@ -99,11 +99,13 @@ def create_app() -> FastAPI:
     # Register routers
     from canongate.api.routes.auth import router as auth_router
     from canongate.api.routes.canons import router as canons_router
+    from canongate.api.routes.gate import router as gate_router
     from canongate.api.routes.submissions import router as submissions_router
 
     app.include_router(auth_router, prefix="/api")
     app.include_router(submissions_router, prefix="/api")
     app.include_router(canons_router, prefix="/api")
+    app.include_router(gate_router, prefix="/api")
 
     @app.get("/api/health")
     async def health():

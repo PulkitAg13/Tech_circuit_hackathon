@@ -201,6 +201,10 @@ class SurgicalRewriteResponse(_ApiDto):
     pii_masked_count: int
     masked_prompt_preview: str
     used_provider: str
+    api_key_configured: bool = False
+    provider_notice: str = ""
+    quality_gates: dict[str, Any] = {}
+    context_trace: dict[str, Any] = {}
     suggestion: dict[str, Any]
 
 
@@ -616,17 +620,22 @@ async def rewrite_finding_span(
 
     payload_dict = json.loads(row.payload_json)
     sug_dict = json.loads(result.suggestion.model_dump_json())
+    sug_dict["explanation"] = result.provider_notice
     payload_dict["suggestion"] = sug_dict
     if isinstance(payload_dict.get("trace"), dict):
-        is_ai = result.used_provider != "deterministic-ast-repair"
-        is_ext = result.used_provider not in ("deterministic-ast-repair", "ollama")
-        payload_dict["trace"]["tier"] = "generative"
+        is_ai = bool(result.context_trace.get("ai_used", False))
+        is_ext = is_ai and not result.used_provider.startswith("ollama")
+        payload_dict["trace"]["tier"] = "generative" if is_ai else "deterministic"
         payload_dict["trace"]["ai_used"] = is_ai
         payload_dict["trace"]["external_call"] = is_ext
         payload_dict["trace"]["model_sha"] = result.used_provider
         payload_dict["trace"]["model_name"] = result.used_provider
-        payload_dict["trace"]["external_service"] = result.used_provider if is_ext else "Local"
+        payload_dict["trace"]["external_service"] = (
+            result.used_provider if is_ext else "Local (No API Key)"
+        )
         payload_dict["trace"]["rewriter_provider"] = result.used_provider
+        payload_dict["trace"]["provider_notice"] = result.provider_notice
+        payload_dict["trace"]["api_key_configured"] = result.api_key_configured
     await repos.update_finding_node_and_payload(
         session,
         row.id,
@@ -646,6 +655,10 @@ async def rewrite_finding_span(
         pii_masked_count=result.pii_masked_count,
         masked_prompt_preview=result.masked_prompt_preview,
         used_provider=result.used_provider,
+        api_key_configured=result.api_key_configured,
+        provider_notice=result.provider_notice,
+        quality_gates=result.quality_gates,
+        context_trace=result.context_trace,
         suggestion=sug_dict,
     )
 

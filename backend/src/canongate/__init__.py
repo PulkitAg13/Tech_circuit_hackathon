@@ -2,11 +2,51 @@
 
 from __future__ import annotations
 
+import importlib.abc
+import importlib.machinery
+import importlib.util
 import json
+import os
+import pathlib
+import sys
+
+os.environ.setdefault("OMP_THREAD_LIMIT", "1")
 import typing
 from typing import Any
 
 import pydantic
+
+_PKG_ROOT = pathlib.Path(__file__).resolve().parent
+
+
+class _DirectStatFinder(importlib.abc.MetaPathFinder):
+    """Fallback MetaPathFinder using direct `stat()` (`is_file`/`is_dir`) for 9p dcache mounts."""
+
+    def find_spec(
+        self,
+        fullname: str,
+        path: Any = None,
+        target: Any = None,
+    ) -> importlib.machinery.ModuleSpec | None:
+        if not fullname.startswith("canongate."):
+            return None
+        rel_parts = fullname.split(".")[1:]
+        cand_dir = _PKG_ROOT.joinpath(*rel_parts)
+        init_py = cand_dir / "__init__.py"
+        if init_py.is_file():
+            return importlib.util.spec_from_file_location(
+                fullname,
+                init_py,
+                submodule_search_locations=[str(cand_dir)],
+            )
+        cand_file = _PKG_ROOT.joinpath(*rel_parts[:-1], f"{rel_parts[-1]}.py")
+        if cand_file.is_file():
+            return importlib.util.spec_from_file_location(fullname, cand_file)
+        return None
+
+
+if not any(type(f).__name__ == "_DirectStatFinder" for f in sys.meta_path):
+    sys.meta_path.append(_DirectStatFinder())
 
 
 def _install_pydantic_v1_bridge_if_needed() -> None:

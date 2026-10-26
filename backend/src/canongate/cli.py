@@ -1,19 +1,22 @@
 r"""Standalone CanonGate Command-Line Interface.
 
-Commands: `canongate verify <cert.json>` & `canongate benchmark`.
+Commands: `canongate verify <cert.json>`, `canongate benchmark`, & `canongate mcp`.
 
 Registered under `[project.scripts]` in `backend/pyproject.toml`:
   `uv run canongate verify cert.json`
   `uv run canongate benchmark`
+  `uv run canongate mcp`
+  `uv run canongate-mcp`
 
 Performs zero-database, completely offline cryptographic verification of an
-exported CanonGate governance certificate or executes the 50-case adversarial
-red-team benchmark suite:
+exported CanonGate governance certificate, executes the 50-case adversarial
+red-team benchmark suite, or launches the MCP 2026-07-28 stdio server:
 1. Sequential SHA-256 hash chain integrity (`GENESIS_HASH` -> final event).
 2. RFC 9162 Binary Merkle Tree root and per-event $O(\log_2 n)$ inclusion proofs.
 3. Ed25519 Signed Tree Head (STH) signature verification.
 4. Content & Canon SHA-256 digest binding.
 5. 50-case adversarial mutation recall & 10-control false-positive benchmark.
+6. Model Context Protocol (`2026-07-28`) stdio server for Claude Desktop & Cursor.
 """
 
 from __future__ import annotations
@@ -26,6 +29,7 @@ from pathlib import Path
 
 from canongate.engine.conformal import run_redteam_benchmark
 from canongate.ledger.certificate import GovernanceCertificate
+from canongate.mcp.server import run_stdio_server
 
 
 def _cmd_verify(cert_path: Path, *, output_json: bool = False) -> int:
@@ -100,7 +104,7 @@ def _cmd_benchmark(*, output_json: bool = False) -> int:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="canongate",
-        description="CanonGate offline cryptographic governance verifier & benchmark CLI.",
+        description="CanonGate offline cryptographic governance verifier, benchmark & MCP CLI.",
     )
     sub = parser.add_subparsers(dest="command", required=True)
 
@@ -130,6 +134,11 @@ def build_parser() -> argparse.ArgumentParser:
         dest="output_json",
         help="Emit machine-readable JSON benchmark report.",
     )
+
+    sub.add_parser(
+        "mcp",
+        help="Run the CanonGate MCP (2026-07-28) stdio server for Claude Desktop / Cursor.",
+    )
     return parser
 
 
@@ -140,6 +149,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         return _cmd_verify(args.certificate, output_json=args.output_json)
     if args.command == "benchmark":
         return _cmd_benchmark(output_json=args.output_json)
+    if args.command == "mcp":
+        return run_stdio_server()
     return 1
 
 

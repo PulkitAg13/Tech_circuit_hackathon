@@ -1043,6 +1043,10 @@ export interface SurgicalRewriteResponse {
   pii_masked_count: number;
   masked_prompt_preview: string;
   used_provider: string;
+  api_key_configured?: boolean;
+  provider_notice?: string;
+  quality_gates?: Record<string, unknown>;
+  context_trace?: Record<string, unknown>;
   suggestion: {
     label?: string;
     explanation?: string;

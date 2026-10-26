@@ -1545,6 +1545,26 @@ export function SubmissionDetailPage() {
                           {rewritePreviews[f.row_id].pii_masked_count} ·
                           Provider: {rewritePreviews[f.row_id].used_provider}
                         </div>
+                        {rewritePreviews[f.row_id].provider_notice && (
+                          <div
+                            style={{
+                              marginTop: "0.25rem",
+                              padding: "0.25rem 0.45rem",
+                              borderRadius: "4px",
+                              backgroundColor:
+                                rewritePreviews[f.row_id].api_key_configured === false
+                                  ? "rgba(217, 119, 6, 0.14)"
+                                  : "rgba(16, 185, 129, 0.12)",
+                              color:
+                                rewritePreviews[f.row_id].api_key_configured === false
+                                  ? "#b45309"
+                                  : "#065f46",
+                              fontSize: "0.75rem",
+                            }}
+                          >
+                            {rewritePreviews[f.row_id].provider_notice}
+                          </div>
+                        )}
                         <div style={{ marginTop: "0.25rem" }}>
                           <code>
                             → &ldquo;{rewritePreviews[f.row_id].rewritten_text}

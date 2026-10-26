@@ -38,6 +38,7 @@ dependencies = [
 
 [project.scripts]
 canongate = "canongate.cli:main"
+canongate-mcp = "canongate.mcp.server:main"
 
 [project.optional-dependencies]
 dev = [
@@ -90,16 +91,16 @@ root_packages = ["canongate"]
 name = "domain must not import internal modules"
 type = "forbidden"
 source_modules = ["canongate.domain"]
-forbidden_modules = ["canongate.engine", "canongate.checks", "canongate.parsers", "canongate.store", "canongate.api", "canongate.ledger"]
+forbidden_modules = ["canongate.engine", "canongate.checks", "canongate.parsers", "canongate.store", "canongate.api", "canongate.ledger", "canongate.mcp"]
 
 [[tool.importlinter.contracts]]
 name = "checks must not import store or api"
 type = "forbidden"
 source_modules = ["canongate.checks"]
-forbidden_modules = ["canongate.store", "canongate.api", "canongate.ledger"]
+forbidden_modules = ["canongate.store", "canongate.api", "canongate.ledger", "canongate.mcp"]
 
 [[tool.importlinter.contracts]]
 name = "engine must not import store or api"
 type = "forbidden"
 source_modules = ["canongate.engine"]
-forbidden_modules = ["canongate.store", "canongate.api", "canongate.ledger"]
+forbidden_modules = ["canongate.store", "canongate.api", "canongate.ledger", "canongate.mcp"]
