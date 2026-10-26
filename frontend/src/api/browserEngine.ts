@@ -25,12 +25,23 @@ export interface BrowserAuditEvent {
   submission_id: number;
   sequence_num: number;
   action: string;
+  from_status: string;
+  to_status: string;
   actor_id: number;
   prev_hash: string;
   event_hash: string;
   merkle_root: string;
   comment: string;
   created_at: string;
+  tree_head?: {
+    tree_size: number;
+    timestamp: string;
+    root_hash: string;
+    root_hash_hex: string;
+    signature_hex: string;
+    public_key_hex: string;
+    algorithm: string;
+  };
 }
 
 export interface BrowserFinding {
@@ -437,6 +448,7 @@ class BrowserBackendState {
 
     const openBlockers = (this.findings[subId] || []).filter((f) => f.severity >= 50 && f.resolution === "open");
 
+    const prevStatus = sub.status;
     if (action === "submit") {
       sub.status = "in_review";
     } else if (action === "request_changes") {
@@ -453,26 +465,42 @@ class BrowserBackendState {
       sub.status = "published";
     }
 
-    sub.updated_at = new Date().toISOString();
+    const nowIso = new Date().toISOString();
+    sub.updated_at = nowIso;
 
     // Append audit event
     const events = this.auditEvents[subId] || [];
     const prevHash = events.length > 0 ? events[events.length - 1].event_hash : "0".repeat(64);
     const evHash = sha256Hex(`${subId}:${action}:${comment}:${Date.now()}`);
     const root = sha256Hex(`${prevHash}:${evHash}`);
+    const treeHead = {
+      tree_size: events.length + 1,
+      timestamp: nowIso,
+      root_hash: root,
+      root_hash_hex: root,
+      signature_hex: sha256Hex(`signed:${root}`),
+      public_key_hex: sha256Hex(`pubkey:${subId}`),
+      algorithm: "Ed25519",
+    };
 
     events.push({
       id: events.length + 1,
       submission_id: subId,
       sequence_num: events.length + 1,
       action,
+      from_status: prevStatus,
+      to_status: sub.status,
       actor_id: 1,
       prev_hash: prevHash,
       event_hash: evHash,
       merkle_root: root,
       comment: comment || `Action '${action}' executed`,
-      created_at: new Date().toISOString(),
+      created_at: nowIso,
+      tree_head: treeHead,
     });
+    for (const ev of events) {
+      ev.tree_head = treeHead;
+    }
     this.auditEvents[subId] = events;
     this.save();
     return sub;
@@ -584,6 +612,8 @@ class BrowserBackendState {
         "Rewrite preserving factual claim while maintaining regulatory compliance.",
       used_provider: "Constrained Local Rewriter",
       suggestion: {
+        label:
+          "Surgically rephrased claim to adhere to approved regulatory guidelines.",
         explanation:
           "Surgically rephrased claim to adhere to approved regulatory guidelines.",
         replacements: [

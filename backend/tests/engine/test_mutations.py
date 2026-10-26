@@ -1,27 +1,26 @@
 r"""Property-Based & Adversarial Mutation Gate (`tests/engine/test_mutations.py`).
 
 Tests the recall and mathematical invariants of CanonGate across:
-1. Five Mutation Operators on Compliant Canon Statements:
-   - `drop_qualifier`: Strips mandatory conditions (`"under Rs 50,000"`, `"as of Q3 2025"`,
-     `"only for first-time salaried borrowers"`)
+1. Five Mutation Operators on Compliant Canon Statements (plus 50-Case Benchmark):
+   - `drop_qualifier` (10 cases): Strips mandatory conditions
+     (`"under Rs 50,000"`, `"as of Q3 2025"`, `"only for first-time salaried borrowers"`)
      -> must be caught by `claim.slot_nli` (100% recall).
-   - `numeric_drift`: Perturbs approved numeric bounds, years, or expiry dates beyond Canon limits
+   - `numeric_drift` (10 cases): Perturbs approved numeric bounds or dates beyond Canon limits
      -> must be caught by `claim.algebra` or `claim.slot_nli` (100% recall).
-   - `banned_synonym`: Injects banned terms (`"cheap"`, `"buy"`, `"users"`, `"cutting-edge"`)
+   - `banned_synonym` (10 cases): Injects banned terms (`"cheap"`, `"buy"`, `"users"`)
      across varied casing -> must be caught by `terminology.banned` (100% recall).
-   - `homoglyph_injection`: Injects Cyrillic/Greek UTS #39 confusables (`'а'`, `'е'`, `'о'`) or
-     zero-width characters (`\u200b`) -> must be caught by `unicode.confusable` (100% recall).
-   - `wcag_boundary_shift`: Shifts foreground/background sRGB luminance ratios across the WCAG 2.1
-     4.5:1 boundary (`#FFFFFF` on `#767676` = 4.54:1 PASS vs `#777777` = 4.48:1 FAIL)
+   - `homoglyph_injection` (10 cases): Injects Cyrillic/Greek UTS #39 confusables (`'а'`, `'е'`)
+     or zero-width characters (`\u200b`) -> must be caught by `unicode.confusable` (100% recall).
+   - `wcag_boundary_shift` (10 cases): Shifts foreground/background sRGB luminance ratios across
+     the WCAG 2.1 4.5:1 boundary (`#FFFFFF` on `#767676` = 4.54:1 PASS vs `#777777` = 4.48:1 FAIL)
      -> 100% accuracy.
-2. Conformal Risk Control Invariants (`engine/conformal.py`):
+2. Pluggable `MiniCheck-Flan-T5-Large` External NLI Scorer Adapter (`use_minicheck_flan_t5_large`).
+3. Conformal Risk Control Invariants (`engine/conformal.py`):
    - Monotonicity:
      $\alpha_1 < \alpha_2 \implies \hat{\lambda}(\alpha_1) \ge \hat{\lambda}(\alpha_2)$.
    - Exact finite-sample risk bound:
      $\frac{n}{n+1}\widehat{R}_n(\hat{\lambda}(\alpha)) + \frac{1}{n+1} \le \alpha$.
-3. Standalone Offline CLI Verifier (`canongate verify <cert.json>`):
-   - Valid certificate exits `0`; tampered event chain, tampered Merkle inclusion proof, or
-     forged Ed25519 signature exits `1` with explicit error diagnostics.
+4. Standalone Offline CLI Verifier (`canongate verify <cert.json>`) & `canongate benchmark`.
 """
 
 from __future__ import annotations
@@ -37,12 +36,18 @@ from canongate.checks.accessibility_contrast import (
     AccessibilityContrastCheck,
     wcag_contrast_ratio,
 )
+from canongate.checks.claim_slot_nli import ClaimSlotNliCheck
 from canongate.cli import main as cli_main
 from canongate.domain.ast import ContentAST, TextNode
 from canongate.domain.canon import Canon, FactClaim, TermRule
 from canongate.domain.finding import Finding, Rule, SlotDiffEvidence, Span, Tier, Trace
 from canongate.domain.types import NodeId
-from canongate.engine.conformal import ConformalRiskCalibrator
+from canongate.engine.conformal import (
+    COMPLIANT_CONTROL_10_CASES,
+    REDTEAM_50_CASES,
+    ConformalRiskCalibrator,
+    run_redteam_benchmark,
+)
 from canongate.engine.runner import run_checks_collect
 from canongate.ledger.certificate import GovernanceCertificate
 from canongate.ledger.chain import GENESIS_HASH, compute_event_hash
@@ -105,6 +110,9 @@ class TestMutationGateAndConformalCalibration(unittest.TestCase):
                 ),
             ),
         )
+
+    def tearDown(self) -> None:
+        ClaimSlotNliCheck.set_external_scorer(None)
 
     def test_five_mutation_operators_recall_gate_and_zero_false_positives_on_clean_controls(
         self,
@@ -201,6 +209,45 @@ class TestMutationGateAndConformalCalibration(unittest.TestCase):
         self.assertEqual(len(wcag_check.run(pass_node, self.canon)), 0)
         self.assertEqual(len(wcag_check.run(fail_node_boundary, self.canon)), 1)
         self.assertEqual(len(wcag_check.run(fail_node_severe, self.canon)), 1)
+
+    def test_fifty_case_redteam_benchmark_suite_and_pluggable_minicheck_flan_t5_adapter(
+        self,
+    ) -> None:
+        self.assertEqual(len(REDTEAM_50_CASES), 50)
+        self.assertEqual(len(COMPLIANT_CONTROL_10_CASES), 10)
+
+        # 1. Verify pluggable MiniCheck-Flan-T5-Large external scorer adapter
+        adapter = ClaimSlotNliCheck.use_minicheck_flan_t5_large()
+        self.assertEqual(adapter.model_sha, "minicheck-flan-t5-large-onnx")
+
+        nli_check = ClaimSlotNliCheck()
+        dropped_node = TextNode.from_text("0% processing fee on personal loans today.")
+        dropped_findings = asyncio.run(nli_check.run_async(dropped_node, self.canon))
+        self.assertEqual(len(dropped_findings), 1)
+        self.assertEqual(dropped_findings[0].trace.model_sha, "minicheck-flan-t5-large-onnx")
+
+        compliant_node = TextNode.from_text("0% processing fee on personal loans under Rs 50,000.")
+        compliant_findings = asyncio.run(nli_check.run_async(compliant_node, self.canon))
+        self.assertEqual(len(compliant_findings), 0)
+
+        # 2. Execute the full 50-case red-team benchmark suite
+        report = run_redteam_benchmark()
+        self.assertEqual(report.total_adversarial_cases, 50)
+        self.assertEqual(report.total_detected, 50)
+        self.assertEqual(report.overall_recall, 1.0)
+        self.assertEqual(report.control_cases, 10)
+        self.assertEqual(report.false_positives, 0)
+        self.assertEqual(report.false_positive_rate, 0.0)
+        self.assertEqual(len(report.operators), 5)
+        for op_sum in report.operators:
+            self.assertEqual(op_sum.total_cases, 10, f"Operator {op_sum.operator} count != 10")
+            self.assertEqual(op_sum.detected_cases, 10, f"Operator {op_sum.operator} missed cases")
+            self.assertEqual(op_sum.recall, 1.0)
+
+        md_table = report.to_markdown_table()
+        self.assertIn("`drop_qualifier`", md_table)
+        self.assertIn("**100.0%**", md_table)
+        self.assertEqual(cli_main(["benchmark", "--json"]), 0)
 
     def test_conformal_risk_control_monotonicity_and_finite_sample_guarantee(self) -> None:
         cal = ConformalRiskCalibrator()

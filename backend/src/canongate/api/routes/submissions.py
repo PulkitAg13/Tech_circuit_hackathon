@@ -369,10 +369,9 @@ async def get_submission(
     sub = await repos.get_submission(session, submission_id)
     if not sub:
         raise HTTPException(status_code=404, detail="Submission not found")
-    if (
-        str(getattr(user, "role", "")).lower() == "creator"
-        and int(getattr(sub, "creator_id", -1)) != int(getattr(user, "id", -2))
-    ):
+    if str(getattr(user, "role", "")).lower() == "creator" and int(
+        getattr(sub, "creator_id", -1)
+    ) != int(getattr(user, "id", -2)):
         raise HTTPException(
             status_code=403,
             detail="Access denied: this campaign belongs to another Creator account",
@@ -619,7 +618,14 @@ async def rewrite_finding_span(
     sug_dict = json.loads(result.suggestion.model_dump_json())
     payload_dict["suggestion"] = sug_dict
     if isinstance(payload_dict.get("trace"), dict):
-        payload_dict["trace"]["tier"] = 3
+        is_ai = result.used_provider != "deterministic-ast-repair"
+        is_ext = result.used_provider not in ("deterministic-ast-repair", "ollama")
+        payload_dict["trace"]["tier"] = "generative"
+        payload_dict["trace"]["ai_used"] = is_ai
+        payload_dict["trace"]["external_call"] = is_ext
+        payload_dict["trace"]["model_sha"] = result.used_provider
+        payload_dict["trace"]["model_name"] = result.used_provider
+        payload_dict["trace"]["external_service"] = result.used_provider if is_ext else "Local"
         payload_dict["trace"]["rewriter_provider"] = result.used_provider
     await repos.update_finding_node_and_payload(
         session,

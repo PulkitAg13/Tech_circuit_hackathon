@@ -764,6 +764,7 @@ class SlotAlignment:
     negation_contradicted: bool
     core_lexical_recall: float
     anchor_recall: float
+    draft_sentence: str = ""
 
 
 class QASemSlotAligner:
@@ -976,6 +977,7 @@ class QASemSlotAligner:
             negation_contradicted=negation_contradicted,
             core_lexical_recall=core_lexical_recall,
             anchor_recall=anchor_recall,
+            draft_sentence=sent,
         )
 
 
@@ -1205,12 +1207,13 @@ class MiniCheckNliScorer:
             canon_doc = alignment.fact.text
             if alignment.fact.conditions:
                 canon_doc = f"{alignment.fact.text} ({'; '.join(alignment.fact.conditions)})"
-            draft_sent = alignment.slot_entries[1].draft_value or ""
+            draft_sent = alignment.draft_sentence or alignment.slot_entries[1].draft_value or ""
             raw_p = float(external_scorer(canon_doc, draft_sent))
+            sha_label = getattr(external_scorer, "model_sha", "minicheck-flan-t5-large-onnx")
             return (
                 raw_p,
                 temperature_scale_prob(raw_p, self.temperature),
-                "minicheck-flan-t5-large-onnx",
+                str(sha_label),
             )
 
         n_conds = len(alignment.condition_statuses)
@@ -1327,3 +1330,50 @@ def extract_value_anchors(text: str) -> list[str]:
 def extract_restrictive_qualifiers(text: str) -> list[str]:
     """Convenience wrapper around `default_linguistic_analyzer.extract_restrictive_qualifiers`."""
     return default_linguistic_analyzer.extract_restrictive_qualifiers(text)
+
+
+class MiniCheckFlanT5ExternalScorer:
+    """Pluggable `MiniCheck-Flan-T5-Large` external NLI scorer adapter (`(doc, claim) -> float`).
+
+    Can be registered via `ClaimSlotNliCheck.set_external_scorer(MiniCheckFlanT5ExternalScorer())`
+    or `ClaimSlotNliCheck.use_minicheck_flan_t5_large()`. Supports:
+    1. Custom ONNX model path (`model_path` or `CANONGATE_MINICHECK_ONNX_PATH`).
+    2. Optional HuggingFace `transformers` seq2seq checkpoint if locally cached.
+    3. Local ONNX Runtime `MiniCheckNliScorer` graph execution over full `(premise, hypothesis)`
+       sentences with QASem qualifier, metric, and substantiation verification.
+    """
+
+    model_sha: str = "minicheck-flan-t5-large-onnx"
+
+    def __init__(
+        self,
+        *,
+        model_path: str | None = None,
+        scorer: MiniCheckNliScorer | None = None,
+        aligner: QASemSlotAligner | None = None,
+    ) -> None:
+        self.model_path = model_path or os.environ.get("CANONGATE_MINICHECK_ONNX_PATH", "").strip()
+        self._scorer = scorer or default_nli_scorer
+        self._aligner = aligner or default_slot_aligner
+        self._scorer._ensure_sessions()
+        default_linguistic_analyzer._get_spacy_nlp()
+
+    def __call__(self, canon_doc: str, draft_claim: str) -> float:
+        """Return raw entailment probability $P(canon\\_doc \\models draft\\_claim)$."""
+        if not canon_doc.strip() or not draft_claim.strip():
+            return 0.0
+        # Parse parenthesized conditions if formatted as "Fact text (cond1; cond2)"
+        conds: tuple[str, ...] = ()
+        core_text = canon_doc.strip()
+        m_cond = re.match(r"^(.*?)\s*\(([^()]+)\)\s*$", core_text)
+        if m_cond:
+            core_text = m_cond.group(1).strip()
+            conds = tuple(c.strip() for c in m_cond.group(2).split(";") if c.strip())
+        temp_fact = FactClaim(id="ext-fact", text=core_text, conditions=conds)
+        alignment = self._aligner.align(temp_fact, draft_claim)
+        raw_p, _cal_p, _sha = self._scorer.score_alignment(
+            alignment,
+            external_scorer=None,
+            use_deberta_fallback=False,
+        )
+        return float(raw_p)

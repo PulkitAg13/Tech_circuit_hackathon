@@ -37,6 +37,7 @@ from canongate.domain.finding import (
 )
 from canongate.engine.check import Check
 from canongate.engine.nlp import (
+    MiniCheckFlanT5ExternalScorer,
     QASemSlotAligner,
     content_words,
     default_fact_retriever,
@@ -64,6 +65,17 @@ class ClaimSlotNliCheck(Check):
     def set_external_scorer(cls, scorer: Callable[[str, str], float] | None) -> None:
         """Register an optional custom MiniCheck or ONNX Runtime entailment scorer."""
         cls._external_scorer = scorer
+
+    @classmethod
+    def use_minicheck_flan_t5_large(
+        cls,
+        *,
+        model_path: str | None = None,
+    ) -> MiniCheckFlanT5ExternalScorer:
+        """Configure and register the pluggable `MiniCheck-Flan-T5-Large` external scorer."""
+        adapter = MiniCheckFlanT5ExternalScorer(model_path=model_path)
+        cls.set_external_scorer(adapter)
+        return adapter
 
     async def run_async(self, node: Node, canon: Canon) -> list[Finding]:
         """Run with 400ms latency guard; auto-falls back to DeBERTa-v3 ONNX if exceeded."""

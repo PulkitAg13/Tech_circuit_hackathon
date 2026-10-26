@@ -1,14 +1,19 @@
-"""Standalone CanonGate Command-Line Interface (`canongate verify <cert.json>`).
+r"""Standalone CanonGate Command-Line Interface.
+
+Commands: `canongate verify <cert.json>` & `canongate benchmark`.
 
 Registered under `[project.scripts]` in `backend/pyproject.toml`:
   `uv run canongate verify cert.json`
+  `uv run canongate benchmark`
 
 Performs zero-database, completely offline cryptographic verification of an
-exported CanonGate governance certificate:
+exported CanonGate governance certificate or executes the 50-case adversarial
+red-team benchmark suite:
 1. Sequential SHA-256 hash chain integrity (`GENESIS_HASH` -> final event).
-2. RFC 9162 Binary Merkle Tree root and per-event $O(\\log_2 n)$ inclusion proofs.
+2. RFC 9162 Binary Merkle Tree root and per-event $O(\log_2 n)$ inclusion proofs.
 3. Ed25519 Signed Tree Head (STH) signature verification.
 4. Content & Canon SHA-256 digest binding.
+5. 50-case adversarial mutation recall & 10-control false-positive benchmark.
 """
 
 from __future__ import annotations
@@ -19,6 +24,7 @@ import sys
 from collections.abc import Sequence
 from pathlib import Path
 
+from canongate.engine.conformal import run_redteam_benchmark
 from canongate.ledger.certificate import GovernanceCertificate
 
 
@@ -82,10 +88,19 @@ def _cmd_verify(cert_path: Path, *, output_json: bool = False) -> int:
     return 1
 
 
+def _cmd_benchmark(*, output_json: bool = False) -> int:
+    report = run_redteam_benchmark()
+    if output_json:
+        print(json.dumps(report.to_dict(), indent=2))
+    else:
+        print(report.to_markdown_table())
+    return 0 if (report.overall_recall == 1.0 and report.false_positives == 0) else 1
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="canongate",
-        description="CanonGate offline cryptographic governance verifier & CLI.",
+        description="CanonGate offline cryptographic governance verifier & benchmark CLI.",
     )
     sub = parser.add_subparsers(dest="command", required=True)
 
@@ -104,6 +119,17 @@ def build_parser() -> argparse.ArgumentParser:
         dest="output_json",
         help="Emit machine-readable JSON verification output.",
     )
+
+    bench_p = sub.add_parser(
+        "benchmark",
+        help="Run the 50-case adversarial red-team mutation benchmark suite.",
+    )
+    bench_p.add_argument(
+        "--json",
+        action="store_true",
+        dest="output_json",
+        help="Emit machine-readable JSON benchmark report.",
+    )
     return parser
 
 
@@ -112,6 +138,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = parser.parse_args(list(argv) if argv is not None else None)
     if args.command == "verify":
         return _cmd_verify(args.certificate, output_json=args.output_json)
+    if args.command == "benchmark":
+        return _cmd_benchmark(output_json=args.output_json)
     return 1
 
 

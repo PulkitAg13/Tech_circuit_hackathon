@@ -270,6 +270,7 @@ class SignedTreeHead:
             "tree_size": self.tree_size,
             "timestamp": self.timestamp,
             "root_hash": self.root_hash,
+            "root_hash_hex": self.root_hash,
             "signature": self.signature_hex,
             "signature_hex": self.signature_hex,
             "public_key": self.public_key_hex,

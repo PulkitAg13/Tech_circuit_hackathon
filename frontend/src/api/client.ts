@@ -841,15 +841,20 @@ export interface FindingItem {
     rule_ref: { rule_id: string; rule_type: string; source_text: string };
     evidence: Record<string, unknown>;
     suggestion: {
-      explanation: string;
+      label?: string;
+      explanation?: string;
       replacements: Array<{
         span: { start: number; end: number };
         replacement: string;
       }>;
     } | null;
     trace: {
-      tier: string;
+      tier: string | number;
       ai_used: boolean;
+      external_call?: boolean;
+      model_sha?: string | null;
+      latency_ms?: number | null;
+      rewriter_provider?: string | null;
       model_name?: string | null;
       external_service?: string | null;
       pii_scrubbed?: boolean;
@@ -954,16 +959,19 @@ export interface AuditEvent {
   event_hash: string;
   created_at: string;
   leaf_index?: number;
-  audit_path?: Array<{ sibling_hex: string; position: "left" | "right" }>;
+  audit_path?: string[] | Array<{ sibling_hex: string; position: "left" | "right" }>;
   tree_size?: number;
   merkle_root?: string;
   tree_head?: {
     tree_size: number;
     timestamp: string;
-    root_hash_hex: string;
+    root_hash?: string;
+    root_hash_hex?: string;
+    signature?: string;
     signature_hex: string;
+    public_key?: string;
     public_key_hex: string;
-    algorithm: string;
+    algorithm?: string;
   };
 }
 
@@ -1036,7 +1044,8 @@ export interface SurgicalRewriteResponse {
   masked_prompt_preview: string;
   used_provider: string;
   suggestion: {
-    explanation: string;
+    label?: string;
+    explanation?: string;
     replacements: Array<{
       span: { start: number; end: number };
       replacement: string;

@@ -124,10 +124,11 @@ const WORKFLOW_STAGES = [
 ] as const;
 
 interface SlotComparisonItem {
-  slot_name: string;
+  slot?: string;
+  slot_name?: string;
   canon_value: string | null;
   draft_value: string | null;
-  status: "match" | "contradicted" | "dropped" | "added";
+  status: "match" | "contradicted" | "dropped" | "added" | "unverified";
 }
 
 interface ExtractedBBoxOverlay {
@@ -1412,11 +1413,13 @@ export function SubmissionDetailPage() {
                       {trace && (
                         <span
                           className="tier-badge"
-                          title={`Tier: ${trace.tier} | AI Used: ${trace.ai_used ? "Yes" : "No"} | Model: ${trace.model_name ?? "Deterministic Math"} | External Service: ${trace.external_service ?? "None (100% Local)"}`}
+                          title={`Tier: ${trace.tier} | AI Used: ${trace.ai_used ? "Yes" : "No"} | Model: ${trace.model_sha ?? trace.model_name ?? "Deterministic Math"} | External Service: ${trace.rewriter_provider ?? trace.external_service ?? (trace.external_call ? "External API" : "None (100% Local)")}${trace.latency_ms != null ? ` | Latency: ${trace.latency_ms.toFixed(1)}ms` : ""}`}
                         >
                           {trace.ai_used
-                            ? `AI: ${trace.model_name ?? "Local NLI"} (${trace.external_service ?? "Local"})`
-                            : "TIER 1 · ZERO AI (100% LOCAL)"}
+                            ? `AI: ${trace.model_sha ?? trace.model_name ?? "Local NLI"} (${trace.rewriter_provider ?? trace.external_service ?? (trace.external_call ? "External" : "Local")})`
+                            : String(trace.tier).toLowerCase() === "smt"
+                              ? "TIER 1.5 · SMT SOLVER (100% LOCAL)"
+                              : "TIER 1 · ZERO AI (100% LOCAL)"}
                         </span>
                       )}
                       {f.resolution !== "open" && (
@@ -1496,7 +1499,7 @@ export function SubmissionDetailPage() {
                               {slots.map((s, idx) => (
                                 <tr key={idx}>
                                   <td>
-                                    <strong>{s.slot_name}</strong>
+                                    <strong>{s.slot ?? s.slot_name}</strong>
                                   </td>
                                   <td>{s.canon_value ?? "—"}</td>
                                   <td>{s.draft_value ?? "—"}</td>
@@ -1514,7 +1517,8 @@ export function SubmissionDetailPage() {
                     {f.payload?.suggestion && (
                       <div className="finding-suggestion">
                         <strong>Suggested Fix:</strong>{" "}
-                        {f.payload.suggestion.explanation}
+                        {f.payload.suggestion.label ??
+                          f.payload.suggestion.explanation}
                         {f.payload.suggestion.replacements.map((r, i) => (
                           <code key={i} className="replacement-chip">
                             → &ldquo;{r.replacement}&rdquo;
@@ -1857,13 +1861,23 @@ export function SubmissionDetailPage() {
                       <span>
                         Merkle Root:{" "}
                         <code>
-                          {audit[0].tree_head.root_hash_hex.slice(0, 24)}…
+                          {(
+                            audit[0].tree_head.root_hash ??
+                            audit[0].tree_head.root_hash_hex ??
+                            ""
+                          ).slice(0, 24)}
+                          …
                         </code>
                       </span>
                       <span>
                         Signature:{" "}
                         <code>
-                          {audit[0].tree_head.signature_hex.slice(0, 24)}…
+                          {(
+                            audit[0].tree_head.signature_hex ??
+                            audit[0].tree_head.signature ??
+                            ""
+                          ).slice(0, 24)}
+                          …
                         </code>
                       </span>
                       <span>

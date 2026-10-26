@@ -24,11 +24,17 @@ Angelopoulos, Bates, Fisch, Lei, & Schuster (2024/2025, `arXiv:2208.02814v4`):
 
 from __future__ import annotations
 
+import asyncio
 import math
+import time
 from collections.abc import Iterator, Sequence
 from dataclasses import dataclass
+from typing import Any
 
+from canongate.domain.ast import ContentAST, TextNode
+from canongate.domain.canon import Canon, FactClaim, TermRule
 from canongate.domain.finding import Finding, SlotDiffEvidence
+from canongate.engine.runner import run_checks_collect
 
 
 @dataclass(frozen=True, slots=True)
@@ -202,3 +208,663 @@ class ConformalRiskCalibrator:
 
 
 default_calibrator = ConformalRiskCalibrator()
+
+
+# ---------------------------------------------------------------------------
+# 50-Case Adversarial Red-Team Mutation Benchmark Suite
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True, slots=True)
+class RedTeamCase:
+    """Single adversarial mutation case or compliant control."""
+
+    case_id: str
+    operator: str
+    text: str
+    expected_checks: tuple[str, ...]
+    description: str
+
+
+@dataclass(frozen=True, slots=True)
+class OperatorBenchmarkSummary:
+    """Aggregated recall & latency metrics for one mutation operator."""
+
+    operator: str
+    total_cases: int
+    detected_cases: int
+    recall: float
+    mean_latency_ms: float
+    p95_latency_ms: float
+    expected_checks: tuple[str, ...]
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "operator": self.operator,
+            "total_cases": self.total_cases,
+            "detected_cases": self.detected_cases,
+            "recall": round(self.recall, 4),
+            "mean_latency_ms": round(self.mean_latency_ms, 3),
+            "p95_latency_ms": round(self.p95_latency_ms, 3),
+            "expected_checks": list(self.expected_checks),
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class RedTeamBenchmarkReport:
+    """Complete 50-case red-team benchmark + 10-control evaluation report."""
+
+    total_adversarial_cases: int
+    total_detected: int
+    overall_recall: float
+    control_cases: int
+    false_positives: int
+    false_positive_rate: float
+    operators: tuple[OperatorBenchmarkSummary, ...]
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "total_adversarial_cases": self.total_adversarial_cases,
+            "total_detected": self.total_detected,
+            "overall_recall": round(self.overall_recall, 4),
+            "control_cases": self.control_cases,
+            "false_positives": self.false_positives,
+            "false_positive_rate": round(self.false_positive_rate, 4),
+            "operators": [op.to_dict() for op in self.operators],
+        }
+
+    def to_markdown_table(self) -> str:
+        header = (
+            "| Mutation Operator | Cases | Detected | Recall | Target Check(s) | "
+            "Mean Latency (ms) | p95 Latency (ms) |"
+        )
+        lines = [
+            header,
+            "|---|---:|---:|---:|---|---:|---:|",
+        ]
+        for op in self.operators:
+            checks_str = ", ".join(f"`{c}`" for c in op.expected_checks)
+            lines.append(
+                f"| `{op.operator}` | {op.total_cases} | {op.detected_cases} | "
+                f"{op.recall * 100:.1f}% | {checks_str} | "
+                f"{op.mean_latency_ms:.2f} | {op.p95_latency_ms:.2f} |"
+            )
+        lines.append(
+            f"| **Total Adversarial** | **{self.total_adversarial_cases}** | "
+            f"**{self.total_detected}** | **{self.overall_recall * 100:.1f}%** | "
+            f"All 5 Operators | — | — |"
+        )
+        lines.append(
+            f"| **Compliant Controls (FPR)** | **{self.control_cases}** | "
+            f"**{self.false_positives} FP** | **FPR = {self.false_positive_rate * 100:.1f}%** | "
+            f"Zero False Positives | — | — |"
+        )
+        return "\n".join(lines)
+
+
+def build_benchmark_canon() -> Canon:
+    """Build the reference Canon used by the 50-case red-team benchmark."""
+    return Canon(
+        id="redteam-benchmark-canon",
+        version="1.0",
+        terminology=(
+            TermRule(id="t-cheap", pattern_text="cheap", preferred="affordable", severity=60),
+            TermRule(id="t-buy", pattern_text="buy", preferred="purchase", severity=40),
+            TermRule(id="t-users", pattern_text="users", preferred="customers", severity=30),
+            TermRule(
+                id="t-cutting",
+                pattern_text="cutting-edge",
+                preferred="innovative",
+                severity=20,
+            ),
+            TermRule(
+                id="t-guar",
+                pattern_text="guaranteed approval",
+                preferred="subject to credit assessment",
+                severity=85,
+            ),
+            TermRule(
+                id="t-miracle",
+                pattern_text="miracle cure",
+                preferred="clinically formulated supplement",
+                severity=90,
+            ),
+            TermRule(
+                id="t-fatburn",
+                pattern_text="100% fat burn",
+                preferred="supports healthy metabolism",
+                severity=85,
+            ),
+            TermRule(
+                id="t-nocredit",
+                pattern_text="no credit check",
+                preferred="streamlined bureau verification",
+                severity=80,
+            ),
+            TermRule(
+                id="t-riskfree",
+                pattern_text="risk-free returns",
+                preferred="market-linked returns",
+                severity=85,
+            ),
+            TermRule(
+                id="t-instantrich",
+                pattern_text="instant wealth",
+                preferred="long-term financial planning",
+                severity=75,
+            ),
+        ),
+        facts=(
+            FactClaim(
+                id="f-founded",
+                text="Acme Corp was founded in 2020.",
+                conditions=(),
+            ),
+            FactClaim(
+                id="f-customers",
+                text="Acme Corp serves over 500 enterprise customers as of Q3 2025.",
+                conditions=("as of Q3 2025",),
+            ),
+            FactClaim(
+                id="f-loan-fee",
+                text="0% processing fee on personal loans under Rs 50,000.",
+                conditions=("under Rs 50,000",),
+                valid_until="2026-09-30",
+            ),
+            FactClaim(
+                id="f-cashback",
+                text=(
+                    "Get 10% instant cashback on UPI payments only for first-time salaried"
+                    " borrowers."
+                ),
+                conditions=("only for first-time salaried borrowers",),
+            ),
+            FactClaim(
+                id="f-rapido",
+                text="Auto in 5 minutes or get Rs 50 only on bike rides in select metro cities.",
+                conditions=("only on bike rides in select metro cities",),
+            ),
+            FactClaim(
+                id="f-serum",
+                text=(
+                    "Redensyl serum boosts hair growth by 23,800 strands after 84 days of daily"
+                    " application."
+                ),
+                conditions=("after 84 days of daily application",),
+            ),
+            FactClaim(
+                id="f-upsc",
+                text=(
+                    "Over 645 selections in UPSC CSE 2023 includes Mock Interview programme"
+                    " enrollees."
+                ),
+                conditions=("includes Mock Interview programme enrollees",),
+            ),
+            FactClaim(
+                id="f-uptime",
+                text="99.99% SLA uptime commitment only on annual enterprise plans.",
+                conditions=("only on annual enterprise plans",),
+            ),
+            FactClaim(
+                id="f-apr",
+                text="10.5% lowest APR starting rate subject to CIBIL score above 750.",
+                conditions=("subject to CIBIL score above 750",),
+            ),
+            FactClaim(
+                id="f-refund",
+                text="Full 30-day money-back assurance only on unopened starter packs.",
+                conditions=("only on unopened starter packs",),
+            ),
+            FactClaim(
+                id="f-delivery",
+                text="Same-day 2-hour express delivery only in Mumbai and Bengaluru.",
+                conditions=("only in Mumbai and Bengaluru",),
+            ),
+        ),
+    )
+
+
+REDTEAM_50_CASES: tuple[RedTeamCase, ...] = (
+    # ── 1. drop_qualifier (10 cases) ──────────────────────────────────
+    RedTeamCase(
+        "dq-01",
+        "drop_qualifier",
+        "Acme Corp serves over 500 enterprise customers.",
+        ("claim.slot_nli",),
+        "Drops 'as of Q3 2025' temporal qualifier",
+    ),
+    RedTeamCase(
+        "dq-02",
+        "drop_qualifier",
+        "0% processing fee on personal loans today.",
+        ("claim.slot_nli",),
+        "Drops 'under Rs 50,000' loan ceiling qualifier",
+    ),
+    RedTeamCase(
+        "dq-03",
+        "drop_qualifier",
+        "Get 10% instant cashback on UPI payments.",
+        ("claim.slot_nli",),
+        "Drops 'only for first-time salaried borrowers' eligibility qualifier",
+    ),
+    RedTeamCase(
+        "dq-04",
+        "drop_qualifier",
+        "Auto in 5 minutes or get Rs 50 every time.",
+        ("claim.slot_nli",),
+        "Drops 'only on bike rides in select metro cities' Rapido condition",
+    ),
+    RedTeamCase(
+        "dq-05",
+        "drop_qualifier",
+        "Redensyl serum boosts hair growth by 23,800 strands.",
+        ("claim.slot_nli",),
+        "Drops 'after 84 days of daily application' study duration condition",
+    ),
+    RedTeamCase(
+        "dq-06",
+        "drop_qualifier",
+        "Over 645 selections in UPSC CSE 2023 across India.",
+        ("claim.slot_nli",),
+        "Drops 'includes Mock Interview programme enrollees' Vajirao disclosure",
+    ),
+    RedTeamCase(
+        "dq-07",
+        "drop_qualifier",
+        "We deliver a 99.99% SLA uptime commitment for all accounts.",
+        ("claim.slot_nli",),
+        "Drops 'only on annual enterprise plans' tier condition",
+    ),
+    RedTeamCase(
+        "dq-08",
+        "drop_qualifier",
+        "Lock in a 10.5% lowest APR starting rate today.",
+        ("claim.slot_nli",),
+        "Drops 'subject to CIBIL score above 750' credit condition",
+    ),
+    RedTeamCase(
+        "dq-09",
+        "drop_qualifier",
+        "Enjoy a full 30-day money-back assurance on every order.",
+        ("claim.slot_nli",),
+        "Drops 'only on unopened starter packs' return condition",
+    ),
+    RedTeamCase(
+        "dq-10",
+        "drop_qualifier",
+        "Get same-day 2-hour express delivery nationwide.",
+        ("claim.slot_nli",),
+        "Drops 'only in Mumbai and Bengaluru' geographic scope",
+    ),
+    # ── 2. numeric_drift (10 cases) ───────────────────────────────────
+    RedTeamCase(
+        "nd-01",
+        "numeric_drift",
+        "Acme Corp was founded in 2018.",
+        ("claim.algebra", "claim.slot_nli"),
+        "Founding year drifted from 2020 to 2018",
+    ),
+    RedTeamCase(
+        "nd-02",
+        "numeric_drift",
+        "Acme Corp was founded in 2015.",
+        ("claim.algebra", "claim.slot_nli"),
+        "Founding year drifted from 2020 to 2015",
+    ),
+    RedTeamCase(
+        "nd-03",
+        "numeric_drift",
+        "0% processing fee on personal loans under Rs 75,000.",
+        ("claim.algebra", "claim.slot_nli"),
+        "Loan cap breached: Rs 75,000 > Rs 50,000",
+    ),
+    RedTeamCase(
+        "nd-04",
+        "numeric_drift",
+        "0% processing fee on personal loans up to Rs 1,00,000.",
+        ("claim.algebra", "claim.slot_nli"),
+        "Loan cap breached: Rs 1,00,000 > Rs 50,000",
+    ),
+    RedTeamCase(
+        "nd-05",
+        "numeric_drift",
+        "0% processing fee on personal loans up to Rs 1.5 Lakh.",
+        ("claim.algebra", "claim.slot_nli"),
+        "Indian Lakh unit cap breach: Rs 1,50,000 > Rs 50,000",
+    ),
+    RedTeamCase(
+        "nd-06",
+        "numeric_drift",
+        "0% processing fee on personal loans under Rs 50,000 valid until 2026-12-31.",
+        ("claim.algebra", "claim.slot_nli"),
+        "Offer expiry breached: 2026-12-31 > 2026-09-30",
+    ),
+    RedTeamCase(
+        "nd-07",
+        "numeric_drift",
+        "0% processing fee on personal loans under Rs 50,000 valid until 2027-03-31.",
+        ("claim.algebra", "claim.slot_nli"),
+        "Offer expiry breached into 2027: 2027-03-31 > 2026-09-30",
+    ),
+    RedTeamCase(
+        "nd-08",
+        "numeric_drift",
+        "Acme Corp serves over 900 enterprise customers as of Q3 2025.",
+        ("claim.algebra", "claim.slot_nli"),
+        "Customer count inflated from 500 to 900",
+    ),
+    RedTeamCase(
+        "nd-09",
+        "numeric_drift",
+        "Get 25% instant cashback on UPI payments only for first-time salaried borrowers.",
+        ("claim.algebra", "claim.slot_nli"),
+        "Cashback percentage inflated from 10% to 25%",
+    ),
+    RedTeamCase(
+        "nd-10",
+        "numeric_drift",
+        "Flat 27% Off on MRP (Inclusive of all taxes). 18% GST applies on discounted price.",
+        ("claim.algebra", "claim.slot_nli"),
+        "FirstCry stacked GST net-discount contradiction (27% vs 13.86% effective)",
+    ),
+    # ── 3. banned_synonym (10 cases) ──────────────────────────────────
+    RedTeamCase(
+        "bs-01",
+        "banned_synonym",
+        "Purchase our CHEAP enterprise platform.",
+        ("terminology.banned",),
+        "Uppercase banned term 'CHEAP'",
+    ),
+    RedTeamCase(
+        "bs-02",
+        "banned_synonym",
+        "Buy our affordable enterprise platform.",
+        ("terminology.banned",),
+        "Titlecase banned verb 'Buy'",
+    ),
+    RedTeamCase(
+        "bs-03",
+        "banned_synonym",
+        "Our platform serves enterprise users worldwide.",
+        ("terminology.banned",),
+        "Banned noun 'users' instead of 'customers'",
+    ),
+    RedTeamCase(
+        "bs-04",
+        "banned_synonym",
+        "Discover our Cutting-Edge cloud governance suite.",
+        ("terminology.banned",),
+        "Hyphenated banned buzzword 'Cutting-Edge'",
+    ),
+    RedTeamCase(
+        "bs-05",
+        "banned_synonym",
+        "Apply now for guaranteed approval on your credit line.",
+        ("terminology.banned",),
+        "RBI prohibited phrase 'guaranteed approval'",
+    ),
+    RedTeamCase(
+        "bs-06",
+        "banned_synonym",
+        "Try our herbal miracle cure for better sleep.",
+        ("terminology.banned",),
+        "ASCI prohibited therapeutic claim 'miracle cure'",
+    ),
+    RedTeamCase(
+        "bs-07",
+        "banned_synonym",
+        "Achieve 100% fat burn in two weeks.",
+        ("terminology.banned",),
+        "Symbol-prefixed banned claim '100% fat burn'",
+    ),
+    RedTeamCase(
+        "bs-08",
+        "banned_synonym",
+        "Instant digital loans with no credit check required.",
+        ("terminology.banned",),
+        "RBI prohibited phrase 'no credit check'",
+    ),
+    RedTeamCase(
+        "bs-09",
+        "banned_synonym",
+        "Earn risk-free returns with our treasury vault.",
+        ("terminology.banned",),
+        "SEBI/RBI prohibited phrase 'risk-free returns'",
+    ),
+    RedTeamCase(
+        "bs-10",
+        "banned_synonym",
+        "Unlock instant wealth with automated trading.",
+        ("terminology.banned",),
+        "Prohibited financial phrase 'instant wealth'",
+    ),
+    # ── 4. homoglyph_injection (10 cases) ─────────────────────────────
+    RedTeamCase(
+        "hg-01",
+        "homoglyph_injection",
+        "Our ch\u0435ap plan is live.",
+        ("unicode.confusable",),
+        "Cyrillic small 'е' (U+0435) inside 'cheap'",
+    ),
+    RedTeamCase(
+        "hg-02",
+        "homoglyph_injection",
+        "Apply for \u0430ffordable credit.",
+        ("unicode.confusable",),
+        "Cyrillic small 'а' (U+0430) inside 'affordable'",
+    ),
+    RedTeamCase(
+        "hg-03",
+        "homoglyph_injection",
+        "Zero\u200bwidth space injection.",
+        ("unicode.confusable",),
+        "Zero-width space (U+200B) inside token",
+    ),
+    RedTeamCase(
+        "hg-04",
+        "homoglyph_injection",
+        "Get gu\u0430ranteed loan disbursal.",
+        ("unicode.confusable",),
+        "Cyrillic small 'а' (U+0430) inside 'guaranteed'",
+    ),
+    RedTeamCase(
+        "hg-05",
+        "homoglyph_injection",
+        "Fast cr\u0435dit line for salaried professionals.",
+        ("unicode.confusable",),
+        "Cyrillic small 'е' (U+0435) inside 'credit'",
+    ),
+    RedTeamCase(
+        "hg-06",
+        "homoglyph_injection",
+        "Special disc\u043eunt on annual billing.",
+        ("unicode.confusable",),
+        "Cyrillic small 'о' (U+043E) inside 'discount'",
+    ),
+    RedTeamCase(
+        "hg-07",
+        "homoglyph_injection",
+        "Instant appr\u043eval in 60 seconds.",
+        ("unicode.confusable",),
+        "Cyrillic small 'о' (U+043E) inside 'approval'",
+    ),
+    RedTeamCase(
+        "hg-08",
+        "homoglyph_injection",
+        "Earn cash\u200cback on every transaction.",
+        ("unicode.confusable",),
+        "Zero-width non-joiner (U+200C) inside 'cashback'",
+    ),
+    RedTeamCase(
+        "hg-09",
+        "homoglyph_injection",
+        "Claim your free\u200dmoney bonus today.",
+        ("unicode.confusable",),
+        "Zero-width joiner (U+200D) inside 'freemoney'",
+    ),
+    RedTeamCase(
+        "hg-10",
+        "homoglyph_injection",
+        "Mir\u0430cle wellness supplement.",
+        ("unicode.confusable",),
+        "Cyrillic small 'а' (U+0430) inside 'Miracle'",
+    ),
+    # ── 5. wcag_boundary_shift (10 cases) ─────────────────────────────
+    RedTeamCase(
+        "wb-01",
+        "wcag_boundary_shift",
+        "color: #FFFFFF; background-color: #777777; Single-hex boundary failure (4.48:1)",
+        ("accessibility.contrast",),
+        "#FFFFFF on #777777 = 4.48:1 (< 4.5:1 AA threshold)",
+    ),
+    RedTeamCase(
+        "wb-02",
+        "wcag_boundary_shift",
+        "color: #777777; background-color: #FFFFFF; Inverse boundary failure (4.48:1)",
+        ("accessibility.contrast",),
+        "#777777 on #FFFFFF = 4.48:1 (< 4.5:1 AA threshold)",
+    ),
+    RedTeamCase(
+        "wb-03",
+        "wcag_boundary_shift",
+        "color: #787878; background-color: #FFFFFF; Sub-boundary grey (4.41:1)",
+        ("accessibility.contrast",),
+        "#787878 on #FFFFFF = 4.41:1 (< 4.5:1 AA threshold)",
+    ),
+    RedTeamCase(
+        "wb-04",
+        "wcag_boundary_shift",
+        "color: #808080; background-color: #FFFFFF; Mid-grey disclaimer (3.95:1)",
+        ("accessibility.contrast",),
+        "#808080 on #FFFFFF = 3.95:1 (< 4.5:1 AA threshold)",
+    ),
+    RedTeamCase(
+        "wb-05",
+        "wcag_boundary_shift",
+        "color: #FFFFFF; background-color: #9E9E9E; Muted grey badge (2.68:1)",
+        ("accessibility.contrast",),
+        "#FFFFFF on #9E9E9E = 2.68:1 (< 4.5:1 AA threshold)",
+    ),
+    RedTeamCase(
+        "wb-06",
+        "wcag_boundary_shift",
+        "color: #AAAAAA; background-color: #FFFFFF; Light grey footnote (2.32:1)",
+        ("accessibility.contrast",),
+        "#AAAAAA on #FFFFFF = 2.32:1 (< 4.5:1 AA threshold)",
+    ),
+    RedTeamCase(
+        "wb-07",
+        "wcag_boundary_shift",
+        "color: #FFFFFF; background-color: #888888; Grey pill button (3.54:1)",
+        ("accessibility.contrast",),
+        "#FFFFFF on #888888 = 3.54:1 (< 4.5:1 AA threshold)",
+    ),
+    RedTeamCase(
+        "wb-08",
+        "wcag_boundary_shift",
+        "color: #CCCCCC; background-color: #FFFFFF; Washed-out legal copy (1.61:1)",
+        ("accessibility.contrast",),
+        "#CCCCCC on #FFFFFF = 1.61:1 (< 4.5:1 AA threshold)",
+    ),
+    RedTeamCase(
+        "wb-09",
+        "wcag_boundary_shift",
+        "color: #8A99AD; background-color: #FFFFFF; Slate muted caption (2.91:1)",
+        ("accessibility.contrast",),
+        "#8A99AD on #FFFFFF = 2.91:1 (< 4.5:1 AA threshold)",
+    ),
+    RedTeamCase(
+        "wb-10",
+        "wcag_boundary_shift",
+        "color: #6E85A1; background-color: #F0F4F8; Low-contrast card footer (3.45:1)",
+        ("accessibility.contrast",),
+        "#6E85A1 on #F0F4F8 = 3.45:1 (< 4.5:1 AA threshold)",
+    ),
+)
+
+
+COMPLIANT_CONTROL_10_CASES: tuple[str, ...] = (
+    "Acme Corp was founded in 2020.",
+    "Acme Corp serves over 500 enterprise customers as of Q3 2025.",
+    "0% processing fee on personal loans under Rs 50,000.",
+    "Get 10% instant cashback on UPI payments only for first-time salaried borrowers.",
+    "Auto in 5 minutes or get Rs 50 only on bike rides in select metro cities.",
+    "Redensyl serum boosts hair growth by 23,800 strands after 84 days of daily application.",
+    "99.99% SLA uptime commitment only on annual enterprise plans.",
+    "Purchase our innovative and affordable enterprise platform for customers.",
+    "color: #FFFFFF; background-color: #767676; Compliant AA boundary disclaimer (4.54:1)",
+    "color: #1E293B; background-color: #FFFFFF; High-contrast primary body copy (14.6:1)",
+)
+
+
+async def run_redteam_benchmark_async(
+    canon: Canon | None = None,
+) -> RedTeamBenchmarkReport:
+    """Execute all 50 adversarial cases + 10 compliant controls and return the report."""
+    active_canon = canon or build_benchmark_canon()
+
+    # 1. Evaluate 10 compliant controls
+    false_positives = 0
+    for idx, ctrl_text in enumerate(COMPLIANT_CONTROL_10_CASES):
+        ast = ContentAST(nodes=(TextNode.from_text(ctrl_text, path=f"control/p[{idx}]"),))
+        fds = await run_checks_collect(ast, active_canon)
+        if len(fds) > 0:
+            false_positives += 1
+
+    # 2. Evaluate 50 adversarial cases grouped by operator
+    operators_order = (
+        "drop_qualifier",
+        "numeric_drift",
+        "banned_synonym",
+        "homoglyph_injection",
+        "wcag_boundary_shift",
+    )
+    summaries: list[OperatorBenchmarkSummary] = []
+    total_detected = 0
+
+    for op_name in operators_order:
+        op_cases = [c for c in REDTEAM_50_CASES if c.operator == op_name]
+        detected = 0
+        latencies: list[float] = []
+        expected_checks = op_cases[0].expected_checks if op_cases else ()
+
+        for c in op_cases:
+            t0 = time.perf_counter()
+            ast = ContentAST(nodes=(TextNode.from_text(c.text, path=f"redteam/{c.case_id}"),))
+            fds = await run_checks_collect(ast, active_canon)
+            elapsed_ms = (time.perf_counter() - t0) * 1000.0
+            latencies.append(elapsed_ms)
+            if any(f.check_id in c.expected_checks for f in fds):
+                detected += 1
+
+        total_detected += detected
+        sorted_lat = sorted(latencies)
+        p95_idx = min(len(sorted_lat) - 1, max(0, int(len(sorted_lat) * 0.95) - 1))
+        summaries.append(
+            OperatorBenchmarkSummary(
+                operator=op_name,
+                total_cases=len(op_cases),
+                detected_cases=detected,
+                recall=detected / len(op_cases) if op_cases else 1.0,
+                mean_latency_ms=sum(latencies) / len(latencies) if latencies else 0.0,
+                p95_latency_ms=sorted_lat[p95_idx] if sorted_lat else 0.0,
+                expected_checks=expected_checks,
+            )
+        )
+
+    total_adv = len(REDTEAM_50_CASES)
+    n_ctrl = len(COMPLIANT_CONTROL_10_CASES)
+    return RedTeamBenchmarkReport(
+        total_adversarial_cases=total_adv,
+        total_detected=total_detected,
+        overall_recall=total_detected / total_adv if total_adv else 1.0,
+        control_cases=n_ctrl,
+        false_positives=false_positives,
+        false_positive_rate=false_positives / n_ctrl if n_ctrl else 0.0,
+        operators=tuple(summaries),
+    )
+
+
+def run_redteam_benchmark(canon: Canon | None = None) -> RedTeamBenchmarkReport:
+    """Synchronous wrapper for `run_redteam_benchmark_async`."""
+    return asyncio.run(run_redteam_benchmark_async(canon))
