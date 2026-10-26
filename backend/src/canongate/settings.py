@@ -132,3 +132,6 @@ class Settings(_BaseSettings):
                         pass
                 env_overrides[field_name] = raw_val
         super().__init__(**{**env_overrides, **values})
+
+
+settings = Settings()

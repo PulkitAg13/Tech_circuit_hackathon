@@ -30,6 +30,7 @@ from pathlib import Path
 from canongate.engine.conformal import run_redteam_benchmark
 from canongate.ledger.certificate import GovernanceCertificate
 from canongate.mcp.server import run_stdio_server
+from canongate.settings import settings as _settings  # noqa: F401
 
 
 def _cmd_verify(cert_path: Path, *, output_json: bool = False) -> int:
