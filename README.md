@@ -13,19 +13,19 @@
 
 **The Zero-Hallucination, Multi-Tier Claim Verification Engine for Regulated Marketing, Clinical Disclosures, and Brand Canons.**
 
-[🌐 **Live Production App (Render)**](https://canongate-web.onrender.com/) • [📚 **Live API Swagger Docs**](https://canongate-api.onrender.com/docs) • [🚀 **GitHub Pages Demo**](https://meerpi.github.io/Tech_circuit_hackathon/) • [🏛️ **System Architecture PDF**](./CanonGate_Architecture_Diagram.pdf) • [📊 **Pitch Deck PDF**](./CanonGate_Pitch_Deck.pdf) • [📄 **Dataset Audit Report**](./starter_datasets_evaluation_report.md)
+[🌐 **Live Production App (Render)**](https://canongate-web.onrender.com/) • [📚 **Live API Swagger Docs**](https://canongate-api.onrender.com/docs) • [🚀 **GitHub Pages Demo**](https://meerpi.github.io/Tech_circuit_hackathon/) • [📄 **Dataset Audit Report**](./starter_datasets_evaluation_report.md) • [🏛️ **Architecture Decisions (ADRs)**](./docs/adr/)
 
 </div>
 
 ---
 
-## 📌 Executive Architecture & Pitch Deck
+## 📌 Key Documentation & Evaluation
 
 | Document | Format | Description | Direct Access |
 | :--- | :---: | :--- | :--- |
-| **System Architecture Diagram** | **PDF** | Complete technical architectural overview: Multimodal AST parsers, Z3 SMT constraint solving, MiniCheck NLI slot decomposition, and RFC 9162 Merkle tree ledger | [📥 Download Architecture PDF](./CanonGate_Architecture_Diagram.pdf)<br>[📂 View in `docs/`](./docs/CanonGate_Architecture_Diagram.pdf) |
-| **Executive Pitch Deck Presentation** | **PDF** | Product vision, market pain ($280B regulatory penalty exposure), automated pre-publication enforcement, business model & ROI analysis | [📥 Download Pitch Deck PDF](./CanonGate_Pitch_Deck.pdf)<br>[📂 View in `docs/`](./docs/CanonGate_Pitch_Deck.pdf) |
 | **Starter Datasets Evaluation Report** | **Markdown** | Formal multi-document verification across Delhivery Prospectus/Annual Report & India Macro Economic Survey/RBI/IMF corpora | [📄 View Evaluation Report](./starter_datasets_evaluation_report.md) |
+| **Architectural Decision Records (ADRs)** | **Markdown** | 5 formal ADRs documenting walking skeleton, layered import isolation, SQLite/Postgres ORM, tiered execution, and Merkle ledger | [🏛️ View ADR Directory](./docs/adr/) |
+| **Gap Analysis & Complete Scorecard** | **Markdown** | Exhaustive technical scorecard verifying all Must-Have & Should-Have hackathon deliverables | [📋 View Feature Scorecard](./gap_analysis.md) |
 
 ---
 
@@ -270,8 +270,6 @@ cd backend && uv run python scratch/run_dataset_evaluation.py
 ## 📂 Repository Structure
 
 ```
-├── CanonGate_Architecture_Diagram.pdf   # Complete System Architecture Diagram (PDF)
-├── CanonGate_Pitch_Deck.pdf              # Investor & Product Pitch Deck (PDF)
 ├── AGENTS.md                            # AI Agent architectural invariants & rules
 ├── gap_analysis.md                      # Feature completeness & technical scorecard
 ├── starter_datasets_evaluation_report.md# Formal audit of Delhivery & Macro datasets
@@ -294,14 +292,12 @@ cd backend && uv run python scratch/run_dataset_evaluation.py
 │   └── src/api/                         # Typed schema client & SSE scan reader
 ├── canons/                              # YAML brand rules (Acme Corp, Digital Lending, D2C Nutra)
 └── docs/                                # Architecture Decision Records (ADRs)
-    ├── adr/
-    │   ├── 0001-walking-skeleton.md
-    │   ├── 0002-layered-import-boundaries.md
-    │   ├── 0003-local-first-sqlite-with-postgres-compatibility.md
-    │   ├── 0004-tiered-governance-execution-pipeline.md
-    │   └── 0005-hash-chained-audit-and-merkle-transparency.md
-    ├── CanonGate_Architecture_Diagram.pdf
-    └── CanonGate_Pitch_Deck.pdf
+    └── adr/
+        ├── 0001-walking-skeleton.md
+        ├── 0002-layered-import-boundaries.md
+        ├── 0003-local-first-sqlite-with-postgres-compatibility.md
+        ├── 0004-tiered-governance-execution-pipeline.md
+        └── 0005-hash-chained-audit-and-merkle-transparency.md
 ```
 
 ---

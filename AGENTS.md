@@ -114,7 +114,5 @@ No registration needed — `__init_subclass__` handles it.
 
 ## Architectural & Design References
 
-- **Architecture Diagram (PDF):** [`CanonGate_Architecture_Diagram.pdf`](./CanonGate_Architecture_Diagram.pdf)
-- **Pitch Deck (PDF):** [`CanonGate_Pitch_Deck.pdf`](./CanonGate_Pitch_Deck.pdf)
 - **Architecture Decision Records:** [`docs/adr/`](./docs/adr/)
 - **Gap Analysis & Complete Feature Scorecard:** [`gap_analysis.md`](./gap_analysis.md)
