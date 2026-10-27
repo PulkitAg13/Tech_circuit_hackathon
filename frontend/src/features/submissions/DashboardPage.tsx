@@ -27,6 +27,26 @@ import {
 } from "../../api/client";
 import { useAuth } from "../auth/context";
 import { useNavigate, Link } from "react-router-dom";
+import {
+  ArrowRight,
+  BookOpen,
+  CheckCircle2,
+  FilePlus2,
+  FileText,
+  Filter,
+  GitPullRequest,
+  Image as ImageIcon,
+  Layers,
+  LogOut,
+  Plus,
+  Search,
+  ShieldCheck,
+  Sliders,
+  Sparkles,
+  Trash2,
+  Upload,
+  X,
+} from "lucide-react";
 
 const CUSTOM_PLAYBOOK_VALUE = "__custom__";
 
@@ -36,31 +56,59 @@ const ROLE_META: Record<
     label: string;
     shortLabel: string;
     stageOwned: string;
+    stageNum: number;
     responsibility: string;
   }
 > = {
   creator: {
     label: "Creator (Marketing / Agency)",
     shortLabel: "Creator",
-    stageOwned: "Stage 1 · Pre-Flight & Remediation",
+    stageOwned: "Stage 01 · Pre-Flight & Remediation",
+    stageNum: 1,
     responsibility:
       "Uploads campaign copy, documents, and banners, runs pre-flight checks, resolves blocking issues, and documents context on warning overrides.",
   },
   reviewer: {
     label: "Brand Manager (Playbook Owner)",
     shortLabel: "Brand Manager",
-    stageOwned: "Stage 2 · Brand & Playbook Review",
+    stageOwned: "Stage 02 · Brand & Playbook Review",
+    stageNum: 2,
     responsibility:
       "Manages brand playbooks and rule thresholds, reviews revision history and warning overrides, and approves brand compliance.",
   },
   admin: {
     label: "Authorised Legal Reviewer",
     shortLabel: "Legal Sign-Off",
-    stageOwned: "Stage 3 · Regulatory & Legal Sign-Off",
+    stageOwned: "Stage 03 · Regulatory & Legal Sign-Off",
+    stageNum: 3,
     responsibility:
       "Reviews high-risk claims, required disclosures, and overrides to issue final sign-off and generate the release certificate.",
   },
 };
+
+const QUICK_SAMPLE_PRESETS = [
+  {
+    label: "RBI Digital Lending Ad",
+    canonId: "indian-digital-lending",
+    title: "Acme QuickLoan Diwali Festival Campaign",
+    content:
+      "Celebrate this festive season with Acme QuickLoan! Get 0% interest on all personal loans with guaranteed instant approval in 60 seconds.\n\nPrincipal: ₹50,000 | Processing Fee: ₹1,500 | Total Interest: ₹3,500 | Tenure: 6 Months | Stated APR: 14.00%.",
+  },
+  {
+    label: "ASCI Nutraceutical Launch",
+    canonId: "indian-d2c-nutra",
+    title: "VitalGlow Marine Peptides Instagram Launch",
+    content:
+      "Transform your skin overnight: VitalGlow Marine Peptides are clinically proven to permanently reverse skin aging in 7 days with 100% doctor-endorsed zero side effects.",
+  },
+  {
+    label: "Enterprise Cloud Keynote",
+    canonId: "acme-corp",
+    title: "Acme Cloud Shield Enterprise Launch Copy",
+    content:
+      "Deploy Acme Cloud Shield for 100% unhackable zero-downtime infrastructure backed by unlimited SLA payouts on every tier across 24 global regions.",
+  },
+] as const;
 
 function getStageMeta(status: string) {
   switch (status) {
@@ -116,10 +164,16 @@ export function DashboardPage() {
   const [activeTab, setActiveTab] = useState<"submissions" | "governance">(
     "submissions",
   );
+  const [govSubTab, setGovSubTab] = useState<
+    "rules" | "friction" | "calibrate" | "compile"
+  >("rules");
+
   const [submissions, setSubmissions] = useState<Submission[]>([]);
   const [canons, setCanons] = useState<CanonSummary[]>([]);
   const [loading, setLoading] = useState(true);
   const [stageFilter, setStageFilter] = useState<string>("all");
+  const [searchQuery, setSearchQuery] = useState<string>("");
+  const [ruleSearchQuery, setRuleSearchQuery] = useState<string>("");
 
   // New submission form — automatically shown when queue is empty
   const [showForm, setShowForm] = useState(false);
@@ -170,7 +224,7 @@ export function DashboardPage() {
   const [calibrationResult, setCalibrationResult] =
     useState<CalibrateCanonRuleResponse | null>(null);
 
-  // Playbook Studio Import state (Tab 2)
+  // Playbook Studio Import state (Tab 4)
   const [compileId, setCompileId] = useState<string>("");
   const [compileText, setCompileText] = useState<string>("");
   const [compileAttachments, setCompileAttachments] = useState<
@@ -414,6 +468,7 @@ export function DashboardPage() {
       setStudioTriggers([]);
       await refresh();
       handleSelectGovCanon(res.canon_id);
+      setGovSubTab("rules");
     } catch (err) {
       setError((err as Error).message);
     } finally {
@@ -435,7 +490,6 @@ export function DashboardPage() {
     try {
       let targetCanonId = selectedCanon;
 
-      // If the user chose "+ Upload / Define Custom Company Guidelines & Facts" inline:
       if (selectedCanon === CUSTOM_PLAYBOOK_VALUE) {
         const cleanId =
           inlineCanonId
@@ -481,7 +535,6 @@ export function DashboardPage() {
         [],
         uploadedAttachments,
       );
-      // Automatically run pre-flight scan before opening Review Studio
       const apiBase = getApiBase();
       await fetch(`${apiBase}/submissions/${sub.id}/scan?alpha=0.1`, {
         method: "POST",
@@ -567,6 +620,15 @@ export function DashboardPage() {
     }
   }
 
+  function applySamplePreset(preset: (typeof QUICK_SAMPLE_PRESETS)[number]) {
+    setTitle(preset.title);
+    setRawContent(preset.content);
+    const matchingCanon = canons.find((c) => c.id === preset.canonId);
+    if (matchingCanon) {
+      setSelectedCanon(matchingCanon.id);
+    }
+  }
+
   const activeCanonSummary = canons.find((c) => c.id === govCanonId);
   const currentRoleMeta = ROLE_META[role || "creator"] ?? ROLE_META.creator;
   const selectedCalRule = activeCanonSummary?.rules?.find(
@@ -582,1018 +644,1000 @@ export function DashboardPage() {
     stage4: submissions.filter((s) => s.status === "published").length,
   };
 
-  const filteredSubmissions = submissions.filter((s) => {
-    if (stageFilter === "all") return true;
-    if (stageFilter === "mine") {
-      if (role === "creator")
-        return s.status === "draft" || s.status === "changes_requested";
-      if (role === "reviewer") return s.status === "in_review";
-      if (role === "admin") return s.status === "approved";
-      return true;
-    }
-    if (stageFilter === "stage1")
+  const myActionCount = submissions.filter((s) => {
+    if (role === "creator")
       return s.status === "draft" || s.status === "changes_requested";
-    if (stageFilter === "stage2") return s.status === "in_review";
-    if (stageFilter === "stage3") return s.status === "approved";
-    if (stageFilter === "stage4") return s.status === "published";
+    if (role === "reviewer") return s.status === "in_review";
+    if (role === "admin") return s.status === "approved";
+    return false;
+  }).length;
+
+  const filteredSubmissions = submissions.filter((s) => {
+    if (stageFilter === "mine") {
+      if (role === "creator" && s.status !== "draft" && s.status !== "changes_requested")
+        return false;
+      if (role === "reviewer" && s.status !== "in_review") return false;
+      if (role === "admin" && s.status !== "approved") return false;
+    } else if (stageFilter === "stage1") {
+      if (s.status !== "draft" && s.status !== "changes_requested") return false;
+    } else if (stageFilter === "stage2") {
+      if (s.status !== "in_review") return false;
+    } else if (stageFilter === "stage3") {
+      if (s.status !== "approved") return false;
+    } else if (stageFilter === "stage4") {
+      if (s.status !== "published") return false;
+    }
+
+    if (searchQuery.trim()) {
+      const q = searchQuery.toLowerCase();
+      const matchTitle = s.title.toLowerCase().includes(q);
+      const matchCanon = s.canon_id.toLowerCase().includes(q);
+      const matchId = `#${s.id}`.includes(q) || String(s.id) === q;
+      return matchTitle || matchCanon || matchId;
+    }
     return true;
   });
 
-  return (
-    <div className="dashboard-page">
-      {/* Console Header */}
-      <header className="console-header-curved">
-        <div className="header-left">
-          <Link
-            to="/"
-            style={{
-              textDecoration: "none",
-              display: "flex",
-              alignItems: "center",
-              gap: "0.55rem",
-            }}
-          >
-            <span className="logo-icon">⛨</span>
-            <h1>CanonGate</h1>
-          </Link>
-          <nav className="console-nav-tabs" aria-label="Workspace Views">
-            <button
-              type="button"
-              className={`nav-tab-btn ${
-                activeTab === "submissions" ? "active" : ""
-              }`}
-              onClick={() => setActiveTab("submissions")}
-            >
-              Campaign Queue ({submissions.length})
-            </button>
-            <button
-              type="button"
-              className={`nav-tab-btn ${
-                activeTab === "governance" ? "active" : ""
-              }`}
-              onClick={() => setActiveTab("governance")}
-            >
-              Brand Playbooks, Insights &amp; Rule Studio
-            </button>
-          </nav>
-        </div>
+  const filteredRules = (activeCanonSummary?.rules ?? []).filter((r) => {
+    if (!ruleSearchQuery.trim()) return true;
+    const q = ruleSearchQuery.toLowerCase();
+    return (
+      r.id.toLowerCase().includes(q) ||
+      r.rule_type.toLowerCase().includes(q) ||
+      r.label.toLowerCase().includes(q) ||
+      (r.source_text ?? "").toLowerCase().includes(q)
+    );
+  });
 
-        <div className="header-right">
-          {/* Authenticated User Identity & Locked RBAC Role Badge */}
-          <div
-            className="user-identity-pill"
-            title={`Authenticated as ${displayName || username} (@${username}) — Assigned Role: ${currentRoleMeta.label}`}
-          >
-            <span className="user-identity-avatar">
-              {(displayName || username || "U").slice(0, 1).toUpperCase()}
-            </span>
-            <div className="user-identity-text">
-              <span className="user-identity-name">
-                {displayName || username}
+  return (
+    <div className="cg-app-shell">
+      {/* ── Architectural Application Command Bar ── */}
+      <header className="cg-app-topbar">
+        <div className="cg-app-topbar-inner">
+          <div className="cg-app-topbar-left">
+            <Link to="/" className="cg-brand">
+              <span className="cg-brand-mark" aria-hidden="true">
+                <ShieldCheck size={17} strokeWidth={2.2} />
               </span>
-              <span className="user-identity-handle">@{username}</span>
-            </div>
+              <span className="cg-brand-name">CanonGate</span>
+              <span className="cg-brand-version">Console</span>
+            </Link>
+
+            <nav className="cg-workspace-switcher" aria-label="Workspace Views">
+              <button
+                type="button"
+                className={`cg-ws-tab ${
+                  activeTab === "submissions" ? "active" : ""
+                }`}
+                onClick={() => setActiveTab("submissions")}
+              >
+                <Layers size={14} />
+                <span>Campaign Queue</span>
+                <span className="cg-ws-count">{submissions.length}</span>
+              </button>
+              <button
+                type="button"
+                className={`cg-ws-tab ${
+                  activeTab === "governance" ? "active" : ""
+                }`}
+                onClick={() => setActiveTab("governance")}
+              >
+                <BookOpen size={14} />
+                <span>Playbooks &amp; Rule Studio</span>
+                <span className="cg-ws-count">{canons.length}</span>
+              </button>
+            </nav>
           </div>
 
-          <label
-            className="status-badge status-approved"
-            style={{
-              padding: "0.26rem 0.68rem",
-              fontSize: "0.76rem",
-              letterSpacing: "0.02em",
-              display: "inline-flex",
-              alignItems: "center",
-              gap: "0.35rem",
-            }}
-            title="Switch active RBAC role in-session (POST /api/auth/switch-role)"
-          >
-            <span>🔒 Role:</span>
-            <select
-              aria-label="Active Governance Role"
-              value={role || "creator"}
-              onChange={(e) => {
-                void switchRole(e.target.value);
-              }}
-              style={{
-                background: "transparent",
-                border: "none",
-                color: "inherit",
-                fontWeight: 700,
-                fontSize: "0.76rem",
-                cursor: "pointer",
-              }}
+          <div className="cg-app-topbar-right">
+            {/* In-Session RBAC Role Switcher */}
+            <label
+              className="cg-role-Select-pill"
+              title="Switch active RBAC role in-session (POST /api/auth/switch-role)"
             >
-              <option value="creator">Creator (Stage 1)</option>
-              <option value="reviewer">Brand Manager (Stage 2)</option>
-              <option value="admin">Legal Reviewer (Stage 3)</option>
-            </select>
-          </label>
+              <span className="cg-role-dot" />
+              <span className="cg-role-select-prefix">Role:</span>
+              <select
+                aria-label="Active Governance Role"
+                value={role || "creator"}
+                onChange={(e) => {
+                  void switchRole(e.target.value);
+                }}
+              >
+                <option value="creator">Stage 1 · Creator</option>
+                <option value="reviewer">Stage 2 · Brand Manager</option>
+                <option value="admin">Stage 3 · Legal Reviewer</option>
+              </select>
+            </label>
 
-          <button
-            type="button"
-            onClick={() => {
-              logout();
-              navigate("/login");
-            }}
-            className="btn-ghost"
-            title="Sign out or switch to another team member's role account"
-          >
-            Switch Account / Sign Out
-          </button>
+            {/* Authenticated Identity Pill */}
+            <div
+              className="cg-user-pill"
+              title={`Authenticated as ${displayName || username} (@${username})`}
+            >
+              <span className="cg-user-avatar">
+                {(displayName || username || "U").slice(0, 1).toUpperCase()}
+              </span>
+              <span className="cg-user-handle">@{username}</span>
+            </div>
+
+            <button
+              type="button"
+              onClick={() => {
+                logout();
+                navigate("/login");
+              }}
+              className="cg-btn cg-btn-ghost cg-btn-sm"
+              title="Sign out or switch account"
+            >
+              <LogOut size={14} />
+              <span>Sign Out</span>
+            </button>
+          </div>
         </div>
       </header>
 
-      <main className="dashboard-main">
+      <main className="cg-app-main">
         {error && (
-          <div className="error-banner" role="alert">
+          <div className="cg-alert-banner" role="alert">
             <span>{error}</span>
             <button
               type="button"
-              className="btn-ghost"
-              style={{ padding: "0.15rem 0.5rem", fontSize: "0.75rem" }}
+              className="cg-btn cg-btn-ghost cg-btn-sm"
               onClick={() => setError(null)}
             >
-              Dismiss
+              <X size={14} />
+              <span>Dismiss</span>
             </button>
           </div>
         )}
 
         {activeTab === "submissions" ? (
-          <>
-            {/* 4-Stage Collaborative Governance Pipeline Banner */}
-            <section
-              className="workflow-pipeline-banner"
-              aria-label="4-Stage Governance Workflow"
-            >
-              <div className="workflow-pipeline-header">
-                <div>
-                  <span className="workflow-pipeline-eyebrow">
-                    4-STAGE COLLABORATIVE GOVERNANCE WORKFLOW
+          <div key="tab-submissions" className="cg-animate-swap">
+            {/* ── Role Context Header & Primary Actions ── */}
+            <section className="cg-console-hero-bar">
+              <div className="cg-console-hero-left">
+                <div className="cg-console-eyebrow">
+                  <span className="cg-role-stage-tag">
+                    {currentRoleMeta.stageOwned}
                   </span>
-                  <h2 className="workflow-pipeline-title">
-                    {currentRoleMeta.label} —{" "}
-                    <span className="workflow-pipeline-highlight">
-                      {currentRoleMeta.stageOwned}
+                  <span>Active Role: {currentRoleMeta.label}</span>
+                  {myActionCount > 0 && (
+                    <span className="cg-action-needed-pill">
+                      ● {myActionCount} awaiting your action
                     </span>
-                  </h2>
-                  <p className="workflow-pipeline-subtitle">
-                    {currentRoleMeta.responsibility}
-                  </p>
+                  )}
                 </div>
-                <div className="toolbar-actions-group">
-                  <button
-                    type="button"
-                    className="btn-secondary"
-                    onClick={() => {
-                      setShowForm(true);
-                      setSelectedCanon(CUSTOM_PLAYBOOK_VALUE);
-                    }}
-                  >
-                    📄 Upload Company Guidelines / Facts
-                  </button>
-                  <button
-                    type="button"
-                    className="btn-primary"
-                    onClick={() => setShowForm(!showForm)}
-                  >
-                    {showForm ? "Hide Submission Form" : "+ New Campaign Bundle"}
-                  </button>
-                </div>
+                <h2 className="cg-console-title">
+                  Pre-Publication Campaign Triage &amp; Governance Queue
+                </h2>
+                <p className="cg-console-subtitle">
+                  {currentRoleMeta.responsibility}
+                </p>
               </div>
 
-              <div className="workflow-stage-cards">
+              <div className="cg-console-hero-actions">
                 <button
                   type="button"
-                  className={`workflow-stage-pill ${
-                    stageFilter === "stage1" ? "selected" : ""
-                  } ${role === "creator" ? "owned-by-me" : ""}`}
-                  onClick={() =>
-                    setStageFilter(stageFilter === "stage1" ? "all" : "stage1")
-                  }
+                  className="cg-btn cg-btn-secondary"
+                  onClick={() => {
+                    setShowForm(true);
+                    setSelectedCanon(CUSTOM_PLAYBOOK_VALUE);
+                  }}
                 >
-                  <div className="stage-pill-top">
-                    <span className="stage-pill-num">STAGE 1</span>
-                    <span className="stage-pill-count">
-                      {stageCounts.stage1}
-                    </span>
-                  </div>
-                  <div className="stage-pill-name">
-                    Creator Pre-Flight &amp; Fixes
-                  </div>
-                  <div className="stage-pill-owner">
-                    Owner: Creator · Fix Blockers &amp; Document Overrides
-                  </div>
+                  <Upload size={14} />
+                  <span>Onboard Company Guidelines</span>
                 </button>
-
                 <button
                   type="button"
-                  className={`workflow-stage-pill ${
-                    stageFilter === "stage2" ? "selected" : ""
-                  } ${role === "reviewer" ? "owned-by-me" : ""}`}
-                  onClick={() =>
-                    setStageFilter(stageFilter === "stage2" ? "all" : "stage2")
-                  }
+                  className="cg-btn cg-btn-primary"
+                  onClick={() => setShowForm(!showForm)}
                 >
-                  <div className="stage-pill-top">
-                    <span className="stage-pill-num">STAGE 2</span>
-                    <span className="stage-pill-count">
-                      {stageCounts.stage2}
-                    </span>
-                  </div>
-                  <div className="stage-pill-name">Brand Manager Review</div>
-                  <div className="stage-pill-owner">
-                    Owner: Brand Manager · Verify Diffs &amp; Approve
-                  </div>
-                </button>
-
-                <button
-                  type="button"
-                  className={`workflow-stage-pill ${
-                    stageFilter === "stage3" ? "selected" : ""
-                  } ${role === "admin" ? "owned-by-me" : ""}`}
-                  onClick={() =>
-                    setStageFilter(stageFilter === "stage3" ? "all" : "stage3")
-                  }
-                >
-                  <div className="stage-pill-top">
-                    <span className="stage-pill-num">STAGE 3</span>
-                    <span className="stage-pill-count">
-                      {stageCounts.stage3}
-                    </span>
-                  </div>
-                  <div className="stage-pill-name">
-                    Authorised Legal Sign-Off
-                  </div>
-                  <div className="stage-pill-owner">
-                    Owner: Legal Reviewer · Claim Sign-Off &amp; Release
-                  </div>
-                </button>
-
-                <button
-                  type="button"
-                  className={`workflow-stage-pill ${
-                    stageFilter === "stage4" ? "selected" : ""
-                  }`}
-                  onClick={() =>
-                    setStageFilter(stageFilter === "stage4" ? "all" : "stage4")
-                  }
-                >
-                  <div className="stage-pill-top">
-                    <span className="stage-pill-num">STAGE 4</span>
-                    <span className="stage-pill-count">
-                      {stageCounts.stage4}
-                    </span>
-                  </div>
-                  <div className="stage-pill-name">Approved &amp; Released</div>
-                  <div className="stage-pill-owner">
-                    Signed Audit Certificate &amp; Provenance Ready
-                  </div>
+                  {showForm ? (
+                    <>
+                      <X size={15} />
+                      <span>Close Composer</span>
+                    </>
+                  ) : (
+                    <>
+                      <Plus size={15} />
+                      <span>New Campaign Bundle</span>
+                    </>
+                  )}
                 </button>
               </div>
             </section>
 
-            {/* New Campaign Submission Form */}
+            {/* ── 4-Stage Interactive Pipeline Filter Strip ── */}
+            <section
+              className="cg-pipeline-strip"
+              aria-label="4-Stage Governance Workflow"
+            >
+              {[
+                {
+                  key: "stage1",
+                  num: "01",
+                  title: "Creator Pre-Flight",
+                  sub: "Draft & Surgical Fixes",
+                  count: stageCounts.stage1,
+                  owned: role === "creator",
+                },
+                {
+                  key: "stage2",
+                  num: "02",
+                  title: "Brand Review",
+                  sub: "Diffs & Overrides",
+                  count: stageCounts.stage2,
+                  owned: role === "reviewer",
+                },
+                {
+                  key: "stage3",
+                  num: "03",
+                  title: "Legal Sign-Off",
+                  sub: "Statutory & KFS Claims",
+                  count: stageCounts.stage3,
+                  owned: role === "admin",
+                },
+                {
+                  key: "stage4",
+                  num: "04",
+                  title: "Released & Sealed",
+                  sub: "Merkle + C2PA Cert",
+                  count: stageCounts.stage4,
+                  owned: false,
+                },
+              ].map((st) => {
+                const isSelected = stageFilter === st.key;
+                return (
+                  <button
+                    key={st.key}
+                    type="button"
+                    className={`cg-pipeline-card ${
+                      isSelected ? "selected" : ""
+                    } ${st.owned ? "owned-by-me" : ""}`}
+                    onClick={() =>
+                      setStageFilter(isSelected ? "all" : st.key)
+                    }
+                  >
+                    <div className="cg-pipeline-card-top">
+                      <span className="cg-pipeline-step-tag">
+                        STAGE {st.num}
+                      </span>
+                      {st.owned && (
+                        <span className="cg-pipeline-your-stage">
+                          YOUR STAGE
+                        </span>
+                      )}
+                      <span className="cg-pipeline-count">{st.count}</span>
+                    </div>
+                    <div className="cg-pipeline-name">{st.title}</div>
+                    <div className="cg-pipeline-sub">{st.sub}</div>
+                  </button>
+                );
+              })}
+            </section>
+
+            {/* ── Campaign Bundle Composer (Collapsible / Drawer Card) ── */}
             {showForm && (
-              <form className="submission-form card" onSubmit={handleCreate}>
-                <div className="gov-panel-header">
+              <form
+                className="cg-composer-card cg-animate-swap"
+                onSubmit={handleCreate}
+              >
+                <div className="cg-composer-header">
                   <div>
-                    <h3>Submit Campaign Content for Pre-Publication Review</h3>
-                    <p className="gov-panel-desc" style={{ marginBottom: 0 }}>
-                      Check your marketing copy, documents, or promotional
-                      banners against an existing Brand Playbook — or upload
-                      your company&apos;s own brand guidelines, product fact
-                      sheets, and logos right below for CanonGate to parse.
-                    </p>
+                    <span className="cg-mono-label">
+                      MULTI-MODAL BUNDLE COMPOSER · PIPELINE B PRE-FLIGHT
+                    </span>
+                    <h3>Submit Campaign Content for Pre-Publication Audit</h3>
                   </div>
-                  <span
-                    className="tier-badge"
-                    title="All documents and images are parsed locally inside the container with zero external data leaks"
-                  >
-                    🔒 Confidential Local Parsing · DPDP Protected
-                  </span>
-                </div>
-
-                <div className="form-row" style={{ marginTop: "0.75rem" }}>
-                  <div className="form-group flex-1">
-                    <label htmlFor="sub-title">Campaign Title</label>
-                    <input
-                      id="sub-title"
-                      type="text"
-                      value={title}
-                      onChange={(e) => setTitle(e.target.value)}
-                      placeholder="e.g. Q3 Product Launch Landing Page & Banner"
-                      required
-                    />
-                  </div>
-                  <div className="form-group flex-1">
-                    <div
-                      style={{
-                        display: "flex",
-                        justifyContent: "space-between",
-                        alignItems: "center",
-                      }}
-                    >
-                      <label htmlFor="sub-canon">Governing Brand Playbook</label>
+                  <div className="cg-composer-presets">
+                    <span className="cg-mono-label">1-Click Sample Fill:</span>
+                    {QUICK_SAMPLE_PRESETS.map((preset) => (
                       <button
+                        key={preset.label}
                         type="button"
-                        className="btn-ghost"
-                        style={{
-                          padding: "0.1rem 0.5rem",
-                          fontSize: "0.73rem",
-                          color: "#0f766e",
-                          fontWeight: 700,
-                        }}
-                        onClick={() =>
-                          setSelectedCanon(
-                            selectedCanon === CUSTOM_PLAYBOOK_VALUE
-                              ? canons[0]?.id || "indian-digital-lending"
-                              : CUSTOM_PLAYBOOK_VALUE,
-                          )
-                        }
+                        className="cg-preset-chip"
+                        onClick={() => applySamplePreset(preset)}
                       >
-                        {selectedCanon === CUSTOM_PLAYBOOK_VALUE
-                          ? "← Use Existing Playbook"
-                          : "+ Parse Custom Company Docs / Rules"}
+                        <Sparkles size={12} />
+                        <span>{preset.label}</span>
                       </button>
-                    </div>
-                    <select
-                      id="sub-canon"
-                      value={selectedCanon}
-                      onChange={(e) => setSelectedCanon(e.target.value)}
-                    >
-                      {canons.map((c) => (
-                        <option key={c.id} value={c.id}>
-                          {c.id} (v{c.version} — {c.term_count} terms,{" "}
-                          {c.fact_count} approved facts, {c.color_count} brand
-                          colours)
-                        </option>
-                      ))}
-                      <option value={CUSTOM_PLAYBOOK_VALUE}>
-                        + Upload / Define Custom Company Guidelines, Facts &amp;
-                        Logos (Parse Your Own Docs)
-                      </option>
-                    </select>
+                    ))}
                   </div>
                 </div>
 
-                {/* Inline Company Document & Guideline Onboarding Box */}
-                {selectedCanon === CUSTOM_PLAYBOOK_VALUE && (
-                  <div
-                    className="card"
-                    style={{
-                      background: "rgba(15, 118, 110, 0.04)",
-                      border: "1.5px solid rgba(15, 118, 110, 0.32)",
-                      padding: "1.1rem 1.25rem",
-                      marginBottom: "1rem",
-                      borderRadius: "14px",
-                    }}
-                  >
-                    <div
-                      className="gov-panel-header"
-                      style={{ marginBottom: "0.65rem" }}
-                    >
-                      <div>
-                        <h4
-                          style={{
-                            margin: 0,
-                            fontSize: "0.96rem",
-                            color: "#0f766e",
-                          }}
-                        >
-                          📄 Parse Your Company&apos;s Own Brand Guidelines,
-                          Approved Facts &amp; Assets
-                        </h4>
-                        <p
-                          className="gov-panel-desc"
-                          style={{ marginBottom: 0, fontSize: "0.8rem" }}
-                        >
-                          Upload your company&apos;s brand book (`.pdf`,
-                          `.docx`, `.md`, `.txt`), product/KFS fact sheets
-                          (`.csv`, `.json`, `.yaml`), or reference logo (`.png`,
-                          `.jpg`), or enter your rules directly. CanonGate will
-                          compile them behind Guards 1–3 and immediately check
-                          your campaign against them.
-                        </p>
-                      </div>
-                    </div>
-
-                    <div className="form-row">
-                      <div className="form-group flex-1">
-                        <label htmlFor="inline-canon-id">
-                          Company / Brand Playbook Identifier
-                        </label>
-                        <input
-                          id="inline-canon-id"
-                          type="text"
-                          value={inlineCanonId}
-                          onChange={(e) => setInlineCanonId(e.target.value)}
-                          placeholder="e.g. my-company-brand-v1"
-                          required
-                        />
-                      </div>
-                      <div className="form-group flex-1">
-                        <label htmlFor="inline-canon-files">
-                          Upload Company Guidelines, Fact Sheets or Reference
-                          Logos (`.pdf`, `.docx`, `.csv`, `.json`, `.yaml`,
-                          `.md`, `.png`, `.jpg`)
-                        </label>
-                        <input
-                          id="inline-canon-files"
-                          type="file"
-                          multiple
-                          accept=".pdf,.docx,.csv,.json,.yaml,.yml,.md,.txt,.html,.png,.jpg,.jpeg,.webp"
-                          onChange={(e) =>
-                            handleInlineCanonFileSelect(e.target.files)
-                          }
-                        />
-                        {inlineCanonFiles.length > 0 && (
-                          <div className="uploaded-files-pills">
-                            {inlineCanonFiles.map((att, idx) => (
-                              <span
-                                key={`${att.filename}-${idx}`}
-                                className="file-pill"
-                              >
-                                📄 {att.filename}
-                                <button
-                                  type="button"
-                                  style={{
-                                    marginLeft: "0.4rem",
-                                    border: "none",
-                                    background: "transparent",
-                                    cursor: "pointer",
-                                    color: "inherit",
-                                    fontWeight: 800,
-                                  }}
-                                  onClick={() =>
-                                    setInlineCanonFiles((prev) =>
-                                      prev.filter((_, i) => i !== idx),
-                                    )
-                                  }
-                                >
-                                  ✕
-                                </button>
-                              </span>
-                            ))}
-                          </div>
-                        )}
-                      </div>
-                    </div>
-
-                    <div className="form-group" style={{ marginBottom: "0.75rem" }}>
-                      <label htmlFor="inline-canon-text">
-                        Paste Company Brand Guidelines, Approved Product Facts,
-                        Disclaimers &amp; Hex Colours
-                      </label>
-                      <textarea
-                        id="inline-canon-text"
-                        rows={4}
-                        value={inlineCanonText}
-                        onChange={(e) => setInlineCanonText(e.target.value)}
-                        placeholder={
-                          "Example company guidelines & facts to parse:\n" +
-                          "• Never use 'guaranteed returns', prefer 'historical target yield'.\n" +
-                          "• Approved Fact: 0% processing fee on loans under Rs 50,000 valid until 2026-12-31.\n" +
-                          "• Trigger: 'loan' -> Disclaimer: 'Subject to credit assessment and RBI KFS terms.'\n" +
-                          "• Brand Navy: #0F172A, Accent Teal: #0D9488. Max sentence length: 26 words."
-                        }
+                <div className="cg-composer-body">
+                  <div className="cg-field-row-2">
+                    <div className="cg-field-group">
+                      <label htmlFor="sub-title">Campaign Bundle Title</label>
+                      <input
+                        id="sub-title"
+                        type="text"
+                        value={title}
+                        onChange={(e) => setTitle(e.target.value)}
+                        placeholder="e.g. Q3 Product Launch Landing Page & Banner"
+                        required
                       />
                     </div>
 
-                    {/* Quick Structured Rule Builders for Company Onboarding */}
-                    <div
-                      style={{
-                        display: "flex",
-                        flexWrap: "wrap",
-                        gap: "0.5rem",
-                        marginBottom: "0.5rem",
-                      }}
-                    >
-                      <button
-                        type="button"
-                        className="btn-secondary"
-                        style={{ fontSize: "0.76rem", padding: "0.3rem 0.65rem" }}
-                        onClick={() =>
-                          setInlineTerms((prev) => [
-                            ...prev,
-                            { pattern_text: "", preferred: "", severity: 60 },
-                          ])
-                        }
+                    <div className="cg-field-group">
+                      <div className="cg-field-label-row">
+                        <label htmlFor="sub-canon">
+                          Governing Brand Playbook
+                        </label>
+                        <button
+                          type="button"
+                          className="cg-link-btn"
+                          onClick={() =>
+                            setSelectedCanon(
+                              selectedCanon === CUSTOM_PLAYBOOK_VALUE
+                                ? canons[0]?.id || "indian-digital-lending"
+                                : CUSTOM_PLAYBOOK_VALUE,
+                            )
+                          }
+                        >
+                          {selectedCanon === CUSTOM_PLAYBOOK_VALUE
+                            ? "← Use Existing Playbook"
+                            : "+ Parse Custom Company Docs / Rules"}
+                        </button>
+                      </div>
+                      <select
+                        id="sub-canon"
+                        value={selectedCanon}
+                        onChange={(e) => setSelectedCanon(e.target.value)}
                       >
-                        + Add Banned/Preferred Term
-                      </button>
-                      <button
-                        type="button"
-                        className="btn-secondary"
-                        style={{ fontSize: "0.76rem", padding: "0.3rem 0.65rem" }}
-                        onClick={() =>
-                          setInlineFacts((prev) => [
-                            ...prev,
-                            { text: "", conditions: [], valid_until: "" },
-                          ])
-                        }
-                      >
-                        + Add Approved Fact / Claim
-                      </button>
-                      <button
-                        type="button"
-                        className="btn-secondary"
-                        style={{ fontSize: "0.76rem", padding: "0.3rem 0.65rem" }}
-                        onClick={() =>
-                          setInlineColors((prev) => [
-                            ...prev,
-                            { name: "", hex: "#0F766E", max_delta_e: 3.5 },
-                          ])
-                        }
-                      >
-                        + Add Brand Colour Hex
-                      </button>
-                      <button
-                        type="button"
-                        className="btn-secondary"
-                        style={{ fontSize: "0.76rem", padding: "0.3rem 0.65rem" }}
-                        onClick={() =>
-                          setInlineTriggers((prev) => [
-                            ...prev,
-                            {
-                              trigger_pattern: "",
-                              required_disclaimer_text: "",
-                              severity: 70,
-                            },
-                          ])
-                        }
-                      >
-                        + Add Required Disclaimer Trigger
-                      </button>
+                        {canons.map((c) => (
+                          <option key={c.id} value={c.id}>
+                            {c.id} (v{c.version} — {c.term_count} terms,{" "}
+                            {c.fact_count} facts, {c.color_count} colours)
+                          </option>
+                        ))}
+                        <option value={CUSTOM_PLAYBOOK_VALUE}>
+                          + Upload / Define Custom Company Guidelines, Facts
+                          &amp; Logos
+                        </option>
+                      </select>
                     </div>
-
-                    {inlineTerms.map((t, idx) => (
-                      <div
-                        key={`it-${idx}`}
-                        className="form-row"
-                        style={{ marginTop: "0.4rem", alignItems: "center" }}
-                      >
-                        <input
-                          type="text"
-                          placeholder="Banned term (e.g. risk-free)"
-                          value={t.pattern_text}
-                          onChange={(e) =>
-                            setInlineTerms((prev) =>
-                              prev.map((item, i) =>
-                                i === idx
-                                  ? { ...item, pattern_text: e.target.value }
-                                  : item,
-                              ),
-                            )
-                          }
-                        />
-                        <input
-                          type="text"
-                          placeholder="Preferred replacement (e.g. capital-protected)"
-                          value={t.preferred}
-                          onChange={(e) =>
-                            setInlineTerms((prev) =>
-                              prev.map((item, i) =>
-                                i === idx
-                                  ? { ...item, preferred: e.target.value }
-                                  : item,
-                              ),
-                            )
-                          }
-                        />
-                        <button
-                          type="button"
-                          className="btn-ghost"
-                          onClick={() =>
-                            setInlineTerms((prev) =>
-                              prev.filter((_, i) => i !== idx),
-                            )
-                          }
-                        >
-                          ✕
-                        </button>
-                      </div>
-                    ))}
-
-                    {inlineFacts.map((f, idx) => (
-                      <div
-                        key={`if-${idx}`}
-                        className="form-row"
-                        style={{ marginTop: "0.4rem", alignItems: "center" }}
-                      >
-                        <input
-                          type="text"
-                          placeholder="Approved fact/claim (e.g. 0% processing fee on loans under Rs 50,000)"
-                          value={f.text}
-                          onChange={(e) =>
-                            setInlineFacts((prev) =>
-                              prev.map((item, i) =>
-                                i === idx
-                                  ? { ...item, text: e.target.value }
-                                  : item,
-                              ),
-                            )
-                          }
-                        />
-                        <input
-                          type="text"
-                          placeholder="Valid until YYYY-MM-DD (optional)"
-                          value={f.valid_until ?? ""}
-                          onChange={(e) =>
-                            setInlineFacts((prev) =>
-                              prev.map((item, i) =>
-                                i === idx
-                                  ? { ...item, valid_until: e.target.value }
-                                  : item,
-                              ),
-                            )
-                          }
-                        />
-                        <button
-                          type="button"
-                          className="btn-ghost"
-                          onClick={() =>
-                            setInlineFacts((prev) =>
-                              prev.filter((_, i) => i !== idx),
-                            )
-                          }
-                        >
-                          ✕
-                        </button>
-                      </div>
-                    ))}
-
-                    {inlineColors.map((c, idx) => (
-                      <div
-                        key={`ic-${idx}`}
-                        className="form-row"
-                        style={{ marginTop: "0.4rem", alignItems: "center" }}
-                      >
-                        <input
-                          type="text"
-                          placeholder="Colour name (e.g. Brand Primary)"
-                          value={c.name}
-                          onChange={(e) =>
-                            setInlineColors((prev) =>
-                              prev.map((item, i) =>
-                                i === idx
-                                  ? { ...item, name: e.target.value }
-                                  : item,
-                              ),
-                            )
-                          }
-                        />
-                        <input
-                          type="text"
-                          placeholder="Hex code (e.g. #0F766E)"
-                          value={c.hex}
-                          onChange={(e) =>
-                            setInlineColors((prev) =>
-                              prev.map((item, i) =>
-                                i === idx
-                                  ? { ...item, hex: e.target.value }
-                                  : item,
-                              ),
-                            )
-                          }
-                        />
-                        <button
-                          type="button"
-                          className="btn-ghost"
-                          onClick={() =>
-                            setInlineColors((prev) =>
-                              prev.filter((_, i) => i !== idx),
-                            )
-                          }
-                        >
-                          ✕
-                        </button>
-                      </div>
-                    ))}
-
-                    {inlineTriggers.map((tr, idx) => (
-                      <div
-                        key={`itr-${idx}`}
-                        className="form-row"
-                        style={{ marginTop: "0.4rem", alignItems: "center" }}
-                      >
-                        <input
-                          type="text"
-                          placeholder="Trigger keyword (e.g. APR or cashback)"
-                          value={tr.trigger_pattern}
-                          onChange={(e) =>
-                            setInlineTriggers((prev) =>
-                              prev.map((item, i) =>
-                                i === idx
-                                  ? { ...item, trigger_pattern: e.target.value }
-                                  : item,
-                              ),
-                            )
-                          }
-                        />
-                        <input
-                          type="text"
-                          placeholder="Required disclaimer text"
-                          value={tr.required_disclaimer_text}
-                          onChange={(e) =>
-                            setInlineTriggers((prev) =>
-                              prev.map((item, i) =>
-                                i === idx
-                                  ? {
-                                      ...item,
-                                      required_disclaimer_text: e.target.value,
-                                    }
-                                  : item,
-                              ),
-                            )
-                          }
-                        />
-                        <button
-                          type="button"
-                          className="btn-ghost"
-                          onClick={() =>
-                            setInlineTriggers((prev) =>
-                              prev.filter((_, i) => i !== idx),
-                            )
-                          }
-                        >
-                          ✕
-                        </button>
-                      </div>
-                    ))}
                   </div>
-                )}
 
-                <div className="form-group">
-                  <label htmlFor="sub-content">
-                    Campaign Copy / Markdown Pricing Table / HTML Content to
-                    Review
-                  </label>
-                  <textarea
-                    id="sub-content"
-                    rows={6}
-                    value={rawContent}
-                    onChange={(e) => setRawContent(e.target.value)}
-                    placeholder="Write or paste your campaign copy, claims, disclaimers, or Markdown table here..."
-                  />
-                </div>
+                  {/* Progressive Disclosure: Inline Custom Playbook Onboarding */}
+                  {selectedCanon === CUSTOM_PLAYBOOK_VALUE && (
+                    <div className="cg-custom-canon-box cg-animate-swap">
+                      <div className="cg-custom-canon-header">
+                        <div>
+                          <h4>
+                            Compile Custom Company Brand Playbook (Pipeline A)
+                          </h4>
+                          <p>
+                            Upload your brand book (`.pdf`, `.docx`, `.md`),
+                            approved KFS/product fact sheets (`.csv`, `.json`,
+                            `.yaml`), or reference logo (`.png`, `.jpg`), or
+                            define rules below.
+                          </p>
+                        </div>
+                        <span className="cg-brand-version">
+                          Guards 1–3 Protected
+                        </span>
+                      </div>
 
-                <div className="form-group">
-                  <label htmlFor="sub-files">
-                    Attach Campaign Documents, Tables or Promotional Banners
-                    (`.docx`, `.pdf`, `.html`, `.md`, `.csv`, `.json`, `.png`,
-                    `.jpg`)
-                  </label>
-                  <input
-                    id="sub-files"
-                    type="file"
-                    multiple
-                    accept=".docx,.pdf,.html,.htm,.md,.txt,.csv,.json,.png,.jpg,.jpeg,.webp"
-                    onChange={(e) => handleFileSelect(e.target.files)}
-                  />
-                  {uploadedAttachments.length > 0 && (
-                    <div className="uploaded-files-pills">
-                      {uploadedAttachments.map((att, idx) => (
-                        <span
-                          key={`${att.filename}-${idx}`}
-                          className="file-pill"
+                      <div className="cg-field-row-2">
+                        <div className="cg-field-group">
+                          <label htmlFor="inline-canon-id">
+                            Company Playbook Identifier
+                          </label>
+                          <input
+                            id="inline-canon-id"
+                            type="text"
+                            value={inlineCanonId}
+                            onChange={(e) => setInlineCanonId(e.target.value)}
+                            placeholder="e.g. my-company-brand-v1"
+                            required
+                          />
+                        </div>
+
+                        <div className="cg-field-group">
+                          <label htmlFor="inline-canon-files">
+                            Upload Guideline Docs, Fact Sheets or Reference
+                            Logos
+                          </label>
+                          <input
+                            id="inline-canon-files"
+                            type="file"
+                            multiple
+                            accept=".pdf,.docx,.csv,.json,.yaml,.yml,.md,.txt,.html,.png,.jpg,.jpeg,.webp"
+                            onChange={(e) =>
+                              handleInlineCanonFileSelect(e.target.files)
+                            }
+                          />
+                          {inlineCanonFiles.length > 0 && (
+                            <div className="uploaded-files-pills">
+                              {inlineCanonFiles.map((att, idx) => (
+                                <span
+                                  key={`${att.filename}-${idx}`}
+                                  className="file-pill"
+                                >
+                                  {att.filename}
+                                  <button
+                                    type="button"
+                                    onClick={() =>
+                                      setInlineCanonFiles((prev) =>
+                                        prev.filter((_, i) => i !== idx),
+                                      )
+                                    }
+                                  >
+                                    ✕
+                                  </button>
+                                </span>
+                              ))}
+                            </div>
+                          )}
+                        </div>
+                      </div>
+
+                      <div className="cg-field-group">
+                        <label htmlFor="inline-canon-text">
+                          Paste Company Brand Guidelines, Approved Facts,
+                          Disclaimers &amp; Hex Colours
+                        </label>
+                        <textarea
+                          id="inline-canon-text"
+                          rows={3}
+                          value={inlineCanonText}
+                          onChange={(e) => setInlineCanonText(e.target.value)}
+                          placeholder={
+                            "• Never use 'guaranteed returns', prefer 'historical target yield'.\n" +
+                            "• Approved Fact: 0% processing fee on loans under Rs 50,000 valid until 2026-12-31.\n" +
+                            "• Trigger: 'loan' -> Disclaimer: 'Subject to credit assessment and RBI KFS terms.'"
+                          }
+                        />
+                      </div>
+
+                      <div className="cg-rule-builder-toolbar">
+                        <button
+                          type="button"
+                          className="cg-btn cg-btn-secondary cg-btn-sm"
+                          onClick={() =>
+                            setInlineTerms((prev) => [
+                              ...prev,
+                              { pattern_text: "", preferred: "", severity: 60 },
+                            ])
+                          }
                         >
-                          📎 {att.filename}
+                          + Banned/Preferred Term
+                        </button>
+                        <button
+                          type="button"
+                          className="cg-btn cg-btn-secondary cg-btn-sm"
+                          onClick={() =>
+                            setInlineFacts((prev) => [
+                              ...prev,
+                              { text: "", conditions: [], valid_until: "" },
+                            ])
+                          }
+                        >
+                          + Approved Fact
+                        </button>
+                        <button
+                          type="button"
+                          className="cg-btn cg-btn-secondary cg-btn-sm"
+                          onClick={() =>
+                            setInlineColors((prev) => [
+                              ...prev,
+                              { name: "", hex: "#0D3B66", max_delta_e: 3.5 },
+                            ])
+                          }
+                        >
+                          + Brand Colour Hex
+                        </button>
+                        <button
+                          type="button"
+                          className="cg-btn cg-btn-secondary cg-btn-sm"
+                          onClick={() =>
+                            setInlineTriggers((prev) => [
+                              ...prev,
+                              {
+                                trigger_pattern: "",
+                                required_disclaimer_text: "",
+                                severity: 70,
+                              },
+                            ])
+                          }
+                        >
+                          + Disclaimer Trigger
+                        </button>
+                      </div>
+
+                      {inlineTerms.map((t, idx) => (
+                        <div key={`it-${idx}`} className="cg-inline-rule-row">
+                          <input
+                            type="text"
+                            placeholder="Banned term (e.g. risk-free)"
+                            value={t.pattern_text}
+                            onChange={(e) =>
+                              setInlineTerms((prev) =>
+                                prev.map((item, i) =>
+                                  i === idx
+                                    ? { ...item, pattern_text: e.target.value }
+                                    : item,
+                                ),
+                              )
+                            }
+                          />
+                          <input
+                            type="text"
+                            placeholder="Preferred replacement (e.g. capital-protected)"
+                            value={t.preferred}
+                            onChange={(e) =>
+                              setInlineTerms((prev) =>
+                                prev.map((item, i) =>
+                                  i === idx
+                                    ? { ...item, preferred: e.target.value }
+                                    : item,
+                                ),
+                              )
+                            }
+                          />
                           <button
                             type="button"
-                            style={{
-                              marginLeft: "0.4rem",
-                              border: "none",
-                              background: "transparent",
-                              cursor: "pointer",
-                              color: "inherit",
-                              fontWeight: 800,
-                            }}
+                            className="cg-btn cg-btn-ghost cg-btn-sm"
                             onClick={() =>
-                              setUploadedAttachments((prev) =>
+                              setInlineTerms((prev) =>
                                 prev.filter((_, i) => i !== idx),
                               )
                             }
                           >
                             ✕
                           </button>
-                        </span>
+                        </div>
+                      ))}
+
+                      {inlineFacts.map((f, idx) => (
+                        <div key={`if-${idx}`} className="cg-inline-rule-row">
+                          <input
+                            type="text"
+                            placeholder="Approved fact/claim"
+                            value={f.text}
+                            onChange={(e) =>
+                              setInlineFacts((prev) =>
+                                prev.map((item, i) =>
+                                  i === idx
+                                    ? { ...item, text: e.target.value }
+                                    : item,
+                                ),
+                              )
+                            }
+                          />
+                          <input
+                            type="text"
+                            placeholder="Valid until YYYY-MM-DD (optional)"
+                            value={f.valid_until ?? ""}
+                            onChange={(e) =>
+                              setInlineFacts((prev) =>
+                                prev.map((item, i) =>
+                                  i === idx
+                                    ? { ...item, valid_until: e.target.value }
+                                    : item,
+                                ),
+                              )
+                            }
+                          />
+                          <button
+                            type="button"
+                            className="cg-btn cg-btn-ghost cg-btn-sm"
+                            onClick={() =>
+                              setInlineFacts((prev) =>
+                                prev.filter((_, i) => i !== idx),
+                              )
+                            }
+                          >
+                            ✕
+                          </button>
+                        </div>
+                      ))}
+
+                      {inlineColors.map((c, idx) => (
+                        <div key={`ic-${idx}`} className="cg-inline-rule-row">
+                          <input
+                            type="text"
+                            placeholder="Colour name (e.g. Brand Primary)"
+                            value={c.name}
+                            onChange={(e) =>
+                              setInlineColors((prev) =>
+                                prev.map((item, i) =>
+                                  i === idx
+                                    ? { ...item, name: e.target.value }
+                                    : item,
+                                ),
+                              )
+                            }
+                          />
+                          <input
+                            type="text"
+                            placeholder="Hex code (e.g. #0D3B66)"
+                            value={c.hex}
+                            onChange={(e) =>
+                              setInlineColors((prev) =>
+                                prev.map((item, i) =>
+                                  i === idx
+                                    ? { ...item, hex: e.target.value }
+                                    : item,
+                                ),
+                              )
+                            }
+                          />
+                          <button
+                            type="button"
+                            className="cg-btn cg-btn-ghost cg-btn-sm"
+                            onClick={() =>
+                              setInlineColors((prev) =>
+                                prev.filter((_, i) => i !== idx),
+                              )
+                            }
+                          >
+                            ✕
+                          </button>
+                        </div>
+                      ))}
+
+                      {inlineTriggers.map((tr, idx) => (
+                        <div key={`itr-${idx}`} className="cg-inline-rule-row">
+                          <input
+                            type="text"
+                            placeholder="Trigger keyword (e.g. APR)"
+                            value={tr.trigger_pattern}
+                            onChange={(e) =>
+                              setInlineTriggers((prev) =>
+                                prev.map((item, i) =>
+                                  i === idx
+                                    ? {
+                                        ...item,
+                                        trigger_pattern: e.target.value,
+                                      }
+                                    : item,
+                                ),
+                              )
+                            }
+                          />
+                          <input
+                            type="text"
+                            placeholder="Required disclaimer text"
+                            value={tr.required_disclaimer_text}
+                            onChange={(e) =>
+                              setInlineTriggers((prev) =>
+                                prev.map((item, i) =>
+                                  i === idx
+                                    ? {
+                                        ...item,
+                                        required_disclaimer_text:
+                                          e.target.value,
+                                      }
+                                    : item,
+                                ),
+                              )
+                            }
+                          />
+                          <button
+                            type="button"
+                            className="cg-btn cg-btn-ghost cg-btn-sm"
+                            onClick={() =>
+                              setInlineTriggers((prev) =>
+                                prev.filter((_, i) => i !== idx),
+                              )
+                            }
+                          >
+                            ✕
+                          </button>
+                        </div>
                       ))}
                     </div>
                   )}
+
+                  <div className="cg-field-row-2">
+                    <div className="cg-field-group">
+                      <label htmlFor="sub-content">
+                        Campaign Copy / Markdown KFS Table / HTML Content
+                      </label>
+                      <textarea
+                        id="sub-content"
+                        rows={5}
+                        value={rawContent}
+                        onChange={(e) => setRawContent(e.target.value)}
+                        placeholder="Write or paste your campaign copy, claims, disclaimers, or Markdown pricing table here..."
+                      />
+                    </div>
+
+                    <div className="cg-field-group">
+                      <label htmlFor="sub-files">
+                        Attach Campaign Documents or 1080p Banners (`.docx`,
+                        `.pdf`, `.html`, `.png`, `.jpg`)
+                      </label>
+                      <input
+                        id="sub-files"
+                        type="file"
+                        multiple
+                        accept=".docx,.pdf,.html,.htm,.md,.txt,.csv,.json,.png,.jpg,.jpeg,.webp"
+                        onChange={(e) => handleFileSelect(e.target.files)}
+                      />
+                      <p className="cg-field-help">
+                        All text and visual assets are parsed locally into a
+                        unified ContentAST with zero unmasked cloud data leaks.
+                      </p>
+                      {uploadedAttachments.length > 0 && (
+                        <div className="uploaded-files-pills">
+                          {uploadedAttachments.map((att, idx) => (
+                            <span
+                              key={`${att.filename}-${idx}`}
+                              className="file-pill"
+                            >
+                              {att.filename}
+                              <button
+                                type="button"
+                                onClick={() =>
+                                  setUploadedAttachments((prev) =>
+                                    prev.filter((_, i) => i !== idx),
+                                  )
+                                }
+                              >
+                                ✕
+                              </button>
+                            </span>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  </div>
                 </div>
 
-                <div
-                  style={{
-                    display: "flex",
-                    justifyContent: "flex-end",
-                    gap: "0.75rem",
-                    marginTop: "0.5rem",
-                  }}
-                >
-                  {submissions.length > 0 && (
+                <div className="cg-composer-footer">
+                  <span className="cg-mono-label">
+                    DPDP 2023 PII VAULT ACTIVE · AUTO-RUNS TIER 1–2 PRE-FLIGHT
+                  </span>
+                  <div className="cg-composer-actions">
+                    {submissions.length > 0 && (
+                      <button
+                        type="button"
+                        className="cg-btn cg-btn-ghost"
+                        onClick={() => setShowForm(false)}
+                      >
+                        Cancel
+                      </button>
+                    )}
                     <button
-                      type="button"
-                      className="btn-ghost"
-                      onClick={() => setShowForm(false)}
+                      type="submit"
+                      className="cg-btn cg-btn-primary"
+                      disabled={submitting}
                     >
-                      Cancel
+                      <span>
+                        {submitting
+                          ? "Running Pre-Publish Checks…"
+                          : selectedCanon === CUSTOM_PLAYBOOK_VALUE
+                            ? "Compile Playbook & Open Studio"
+                            : "Create & Open in Review Studio"}
+                      </span>
+                      <ArrowRight size={15} className="cg-arrow-shift" />
                     </button>
-                  )}
-                  <button
-                    type="submit"
-                    className="btn-primary"
-                    disabled={submitting}
-                  >
-                    {submitting
-                      ? "Parsing & Running Pre-Publication Checks..."
-                      : selectedCanon === CUSTOM_PLAYBOOK_VALUE
-                        ? "Compile Company Playbook & Open Review Studio →"
-                        : "Create & Open in Split-Screen Review Studio →"}
-                  </button>
+                  </div>
                 </div>
               </form>
             )}
 
-            {/* Queue Filter Tabs */}
-            <div className="queue-filter-bar">
-              <div className="queue-filter-tabs">
+            {/* ── Queue Search & Filter Bar ── */}
+            <div className="cg-queue-toolbar">
+              <div className="cg-queue-filter-pills">
                 <button
                   type="button"
-                  className={`filter-pill ${
+                  className={`cg-filter-pill ${
                     stageFilter === "all" ? "active" : ""
                   }`}
                   onClick={() => setStageFilter("all")}
                 >
-                  All Campaigns ({submissions.length})
+                  All ({submissions.length})
                 </button>
                 <button
                   type="button"
-                  className={`filter-pill ${
+                  className={`cg-filter-pill ${
                     stageFilter === "mine" ? "active" : ""
                   }`}
                   onClick={() => setStageFilter("mine")}
                 >
-                  Action Required for {currentRoleMeta.shortLabel}
+                  Needs My Action ({myActionCount})
                 </button>
                 <button
                   type="button"
-                  className={`filter-pill ${
+                  className={`cg-filter-pill ${
                     stageFilter === "stage1" ? "active" : ""
                   }`}
                   onClick={() => setStageFilter("stage1")}
                 >
-                  Stage 1: Draft / Revisions ({stageCounts.stage1})
+                  Stage 1 ({stageCounts.stage1})
                 </button>
                 <button
                   type="button"
-                  className={`filter-pill ${
+                  className={`cg-filter-pill ${
                     stageFilter === "stage2" ? "active" : ""
                   }`}
                   onClick={() => setStageFilter("stage2")}
                 >
-                  Stage 2: Brand Review ({stageCounts.stage2})
+                  Stage 2 ({stageCounts.stage2})
                 </button>
                 <button
                   type="button"
-                  className={`filter-pill ${
+                  className={`cg-filter-pill ${
                     stageFilter === "stage3" ? "active" : ""
                   }`}
                   onClick={() => setStageFilter("stage3")}
                 >
-                  Stage 3: Legal Sign-Off ({stageCounts.stage3})
+                  Stage 3 ({stageCounts.stage3})
                 </button>
                 <button
                   type="button"
-                  className={`filter-pill ${
+                  className={`cg-filter-pill ${
                     stageFilter === "stage4" ? "active" : ""
                   }`}
                   onClick={() => setStageFilter("stage4")}
                 >
-                  Stage 4: Released ({stageCounts.stage4})
+                  Released ({stageCounts.stage4})
                 </button>
+              </div>
+
+              <div className="cg-queue-search">
+                <Search size={14} className="cg-search-icon" />
+                <input
+                  type="text"
+                  value={searchQuery}
+                  onChange={(e) => setSearchQuery(e.target.value)}
+                  placeholder="Filter by campaign title, playbook, or #ID…"
+                  aria-label="Filter campaigns"
+                />
+                {searchQuery && (
+                  <button
+                    type="button"
+                    className="cg-search-clear"
+                    onClick={() => setSearchQuery("")}
+                  >
+                    ✕
+                  </button>
+                )}
               </div>
             </div>
 
+            {/* ── Campaign Queue List / Grid ── */}
             {loading ? (
-              <div className="loading-state">Loading campaign queue...</div>
+              <div className="cg-empty-box">Loading campaign queue…</div>
             ) : filteredSubmissions.length === 0 ? (
-              <div className="empty-state card">
+              <div className="cg-empty-box">
                 <p>
                   {submissions.length === 0
-                    ? "Your campaign queue is currently empty. Use the form above to submit your first campaign copy, document, or banner — or upload your company's own brand guidelines and fact sheets."
-                    : "No campaigns match the selected workflow stage filter."}
+                    ? "Your campaign queue is empty. Use the composer above (or click a 1-Click Sample Preset) to run your first pre-publication audit."
+                    : "No campaigns match your active stage or search filter."}
                 </p>
-                {stageFilter !== "all" && (
+                {(stageFilter !== "all" || searchQuery) && (
                   <button
                     type="button"
-                    className="btn-secondary"
-                    style={{ marginTop: "0.75rem" }}
-                    onClick={() => setStageFilter("all")}
+                    className="cg-btn cg-btn-secondary"
+                    onClick={() => {
+                      setStageFilter("all");
+                      setSearchQuery("");
+                    }}
                   >
-                    Show All Campaigns ({submissions.length})
+                    Reset Filters ({submissions.length})
                   </button>
                 )}
               </div>
             ) : (
-              <div className="submissions-grid">
+              <div className="cg-queue-grid">
                 {filteredSubmissions.map((s) => {
                   const stageInfo = getStageMeta(s.status);
                   const isMyTurn = stageInfo.ownerRole === role;
+                  const textCount = s.text_blocks?.length ?? 0;
+                  const imgCount = s.image_nodes?.length ?? 0;
+
                   return (
-                    <div
+                    <article
                       key={s.id}
-                      className={`submission-card card ${
-                        isMyTurn ? "submission-card-my-turn" : ""
+                      className={`cg-triage-card ${
+                        isMyTurn ? "my-turn" : ""
                       }`}
                       onClick={() => navigate(`/submissions/${s.id}`)}
                     >
-                      <div className="sub-card-header">
-                        <span className={`status-badge status-${s.status}`}>
-                          {stageInfo.stageLabel}
-                        </span>
-                        <div
-                          style={{
-                            display: "flex",
-                            alignItems: "center",
-                            gap: "0.45rem",
-                          }}
-                        >
-                          <span className="sub-canon-tag">{s.canon_id}</span>
+                      <div className="cg-triage-card-top">
+                        <div className="cg-triage-badges">
+                          <span className="cg-bundle-id">#{s.id}</span>
+                          <span className={`status-badge status-${s.status}`}>
+                            {stageInfo.stageLabel}
+                          </span>
+                          {isMyTurn && (
+                            <span className="cg-my-turn-pill">
+                              ● Action Required
+                            </span>
+                          )}
+                        </div>
+
+                        <div className="cg-triage-right-meta">
+                          <code className="cg-canon-badge">{s.canon_id}</code>
                           <button
                             type="button"
-                            className="btn-ghost"
-                            style={{
-                              padding: "0.18rem 0.45rem",
-                              fontSize: "0.72rem",
-                              color: "#64748b",
-                            }}
+                            className="cg-delete-btn"
                             disabled={deletingId === s.id}
                             onClick={(e) => handleDeleteSubmission(e, s.id)}
-                            title="Delete this campaign bundle from queue"
+                            title="Delete campaign bundle"
                           >
-                            {deletingId === s.id ? "…" : "✕"}
+                            <Trash2 size={13} />
                           </button>
                         </div>
                       </div>
-                      <h3 className="sub-card-title">{s.title}</h3>
+
+                      <h3 className="cg-triage-title">{s.title}</h3>
+
+                      {/* 4-Step Visual Stage Progress Bar */}
                       <div
-                        className={`sub-card-stage-owner ${
-                          isMyTurn ? "owner-active" : ""
-                        }`}
+                        className="cg-mini-stage-bar"
+                        title={stageInfo.ownerText}
                       >
-                        <span>
-                          {isMyTurn ? "● Action Required — " : ""}
-                          {stageInfo.ownerText}
+                        {[1, 2, 3, 4].map((step) => (
+                          <span
+                            key={step}
+                            className={`cg-mini-stage-seg ${
+                              step < stageInfo.stageNum
+                                ? "done"
+                                : step === stageInfo.stageNum
+                                  ? "current"
+                                  : ""
+                            }`}
+                          />
+                        ))}
+                      </div>
+
+                      <div className="cg-triage-footer">
+                        <div className="cg-triage-assets">
+                          <span className="cg-asset-chip">
+                            <FileText size={12} />
+                            {textCount} text block{textCount === 1 ? "" : "s"}
+                          </span>
+                          {imgCount > 0 && (
+                            <span className="cg-asset-chip">
+                              <ImageIcon size={12} />
+                              {imgCount} banner{imgCount === 1 ? "" : "s"}
+                            </span>
+                          )}
+                          <span className="cg-triage-owner-hint">
+                            {stageInfo.ownerText}
+                          </span>
+                        </div>
+
+                        <span className="cg-open-studio-link">
+                          <span>Inspect in Studio</span>
+                          <ArrowRight size={14} className="cg-arrow-shift" />
                         </span>
                       </div>
-                      <div
-                        className="sub-card-meta"
-                        style={{
-                          justifyContent: "space-between",
-                          alignItems: "center",
-                          marginTop: "0.65rem",
-                        }}
-                      >
-                        <span>
-                          Bundle #{s.id} ·{" "}
-                          {`${s.text_blocks?.length ?? 0} text block(s)`}
-                          {s.image_nodes && s.image_nodes.length > 0
-                            ? ` · ${s.image_nodes.length} visual asset(s)`
-                            : ""}
-                        </span>
-                        <span
-                          style={{
-                            fontWeight: 700,
-                            color: "#0f766e",
-                            fontFamily: "var(--font-sans)",
-                          }}
-                        >
-                          Open Review Studio →
-                        </span>
-                      </div>
-                    </div>
+                    </article>
                   );
                 })}
               </div>
             )}
-          </>
+          </div>
         ) : (
-          /* Brand Playbooks, Governance Insights & Rule Studio */
-          <div className="governance-studio">
-            <div className="toolbar">
-              <div>
-                <h2>
-                  Brand Playbooks, Recurring Mistake Insights &amp; Rule Studio
+          /* ── Tab 2: Progressive-Disclosure Playbook & Rule Studio ── */
+          <div key="tab-governance" className="cg-gov-studio cg-animate-swap">
+            {/* Top Bar of Playbook Studio */}
+            <div className="cg-console-hero-bar">
+              <div className="cg-console-hero-left">
+                <div className="cg-console-eyebrow">
+                  <span className="cg-role-stage-tag">PIPELINE A &amp; C</span>
+                  <span>Playbook Compiler, Friction Telemetry &amp; Calibration</span>
+                </div>
+                <h2 className="cg-console-title">
+                  Brand Playbooks &amp; Closed-Loop Rule Studio
                 </h2>
-                <p className="gov-subtitle">
-                  Import or define your company&apos;s brand guidelines,
-                  approved facts, terminology, and reusable logo assets; track
-                  recurring issues across campaigns; and calibrate rule
-                  thresholds.
+                <p className="cg-console-subtitle">
+                  Inspect compiled rules, track Empirical Bayes override
+                  friction, auto-draft Canon v1.1 pull requests, or onboard new
+                  company guideline documents.
                 </p>
               </div>
-              <div className="form-group" style={{ minWidth: "280px" }}>
-                <label htmlFor="gov-canon-select">Active Brand Playbook</label>
+
+              <div className="cg-gov-selector-box">
+                <label htmlFor="gov-canon-select">Active Playbook Canon</label>
                 <select
                   id="gov-canon-select"
                   value={govCanonId}
@@ -1609,384 +1653,462 @@ export function DashboardPage() {
             </div>
 
             {prAppliedBanner && (
-              <div className="pr-applied-banner card">{prAppliedBanner}</div>
+              <div className="cg-success-banner">{prAppliedBanner}</div>
             )}
 
-            {/* Playbook Summary Strip */}
+            {/* KPI Summary Strip */}
             {activeCanonSummary && (
-              <div className="canon-summary-strip">
-                <div className="canon-metric-box">
-                  <span className="canon-metric-val">
-                    v{activeCanonSummary.version}
-                  </span>
-                  <span className="canon-metric-lbl">Playbook Version</span>
+              <div className="cg-kpi-strip">
+                <div className="cg-kpi-cell">
+                  <span className="cg-mono-label">PLAYBOOK VERSION</span>
+                  <strong>v{activeCanonSummary.version}</strong>
+                  <code>SHA: {activeCanonSummary.hash.slice(0, 10)}…</code>
                 </div>
-                <div className="canon-metric-box">
-                  <span className="canon-metric-val">
-                    {activeCanonSummary.term_count}
-                  </span>
-                  <span className="canon-metric-lbl">Terminology Rules</span>
+                <div className="cg-kpi-cell">
+                  <span className="cg-mono-label">TERMINOLOGY RULES</span>
+                  <strong>{activeCanonSummary.term_count}</strong>
+                  <span>Aho-Corasick + UTS #39</span>
                 </div>
-                <div className="canon-metric-box">
-                  <span className="canon-metric-val">
-                    {activeCanonSummary.fact_count}
-                  </span>
-                  <span className="canon-metric-lbl">Approved Fact Claims</span>
+                <div className="cg-kpi-cell">
+                  <span className="cg-mono-label">APPROVED FACTS</span>
+                  <strong>{activeCanonSummary.fact_count}</strong>
+                  <span>QASem SlotDiff Grounded</span>
                 </div>
-                <div className="canon-metric-box">
-                  <span className="canon-metric-val">
-                    {activeCanonSummary.color_count}
-                  </span>
-                  <span className="canon-metric-lbl">Brand Colour Tokens</span>
+                <div className="cg-kpi-cell">
+                  <span className="cg-mono-label">BRAND COLOUR TOKENS</span>
+                  <strong>{activeCanonSummary.color_count}</strong>
+                  <span>CIEDE2000 ΔE₀₀ Verified</span>
                 </div>
-                <div className="canon-metric-box">
-                  <span className="canon-metric-val">
+                <div className="cg-kpi-cell">
+                  <span className="cg-mono-label">TRIGGERS &amp; LOGOS</span>
+                  <strong>
                     {(activeCanonSummary.trigger_count ?? 0) +
                       (activeCanonSummary.logo_count ?? 0)}
-                  </span>
-                  <span className="canon-metric-lbl">
-                    Disclaimers &amp; Logo Assets
-                  </span>
+                  </strong>
+                  <span>Mandatory Disclosures + ORB</span>
                 </div>
-                <div className="canon-metric-box">
-                  <span className="canon-metric-val">
+                <div className="cg-kpi-cell">
+                  <span className="cg-mono-label">KRIPPENDORFF&apos;S α</span>
+                  <strong className="cg-text-emerald">
                     {frictionReport
                       ? `${(frictionReport.krippendorff_alpha * 100).toFixed(0)}%`
                       : "100%"}
-                  </span>
-                  <span className="canon-metric-lbl">Reviewer Consistency</span>
+                  </strong>
+                  <span>Inter-Reviewer Agreement</span>
                 </div>
               </div>
             )}
 
-            {/* Active Playbook Rules & Assets Explorer */}
-            {activeCanonSummary?.rules &&
-              activeCanonSummary.rules.length > 0 && (
-                <div
-                  className="card gov-panel"
-                  style={{ marginBottom: "1.25rem" }}
-                >
-                  <div className="gov-panel-header">
-                    <div>
-                      <h3>
-                        Active Rules, Approved Facts &amp; Reusable Assets in{" "}
-                        <code>{activeCanonSummary.id}</code>
-                      </h3>
-                      <p className="gov-panel-desc" style={{ marginBottom: 0 }}>
-                        Every rule below is grounded to its source document and
-                        enforced automatically during pre-publication campaign
-                        reviews.
-                      </p>
-                    </div>
-                    <span className="sub-canon-tag">
-                      SHA-256: {activeCanonSummary.hash.slice(0, 12)}…
+            {/* Sub-Navigation Tabs (Progressive Disclosure) */}
+            <div className="cg-gov-subtabs" role="tablist">
+              <button
+                type="button"
+                role="tab"
+                aria-selected={govSubTab === "rules"}
+                className={`cg-gov-subtab ${
+                  govSubTab === "rules" ? "active" : ""
+                }`}
+                onClick={() => setGovSubTab("rules")}
+              >
+                <BookOpen size={14} />
+                <span>
+                  1. Rule &amp; Fact Catalog (
+                  {activeCanonSummary?.rules?.length ?? 0})
+                </span>
+              </button>
+              <button
+                type="button"
+                role="tab"
+                aria-selected={govSubTab === "friction"}
+                className={`cg-gov-subtab ${
+                  govSubTab === "friction" ? "active" : ""
+                }`}
+                onClick={() => setGovSubTab("friction")}
+              >
+                <GitPullRequest size={14} />
+                <span>2. Friction Insights &amp; v1.1 Auto-PRs</span>
+              </button>
+              <button
+                type="button"
+                role="tab"
+                aria-selected={govSubTab === "calibrate"}
+                className={`cg-gov-subtab ${
+                  govSubTab === "calibrate" ? "active" : ""
+                }`}
+                onClick={() => setGovSubTab("calibrate")}
+              >
+                <Sliders size={14} />
+                <span>3. Calibrate Thresholds</span>
+              </button>
+              <button
+                type="button"
+                role="tab"
+                aria-selected={govSubTab === "compile"}
+                className={`cg-gov-subtab ${
+                  govSubTab === "compile" ? "active" : ""
+                }`}
+                onClick={() => setGovSubTab("compile")}
+              >
+                <FilePlus2 size={14} />
+                <span>4. Onboard New Playbook (Pipeline A)</span>
+              </button>
+            </div>
+
+            {/* Sub-Tab 1: Rule & Fact Catalog */}
+            {govSubTab === "rules" && (
+              <div key="gov-rules" className="cg-gov-card cg-animate-swap">
+                <div className="cg-gov-card-header">
+                  <div>
+                    <h3>
+                      Compiled Rules, Approved Facts &amp; Visual Tokens in{" "}
+                      <code>{govCanonId}</code>
+                    </h3>
+                    <p>
+                      Click any rule row to jump directly to its threshold
+                      calibration controls.
+                    </p>
+                  </div>
+
+                  <div className="cg-queue-search">
+                    <Filter size={14} className="cg-search-icon" />
+                    <input
+                      type="text"
+                      value={ruleSearchQuery}
+                      onChange={(e) => setRuleSearchQuery(e.target.value)}
+                      placeholder="Filter rules by ID, type, or keyword…"
+                    />
+                  </div>
+                </div>
+
+                {lintReport && (
+                  <div className="cg-lint-strip">
+                    <CheckCircle2 size={15} className="cg-text-emerald" />
+                    <span>
+                      {lintReport.is_valid
+                        ? `Playbook Consistency Verified: 0 duplicate IDs, 0 circular replacements, and 0 overlapping ΔE₀₀ colour tokens in ${lintReport.canon_id}.`
+                        : `Playbook Lint Warnings: ${lintReport.issues.map((i) => i.message).join("; ")}`}
                     </span>
                   </div>
-                  <table className="slot-diff-table">
+                )}
+
+                <div className="cg-table-scroll">
+                  <table className="cg-data-table">
                     <thead>
                       <tr>
                         <th>Rule ID</th>
-                        <th>Category</th>
-                        <th>Enforced Rule / Approved Fact Summary</th>
-                        <th>Source Guideline / Reference</th>
+                        <th>Modality / Type</th>
+                        <th>Enforced Rule / Approved Claim</th>
+                        <th>Source Guideline Citation</th>
+                        <th>Action</th>
                       </tr>
                     </thead>
                     <tbody>
-                      {activeCanonSummary.rules.map((r) => (
+                      {filteredRules.map((r) => (
                         <tr key={r.id}>
                           <td>
                             <code>{r.id}</code>
                           </td>
                           <td>
-                            <span className="tier-badge">
+                            <span className="cg-type-pill">
                               {r.rule_type.toUpperCase()}
                             </span>
                           </td>
-                          <td>{r.label}</td>
-                          <td style={{ fontSize: "0.78rem", color: "#475569" }}>
+                          <td>
+                            <strong>{r.label}</strong>
+                          </td>
+                          <td className="cg-td-muted">
                             {r.source_text || "—"}
+                          </td>
+                          <td>
+                            <button
+                              type="button"
+                              className="cg-btn cg-btn-ghost cg-btn-sm"
+                              onClick={() => {
+                                handleSelectCalRule(r.id);
+                                setGovSubTab("calibrate");
+                              }}
+                            >
+                              Calibrate →
+                            </button>
                           </td>
                         </tr>
                       ))}
                     </tbody>
                   </table>
                 </div>
-              )}
-
-            {govLoading ? (
-              <div className="loading-state">
-                Loading playbook rules and review insights...
-              </div>
-            ) : (
-              <div className="gov-panels-grid">
-                {/* Panel 1: Recurring Problems & Category Insights Over Time */}
-                <div className="card gov-panel">
-                  <div className="gov-panel-header">
-                    <h3>1. Recurring Problems &amp; Governance Insights</h3>
-                    <span className="sub-canon-tag">
-                      {frictionReport?.total_findings ?? 0} total findings
-                      tracked
-                    </span>
-                  </div>
-                  <p className="gov-panel-desc">
-                    Aggregates repeated compliance mistakes across campaigns by
-                    category (Claims, Terminology, Tone, Visuals, Accessibility,
-                    and Disclaimers) to highlight where teams need guidance or
-                    rules need clarification.
-                  </p>
-
-                  {frictionReport?.category_breakdown &&
-                  frictionReport.category_breakdown.length > 0 ? (
-                    <table className="slot-diff-table">
-                      <thead>
-                        <tr>
-                          <th>Category</th>
-                          <th>Flags</th>
-                          <th>Resolved</th>
-                          <th>Overridden</th>
-                          <th>Top Triggered Rule &amp; Actionable Insight</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {frictionReport.category_breakdown.map((cat) => (
-                          <tr key={cat.category}>
-                            <td>
-                              <strong>{cat.category}</strong>
-                            </td>
-                            <td>{cat.total_flags}</td>
-                            <td>{cat.resolved_count}</td>
-                            <td>{cat.overridden_count}</td>
-                            <td style={{ fontSize: "0.77rem" }}>
-                              <code>{cat.top_rule_id}</code> — {cat.insight}
-                            </td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                  ) : (
-                    <div className="gov-clean-box">
-                      No recurring mistakes recorded yet for{" "}
-                      <strong>{govCanonId}</strong>. As campaigns are scanned
-                      against this playbook, recurring category trends and
-                      top-violated rules appear here automatically.
-                    </div>
-                  )}
-
-                  {lintReport && (
-                    <div style={{ marginTop: "0.85rem" }}>
-                      <div className="gov-clean-box">
-                        {lintReport.is_valid ? (
-                          <>
-                            ✓ <strong>Playbook Consistency Verified:</strong>{" "}
-                            Zero duplicate rule IDs, circular terminology
-                            replacements, or overlapping brand colours in{" "}
-                            <strong>{lintReport.canon_id}</strong>.
-                          </>
-                        ) : (
-                          <>
-                            ⚠ <strong>Playbook Lint Issues:</strong>{" "}
-                            {lintReport.issues.map((i) => i.message).join("; ")}
-                          </>
-                        )}
-                      </div>
-                    </div>
-                  )}
-                </div>
-
-                {/* Panel 2: Guideline Friction Insights */}
-                <div className="card gov-panel">
-                  <div className="gov-panel-header">
-                    <h3>2. Unclear Rule Detector &amp; Override Friction</h3>
-                    <span className="sub-canon-tag">
-                      Empirical Bayes Friction(R_i)
-                    </span>
-                  </div>
-                  <p className="gov-panel-desc">
-                    Identifies which specific rules are repeatedly overridden or
-                    disputed by creators and reviewers so you can auto-draft a
-                    v1.1 playbook clarification.
-                  </p>
-
-                  {frictionReport && frictionReport.rules.length > 0 ? (
-                    <table className="slot-diff-table">
-                      <thead>
-                        <tr>
-                          <th>Rule ID</th>
-                          <th>Flags</th>
-                          <th>Overrides</th>
-                          <th>Friction Rate</th>
-                          <th>Status</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {frictionReport.rules.map((r) => (
-                          <tr key={r.rule_id}>
-                            <td>
-                              <code>{r.rule_id}</code>
-                            </td>
-                            <td>{r.total_flags}</td>
-                            <td>{r.overrides_and_disputes}</td>
-                            <td>{(r.posterior_friction * 100).toFixed(1)}%</td>
-                            <td
-                              className={
-                                r.needs_canon_revision
-                                  ? "slot-dropped"
-                                  : "slot-match"
-                              }
-                            >
-                              {r.needs_canon_revision
-                                ? "UNCLEAR · REVISE"
-                                : "CLEAR"}
-                            </td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                  ) : (
-                    <div className="gov-clean-box">
-                      No rule overrides recorded yet for{" "}
-                      <strong>{govCanonId}</strong>. When a creator overrides a
-                      Warning with a justification, rule friction telemetry
-                      updates here automatically.
-                    </div>
-                  )}
-
-                  <div className="gov-pr-controls">
-                    <label className="threshold-label">
-                      <span>
-                        Friction Alert Threshold:{" "}
-                        <strong>{(prThreshold * 100).toFixed(0)}%</strong>
-                      </span>
-                      <input
-                        type="range"
-                        min="0.15"
-                        max="0.60"
-                        step="0.05"
-                        value={prThreshold}
-                        onChange={(e) => setPrThreshold(Number(e.target.value))}
-                      />
-                    </label>
-                    <button
-                      type="button"
-                      className="btn-primary"
-                      onClick={handleProposePr}
-                      disabled={prLoading}
-                    >
-                      {prLoading
-                        ? "Analysing Past Reviews..."
-                        : "Draft Playbook v1.1 Improvement"}
-                    </button>
-                  </div>
-                </div>
               </div>
             )}
 
-            {/* Panel 3: Proposed Playbook v1.1 Diff */}
-            {prProposal && (
-              <div className="card gov-pr-card">
-                <div className="gov-panel-header">
-                  <div>
-                    <h3>
-                      3. Proposed Playbook Update: {prProposal.canon_id} v
-                      {prProposal.base_version} → v{prProposal.proposed_version}
-                    </h3>
-                    <p className="gov-panel-desc">
-                      Simulated impact across{" "}
-                      <strong>{prProposal.bundles_evaluated}</strong> past
-                      campaign(s): Total Flags{" "}
-                      <strong>{prProposal.before_findings}</strong> →{" "}
-                      <strong>{prProposal.after_findings}</strong> (
-                      {(prProposal.reduction_ratio * 100).toFixed(1)}% reduction
-                      in false alarms)
-                    </p>
+            {/* Sub-Tab 2: Friction Insights & Auto-PRs */}
+            {govSubTab === "friction" && (
+              <div key="gov-friction" className="cg-animate-swap">
+                {govLoading ? (
+                  <div className="cg-empty-box">
+                    Loading Empirical Bayes friction telemetry…
                   </div>
-                  {prProposal.has_changes && (
-                    <button
-                      type="button"
-                      className="btn-action btn-action-approve"
-                      onClick={handleApplyPr}
-                      disabled={applyingPr}
-                    >
-                      {applyingPr
-                        ? "Activating v1.1..."
-                        : `✓ Approve & Activate v${prProposal.proposed_version}`}
-                    </button>
-                  )}
-                </div>
-
-                {prProposal.revisions.length > 0 ? (
-                  <>
-                    <table className="slot-diff-table">
-                      <thead>
-                        <tr>
-                          <th>Rule ID</th>
-                          <th>Recommended Change</th>
-                          <th>Current Rule (v{prProposal.base_version})</th>
-                          <th>Updated Rule (v{prProposal.proposed_version})</th>
-                          <th>Reason</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {prProposal.revisions.map((rev) => (
-                          <tr key={rev.rule_id}>
-                            <td>
-                              <code>{rev.rule_id}</code>
-                            </td>
-                            <td>
-                              <span className="tier-badge">{rev.action}</span>
-                            </td>
-                            <td>{rev.before_summary}</td>
-                            <td>
-                              <strong>{rev.after_summary}</strong>
-                            </td>
-                            <td>{rev.rationale}</td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
-
-                    {prProposal.yaml_diff && (
-                      <div className="yaml-diff-box">
-                        <div className="yaml-diff-title">
-                          Playbook Diff Preview
+                ) : (
+                  <div className="cg-gov-two-col">
+                    <div className="cg-gov-card">
+                      <div className="cg-gov-card-header">
+                        <div>
+                          <h3>Recurring Mistakes by Category</h3>
+                          <p>
+                            Aggregates compliance findings across campaigns to
+                            pinpoint high-risk categories.
+                          </p>
                         </div>
-                        <pre className="yaml-diff-pre">
-                          {prProposal.yaml_diff}
-                        </pre>
+                        <span className="cg-brand-version">
+                          {frictionReport?.total_findings ?? 0} total findings
+                        </span>
+                      </div>
+
+                      {frictionReport?.category_breakdown &&
+                      frictionReport.category_breakdown.length > 0 ? (
+                        <table className="cg-data-table">
+                          <thead>
+                            <tr>
+                              <th>Category</th>
+                              <th>Flags</th>
+                              <th>Resolved</th>
+                              <th>Overridden</th>
+                              <th>Actionable Insight</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {frictionReport.category_breakdown.map((cat) => (
+                              <tr key={cat.category}>
+                                <td>
+                                  <strong>{cat.category}</strong>
+                                </td>
+                                <td>{cat.total_flags}</td>
+                                <td>{cat.resolved_count}</td>
+                                <td>{cat.overridden_count}</td>
+                                <td className="cg-td-muted">
+                                  <code>{cat.top_rule_id}</code> — {cat.insight}
+                                </td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      ) : (
+                        <div className="cg-clean-note">
+                          No recurring category violations recorded yet for{" "}
+                          <strong>{govCanonId}</strong>.
+                        </div>
+                      )}
+                    </div>
+
+                    <div className="cg-gov-card">
+                      <div className="cg-gov-card-header">
+                        <div>
+                          <h3>Empirical Bayes Rule Friction &amp; v1.1 PR</h3>
+                          <p>
+                            Detects rules with high override rates so you can
+                            auto-generate a Playbook v1.1 pull request.
+                          </p>
+                        </div>
+                      </div>
+
+                      {frictionReport && frictionReport.rules.length > 0 ? (
+                        <table className="cg-data-table">
+                          <thead>
+                            <tr>
+                              <th>Rule ID</th>
+                              <th>Flags</th>
+                              <th>Overrides</th>
+                              <th>Posterior Friction</th>
+                              <th>Status</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {frictionReport.rules.map((r) => (
+                              <tr key={r.rule_id}>
+                                <td>
+                                  <code>{r.rule_id}</code>
+                                </td>
+                                <td>{r.total_flags}</td>
+                                <td>{r.overrides_and_disputes}</td>
+                                <td>
+                                  {(r.posterior_friction * 100).toFixed(1)}%
+                                </td>
+                                <td>
+                                  <span
+                                    className={`cg-slot-badge ${
+                                      r.needs_canon_revision
+                                        ? "slot-dropped"
+                                        : "slot-match"
+                                    }`}
+                                  >
+                                    {r.needs_canon_revision
+                                      ? "NEEDS v1.1 REVISION"
+                                      : "CALIBRATED"}
+                                  </span>
+                                </td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      ) : (
+                        <div className="cg-clean-note">
+                          Zero disputed rules recorded yet for{" "}
+                          <strong>{govCanonId}</strong>.
+                        </div>
+                      )}
+
+                      <div className="cg-pr-action-bar">
+                        <label className="cg-slider-control">
+                          <span>
+                            Friction Alert Threshold:{" "}
+                            <strong>{(prThreshold * 100).toFixed(0)}%</strong>
+                          </span>
+                          <input
+                            type="range"
+                            min="0.15"
+                            max="0.60"
+                            step="0.05"
+                            value={prThreshold}
+                            onChange={(e) =>
+                              setPrThreshold(Number(e.target.value))
+                            }
+                          />
+                        </label>
+                        <button
+                          type="button"
+                          className="cg-btn cg-btn-primary"
+                          onClick={handleProposePr}
+                          disabled={prLoading}
+                        >
+                          <GitPullRequest size={14} />
+                          <span>
+                            {prLoading
+                              ? "Simulating Impact…"
+                              : "Draft Playbook v1.1 PR"}
+                          </span>
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                )}
+
+                {prProposal && (
+                  <div
+                    className="cg-gov-card cg-animate-swap"
+                    style={{ marginTop: "1rem" }}
+                  >
+                    <div className="cg-gov-card-header">
+                      <div>
+                        <h3>
+                          Proposed Playbook Pull Request: {prProposal.canon_id}{" "}
+                          v{prProposal.base_version} → v
+                          {prProposal.proposed_version}
+                        </h3>
+                        <p>
+                          Historical blast-radius simulation across{" "}
+                          <strong>{prProposal.bundles_evaluated}</strong>{" "}
+                          campaign(s): Flags reduced from{" "}
+                          <strong>{prProposal.before_findings}</strong> →{" "}
+                          <strong>{prProposal.after_findings}</strong> (
+                          {(prProposal.reduction_ratio * 100).toFixed(1)}% noise
+                          reduction).
+                        </p>
+                      </div>
+                      {prProposal.has_changes && (
+                        <button
+                          type="button"
+                          className="cg-btn cg-btn-emerald"
+                          onClick={handleApplyPr}
+                          disabled={applyingPr}
+                        >
+                          <CheckCircle2 size={15} />
+                          <span>
+                            {applyingPr
+                              ? "Activating…"
+                              : `Approve & Activate v${prProposal.proposed_version}`}
+                          </span>
+                        </button>
+                      )}
+                    </div>
+
+                    {prProposal.revisions.length > 0 ? (
+                      <>
+                        <table className="cg-data-table">
+                          <thead>
+                            <tr>
+                              <th>Rule ID</th>
+                              <th>Action</th>
+                              <th>Before (v{prProposal.base_version})</th>
+                              <th>After (v{prProposal.proposed_version})</th>
+                              <th>Rationale</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {prProposal.revisions.map((rev) => (
+                              <tr key={rev.rule_id}>
+                                <td>
+                                  <code>{rev.rule_id}</code>
+                                </td>
+                                <td>
+                                  <span className="cg-type-pill">
+                                    {rev.action}
+                                  </span>
+                                </td>
+                                <td>{rev.before_summary}</td>
+                                <td>
+                                  <strong>{rev.after_summary}</strong>
+                                </td>
+                                <td className="cg-td-muted">{rev.rationale}</td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+
+                        {prProposal.yaml_diff && (
+                          <div className="yaml-diff-box">
+                            <div className="yaml-diff-title">
+                              Unified Canon YAML Diff Preview
+                            </div>
+                            <pre className="yaml-diff-pre">
+                              {prProposal.yaml_diff}
+                            </pre>
+                          </div>
+                        )}
+                      </>
+                    ) : (
+                      <div className="cg-clean-note">
+                        No rules in <strong>{prProposal.canon_id}</strong>{" "}
+                        currently exceed the {(prThreshold * 100).toFixed(0)}%
+                        override friction threshold.
                       </div>
                     )}
-                  </>
-                ) : (
-                  <div className="gov-clean-box">
-                    No rules in <strong>{prProposal.canon_id}</strong> currently
-                    exceed the {(prThreshold * 100).toFixed(0)}% friction
-                    threshold.
                   </div>
                 )}
               </div>
             )}
 
-            {/* Panel 4 & 5: Calibrate Rule Thresholds + Import New Playbook */}
-            <div className="gov-panels-grid" style={{ marginTop: "1.25rem" }}>
-              {/* Panel 4: Calibrate Rule Thresholds */}
-              <div className="card gov-panel">
-                <div className="gov-panel-header">
-                  <h3>4. Calibrate Rule Thresholds</h3>
-                  <span className="sub-canon-tag">Brand Manager Controls</span>
+            {/* Sub-Tab 3: Calibrate Rule Thresholds */}
+            {govSubTab === "calibrate" && (
+              <div key="gov-calibrate" className="cg-gov-card cg-animate-swap">
+                <div className="cg-gov-card-header">
+                  <div>
+                    <h3>
+                      Calibrate Rule Severity &amp; Perceptual Tolerances (
+                      <code>{govCanonId}</code>)
+                    </h3>
+                    <p>
+                      Tune whether a rule acts as a non-blocking Warning (
+                      <code>1–49</code>) or a hard Blocker (<code>50–100</code>
+                      ), or adjust CIEDE2000 ΔE₀₀ and readability ceilings.
+                    </p>
+                  </div>
                 </div>
-                <p className="gov-panel-desc">
-                  Select any rule in <strong>{govCanonId}</strong> to adjust
-                  whether it acts as a non-blocking Warning (<code>1–49</code>)
-                  or a hard Blocker (<code>50–100</code>), or fine-tune colour
-                  and readability limits.
-                </p>
+
                 <form
                   onSubmit={handleCalibrateRule}
-                  className="gov-calibrate-form"
+                  className="cg-calibrate-form"
                 >
-                  <div className="form-group">
+                  <div className="cg-field-group">
                     <label htmlFor="cal-rule-select">
-                      Select Rule from <code>{govCanonId}</code>
+                      Target Rule in <code>{govCanonId}</code>
                     </label>
                     {activeCanonSummary?.rules &&
                     activeCanonSummary.rules.length > 0 ? (
@@ -1997,7 +2119,7 @@ export function DashboardPage() {
                       >
                         {activeCanonSummary.rules.map((r) => (
                           <option key={r.id} value={r.id}>
-                            {r.label}
+                            [{r.rule_type.toUpperCase()}] {r.id} — {r.label}
                           </option>
                         ))}
                       </select>
@@ -2007,27 +2129,31 @@ export function DashboardPage() {
                         type="text"
                         value={calRuleId}
                         onChange={(e) => setCalRuleId(e.target.value)}
-                        placeholder="Select a rule ID"
+                        placeholder="Enter rule ID"
                       />
                     )}
                   </div>
 
                   {selectedCalRule?.source_text && (
-                    <div
-                      className="gov-clean-box"
-                      style={{ marginBottom: "0.75rem", fontSize: "0.78rem" }}
-                    >
-                      <strong>Source Guideline:</strong>{" "}
+                    <div className="cg-clean-note">
+                      <strong>Source Guideline Citation:</strong>{" "}
                       {selectedCalRule.source_text}
                     </div>
                   )}
 
-                  <div className="slider-grid">
-                    <label className="threshold-label">
-                      <span>
-                        Rule Severity: <strong>{calSeverity}</strong> (
-                        {calSeverity >= 50 ? "BLOCKER" : "WARNING"})
-                      </span>
+                  <div className="cg-calibration-grid">
+                    <label className="cg-cal-box">
+                      <div className="cg-cal-box-top">
+                        <span>Rule Severity Weight</span>
+                        <span
+                          className={`cg-sev-badge ${
+                            calSeverity >= 50 ? "sev-blocker" : "sev-warning"
+                          }`}
+                        >
+                          {calSeverity} ·{" "}
+                          {calSeverity >= 50 ? "BLOCKER" : "WARNING"}
+                        </span>
+                      </div>
                       <input
                         type="range"
                         min="10"
@@ -2037,11 +2163,12 @@ export function DashboardPage() {
                         onChange={(e) => setCalSeverity(Number(e.target.value))}
                       />
                     </label>
-                    <label className="threshold-label">
-                      <span>
-                        Colour Drift Tolerance (ΔE):{" "}
-                        <strong>{calMaxDeltaE.toFixed(1)}</strong>
-                      </span>
+
+                    <label className="cg-cal-box">
+                      <div className="cg-cal-box-top">
+                        <span>CIEDE2000 Colour Tolerance (ΔE₀₀)</span>
+                        <code>≤ {calMaxDeltaE.toFixed(1)}</code>
+                      </div>
                       <input
                         type="range"
                         min="1.0"
@@ -2053,10 +2180,12 @@ export function DashboardPage() {
                         }
                       />
                     </label>
-                    <label className="threshold-label">
-                      <span>
-                        Max Sentence Length: <strong>{calMaxWords} words</strong>
-                      </span>
+
+                    <label className="cg-cal-box">
+                      <div className="cg-cal-box-top">
+                        <span>Max Sentence Length</span>
+                        <code>{calMaxWords} words</code>
+                      </div>
                       <input
                         type="range"
                         min="15"
@@ -2066,11 +2195,12 @@ export function DashboardPage() {
                         onChange={(e) => setCalMaxWords(Number(e.target.value))}
                       />
                     </label>
-                    <label className="threshold-label">
-                      <span>
-                        Max Reading Grade Level:{" "}
-                        <strong>{calMaxFkGrade.toFixed(1)}</strong>
-                      </span>
+
+                    <label className="cg-cal-box">
+                      <div className="cg-cal-box-top">
+                        <span>Max Flesch-Kincaid Grade</span>
+                        <code>Grade {calMaxFkGrade.toFixed(1)}</code>
+                      </div>
                       <input
                         type="range"
                         min="6.0"
@@ -2084,22 +2214,23 @@ export function DashboardPage() {
                     </label>
                   </div>
 
-                  <button
-                    type="submit"
-                    className="btn-primary"
-                    disabled={calibrating || !calRuleId}
-                    style={{ marginTop: "0.75rem" }}
-                  >
-                    {calibrating
-                      ? "Saving Rule Settings..."
-                      : `Save Calibration for '${calRuleId}'`}
-                  </button>
+                  <div className="cg-composer-actions">
+                    <button
+                      type="submit"
+                      className="cg-btn cg-btn-primary"
+                      disabled={calibrating || !calRuleId}
+                    >
+                      {calibrating
+                        ? "Saving Calibration…"
+                        : `Save Calibration for '${calRuleId}'`}
+                    </button>
+                  </div>
                 </form>
 
                 {calibrationResult && (
                   <div
-                    className="gov-clean-box"
-                    style={{ marginTop: "0.75rem" }}
+                    className="cg-success-banner"
+                    style={{ marginTop: "1rem" }}
                   >
                     ✓ Updated <strong>{calibrationResult.canon_id}</strong> (v
                     {calibrationResult.previous_version} → v
@@ -2107,45 +2238,86 @@ export function DashboardPage() {
                   </div>
                 )}
               </div>
+            )}
 
-              {/* Panel 5: Import or Define Company Brand Playbook, Facts & Reusable Assets */}
-              <div className="card gov-panel">
-                <div className="gov-panel-header">
-                  <h3>
-                    5. Import or Define Company Brand Guidelines, Facts &amp;
-                    Assets
-                  </h3>
-                  <span className="sub-canon-tag">
-                    PDF / DOCX / CSV / JSON / YAML / PNG
-                  </span>
+            {/* Sub-Tab 4: Onboard New Playbook (Pipeline A) */}
+            {govSubTab === "compile" && (
+              <div key="gov-compile" className="cg-gov-card cg-animate-swap">
+                <div className="cg-gov-card-header">
+                  <div>
+                    <h3>
+                      Compile New Company Brand Playbook (Pipeline A · Guards
+                      1–3)
+                    </h3>
+                    <p>
+                      Ingest raw brand books (`.pdf`, `.docx`, `.md`), product
+                      fact sheets (`.csv`, `.json`, `.yaml`), and reference
+                      logos (`.png`, `.jpg`) into a deterministic YAML canon.
+                    </p>
+                  </div>
                 </div>
-                <p className="gov-panel-desc">
-                  Upload your company&apos;s brand guidelines (`.pdf`, `.docx`,
-                  `.md`), approved product/KFS fact sheets (`.csv`, `.json`,
-                  `.yaml`), and reusable reference logos (`.png`, `.jpg`), or
-                  define structured rules below.
-                </p>
+
                 <form
                   onSubmit={handleCompileCanon}
-                  className="gov-compile-form"
+                  className="cg-calibrate-form"
                 >
-                  <div className="form-group">
-                    <label htmlFor="compile-canon-id">
-                      Company Playbook Identifier
-                    </label>
-                    <input
-                      id="compile-canon-id"
-                      type="text"
-                      value={compileId}
-                      onChange={(e) => setCompileId(e.target.value)}
-                      placeholder="e.g. my-company-playbook"
-                      required
-                    />
+                  <div className="cg-field-row-2">
+                    <div className="cg-field-group">
+                      <label htmlFor="compile-canon-id">
+                        New Playbook Identifier
+                      </label>
+                      <input
+                        id="compile-canon-id"
+                        type="text"
+                        value={compileId}
+                        onChange={(e) => setCompileId(e.target.value)}
+                        placeholder="e.g. acme-retail-2026"
+                        required
+                      />
+                    </div>
+
+                    <div className="cg-field-group">
+                      <label htmlFor="compile-files">
+                        Upload Brand Book, Fact Sheet or Reference Logo
+                      </label>
+                      <input
+                        id="compile-files"
+                        type="file"
+                        multiple
+                        accept=".pdf,.docx,.csv,.json,.yaml,.yml,.md,.txt,.html,.png,.jpg,.jpeg,.webp"
+                        onChange={(e) =>
+                          handleCompileFileSelect(e.target.files)
+                        }
+                      />
+                      {compileAttachments.length > 0 && (
+                        <div className="uploaded-files-pills">
+                          {compileAttachments.map((att, idx) => (
+                            <span
+                              key={`${att.filename}-${idx}`}
+                              className="file-pill"
+                            >
+                              {att.filename}
+                              <button
+                                type="button"
+                                onClick={() =>
+                                  setCompileAttachments((prev) =>
+                                    prev.filter((_, i) => i !== idx),
+                                  )
+                                }
+                              >
+                                ✕
+                              </button>
+                            </span>
+                          ))}
+                        </div>
+                      )}
+                    </div>
                   </div>
-                  <div className="form-group">
+
+                  <div className="cg-field-group">
                     <label htmlFor="compile-raw-text">
                       Brand Rules, Approved Claims, Disclaimers &amp; Colour Hex
-                      Codes
+                      Tokens
                     </label>
                     <textarea
                       id="compile-raw-text"
@@ -2153,72 +2325,18 @@ export function DashboardPage() {
                       value={compileText}
                       onChange={(e) => setCompileText(e.target.value)}
                       placeholder={
-                        "Example:\n" +
                         "Never use 'cheap', prefer 'affordable'.\n" +
-                        "Primary Blue: #1A73E8.\n" +
+                        "Primary Blue: #0D3B66.\n" +
                         "Approved Fact: 0% processing fee on loans under Rs 50,000 valid until 2026-09-30.\n" +
                         "Trigger: 'loan' -> Disclaimer: 'Subject to RBI KFS terms.'"
                       }
                     />
                   </div>
-                  <div className="form-group">
-                    <label htmlFor="compile-files">
-                      Upload Brand Book, Fact Sheet or Reference Logo Assets
-                      (`.pdf`, `.docx`, `.csv`, `.json`, `.yaml`, `.md`, `.txt`,
-                      `.png`, `.jpg`)
-                    </label>
-                    <input
-                      id="compile-files"
-                      type="file"
-                      multiple
-                      accept=".pdf,.docx,.csv,.json,.yaml,.yml,.md,.txt,.html,.png,.jpg,.jpeg,.webp"
-                      onChange={(e) => handleCompileFileSelect(e.target.files)}
-                    />
-                    {compileAttachments.length > 0 && (
-                      <div className="uploaded-files-pills">
-                        {compileAttachments.map((att, idx) => (
-                          <span
-                            key={`${att.filename}-${idx}`}
-                            className="file-pill"
-                          >
-                            📄 {att.filename}
-                            <button
-                              type="button"
-                              style={{
-                                marginLeft: "0.4rem",
-                                border: "none",
-                                background: "transparent",
-                                cursor: "pointer",
-                                color: "inherit",
-                                fontWeight: 800,
-                              }}
-                              onClick={() =>
-                                setCompileAttachments((prev) =>
-                                  prev.filter((_, i) => i !== idx),
-                                )
-                              }
-                            >
-                              ✕
-                            </button>
-                          </span>
-                        ))}
-                      </div>
-                    )}
-                  </div>
 
-                  {/* Structured Rule Quick-Add in Playbook Studio */}
-                  <div
-                    style={{
-                      display: "flex",
-                      flexWrap: "wrap",
-                      gap: "0.45rem",
-                      marginBottom: "0.65rem",
-                    }}
-                  >
+                  <div className="cg-rule-builder-toolbar">
                     <button
                       type="button"
-                      className="btn-secondary"
-                      style={{ fontSize: "0.74rem", padding: "0.28rem 0.6rem" }}
+                      className="cg-btn cg-btn-secondary cg-btn-sm"
                       onClick={() =>
                         setStudioTerms((prev) => [
                           ...prev,
@@ -2230,8 +2348,7 @@ export function DashboardPage() {
                     </button>
                     <button
                       type="button"
-                      className="btn-secondary"
-                      style={{ fontSize: "0.74rem", padding: "0.28rem 0.6rem" }}
+                      className="cg-btn cg-btn-secondary cg-btn-sm"
                       onClick={() =>
                         setStudioFacts((prev) => [
                           ...prev,
@@ -2243,12 +2360,11 @@ export function DashboardPage() {
                     </button>
                     <button
                       type="button"
-                      className="btn-secondary"
-                      style={{ fontSize: "0.74rem", padding: "0.28rem 0.6rem" }}
+                      className="cg-btn cg-btn-secondary cg-btn-sm"
                       onClick={() =>
                         setStudioColors((prev) => [
                           ...prev,
-                          { name: "", hex: "#1A73E8", max_delta_e: 3.0 },
+                          { name: "", hex: "#0D3B66", max_delta_e: 3.0 },
                         ])
                       }
                     >
@@ -2256,8 +2372,7 @@ export function DashboardPage() {
                     </button>
                     <button
                       type="button"
-                      className="btn-secondary"
-                      style={{ fontSize: "0.74rem", padding: "0.28rem 0.6rem" }}
+                      className="cg-btn cg-btn-secondary cg-btn-sm"
                       onClick={() =>
                         setStudioTriggers((prev) => [
                           ...prev,
@@ -2274,11 +2389,7 @@ export function DashboardPage() {
                   </div>
 
                   {studioTerms.map((t, idx) => (
-                    <div
-                      key={`st-${idx}`}
-                      className="form-row"
-                      style={{ marginBottom: "0.4rem", alignItems: "center" }}
-                    >
+                    <div key={`st-${idx}`} className="cg-inline-rule-row">
                       <input
                         type="text"
                         placeholder="Banned term"
@@ -2309,7 +2420,7 @@ export function DashboardPage() {
                       />
                       <button
                         type="button"
-                        className="btn-ghost"
+                        className="cg-btn cg-btn-ghost cg-btn-sm"
                         onClick={() =>
                           setStudioTerms((prev) =>
                             prev.filter((_, i) => i !== idx),
@@ -2322,11 +2433,7 @@ export function DashboardPage() {
                   ))}
 
                   {studioFacts.map((f, idx) => (
-                    <div
-                      key={`sf-${idx}`}
-                      className="form-row"
-                      style={{ marginBottom: "0.4rem", alignItems: "center" }}
-                    >
+                    <div key={`sf-${idx}`} className="cg-inline-rule-row">
                       <input
                         type="text"
                         placeholder="Approved fact/claim"
@@ -2357,7 +2464,7 @@ export function DashboardPage() {
                       />
                       <button
                         type="button"
-                        className="btn-ghost"
+                        className="cg-btn cg-btn-ghost cg-btn-sm"
                         onClick={() =>
                           setStudioFacts((prev) =>
                             prev.filter((_, i) => i !== idx),
@@ -2370,11 +2477,7 @@ export function DashboardPage() {
                   ))}
 
                   {studioColors.map((c, idx) => (
-                    <div
-                      key={`sc-${idx}`}
-                      className="form-row"
-                      style={{ marginBottom: "0.4rem", alignItems: "center" }}
-                    >
+                    <div key={`sc-${idx}`} className="cg-inline-rule-row">
                       <input
                         type="text"
                         placeholder="Colour name"
@@ -2405,7 +2508,7 @@ export function DashboardPage() {
                       />
                       <button
                         type="button"
-                        className="btn-ghost"
+                        className="cg-btn cg-btn-ghost cg-btn-sm"
                         onClick={() =>
                           setStudioColors((prev) =>
                             prev.filter((_, i) => i !== idx),
@@ -2418,11 +2521,7 @@ export function DashboardPage() {
                   ))}
 
                   {studioTriggers.map((tr, idx) => (
-                    <div
-                      key={`str-${idx}`}
-                      className="form-row"
-                      style={{ marginBottom: "0.4rem", alignItems: "center" }}
-                    >
+                    <div key={`str-${idx}`} className="cg-inline-rule-row">
                       <input
                         type="text"
                         placeholder="Trigger keyword"
@@ -2456,7 +2555,7 @@ export function DashboardPage() {
                       />
                       <button
                         type="button"
-                        className="btn-ghost"
+                        className="cg-btn cg-btn-ghost cg-btn-sm"
                         onClick={() =>
                           setStudioTriggers((prev) =>
                             prev.filter((_, i) => i !== idx),
@@ -2468,54 +2567,33 @@ export function DashboardPage() {
                     </div>
                   ))}
 
-                  <button
-                    type="submit"
-                    className="btn-primary"
-                    disabled={compiling}
-                  >
-                    {compiling
-                      ? "Compiling Brand Playbook..."
-                      : "Import & Activate Company Playbook"}
-                  </button>
+                  <div className="cg-composer-actions">
+                    <button
+                      type="submit"
+                      className="cg-btn cg-btn-primary"
+                      disabled={compiling}
+                    >
+                      {compiling
+                        ? "Compiling Playbook…"
+                        : "Compile & Register Playbook"}
+                    </button>
+                  </div>
                 </form>
 
                 {compileResult && (
                   <div
-                    className="gov-clean-box"
-                    style={{ marginTop: "0.75rem" }}
+                    className="cg-success-banner"
+                    style={{ marginTop: "1rem" }}
                   >
-                    <div>
-                      ✓ Compiled &amp; Activated Playbook{" "}
-                      <strong>{compileResult.canon_id}</strong> (
-                      {compileResult.term_count} terms,{" "}
-                      {compileResult.color_count} colours,{" "}
-                      {compileResult.fact_count} approved facts,{" "}
-                      {compileResult.trigger_count ?? 0} triggers,{" "}
-                      {compileResult.logo_count ?? 0} logos)
-                    </div>
-                    {compileResult.provenance.length > 0 && (
-                      <div style={{ marginTop: "0.5rem", fontSize: "0.76rem" }}>
-                        <strong>
-                          Guards 1–3 Grounding Provenance (
-                          {compileResult.provenance.length} rules verified):
-                        </strong>
-                        <ul style={{ margin: "0.3rem 0 0 1.1rem", padding: 0 }}>
-                          {compileResult.provenance.slice(0, 6).map((p) => (
-                            <li key={p.rule_id}>
-                              <code>{p.rule_id}</code> [{p.start}:{p.end}] —
-                              Anchor Recall:{" "}
-                              {(p.effective_anchor_recall * 100).toFixed(0)}%,
-                              Round-Trip NLI:{" "}
-                              {(p.round_trip_nli_score * 100).toFixed(0)}%
-                            </li>
-                          ))}
-                        </ul>
-                      </div>
-                    )}
+                    ✓ Compiled Playbook{" "}
+                    <strong>{compileResult.canon_id}</strong> v
+                    {compileResult.version} ({compileResult.term_count} terms,{" "}
+                    {compileResult.fact_count} facts,{" "}
+                    {compileResult.color_count} colours).
                   </div>
                 )}
               </div>
-            </div>
+            )}
           </div>
         )}
       </main>

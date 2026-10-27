@@ -36,14 +36,35 @@ import {
   findingHighlightsPluginKey,
   codepointIndexToUtf16Offset,
 } from "./FindingHighlightsExtension";
+import {
+  ArrowLeft,
+  Check,
+  CheckCircle2,
+  ChevronDown,
+  ChevronUp,
+  Clock,
+  Download,
+  Edit3,
+  Eye,
+  FileText,
+  History,
+  Image as ImageIcon,
+  Layers,
+  Lock,
+  MessageSquare,
+  RefreshCw,
+  ShieldCheck,
+  Sliders,
+  Wand2,
+  X,
+} from "lucide-react";
 
 const ROLE_DISPLAY: Record<string, string> = {
-  creator: "Creator · Stage 1",
-  reviewer: "Brand Manager · Stage 2",
-  admin: "Authorised Legal Reviewer · Stage 3",
+  creator: "Stage 1 · Creator",
+  reviewer: "Stage 2 · Brand Manager",
+  admin: "Stage 3 · Legal Reviewer",
 };
 
-// Role-gated workflow transitions matching backend/src/canongate/domain/workflow.py
 const WORKFLOW_ACTIONS: Record<
   string,
   Array<{ action: string; label: string; roles: string[] }>
@@ -58,7 +79,7 @@ const WORKFLOW_ACTIONS: Record<
   in_review: [
     {
       action: "approve",
-      label: "✓ Approve Brand Review → Forward to Legal",
+      label: "Approve Brand Review → Legal",
       roles: ["reviewer", "admin"],
     },
     {
@@ -78,7 +99,7 @@ const WORKFLOW_ACTIONS: Record<
   approved: [
     {
       action: "publish",
-      label: "⛨ Execute Final Legal Sign-Off & Release",
+      label: "Execute Final Legal Sign-Off & Release",
       roles: ["admin"],
     },
     {
@@ -98,34 +119,34 @@ const WORKFLOW_STAGES = [
     ownerRole: "creator",
     ownerLabel: "Creator",
     statuses: ["draft", "changes_requested"],
-    desc: "Run pre-flight check, fix Blockers, and document context on Warning overrides.",
+    desc: "Fix Blockers and document context on Warning overrides.",
   },
   {
     num: 2,
     key: "stage2",
-    title: "Brand Manager Review",
+    title: "Brand Review",
     ownerRole: "reviewer",
     ownerLabel: "Brand Manager",
     statuses: ["in_review"],
-    desc: "Inspect revision diffs, verify brand compliance & overrides, and approve.",
+    desc: "Inspect revision diffs, verify brand compliance & overrides.",
   },
   {
     num: 3,
     key: "stage3",
-    title: "Authorised Legal Sign-Off",
+    title: "Legal Sign-Off",
     ownerRole: "admin",
     ownerLabel: "Legal Reviewer",
     statuses: ["approved"],
-    desc: "Audit high-risk claims & disclosures; execute final release sign-off.",
+    desc: "Audit high-risk claims & disclosures; execute final release.",
   },
   {
     num: 4,
     key: "stage4",
-    title: "Approved & Released",
+    title: "Released & Sealed",
     ownerRole: "published",
     ownerLabel: "Released",
     statuses: ["published"],
-    desc: "Cryptographically sealed with a downloadable Governance Certificate.",
+    desc: "Cryptographically sealed with a Governance Certificate.",
   },
 ] as const;
 
@@ -151,7 +172,6 @@ interface ExtractedBBoxOverlay {
   assetIndex: number;
 }
 
-/** Resolve backend asset URLs cleanly via relative `/api/...` paths or data URIs. */
 function resolveAssetUrl(url: string): string {
   if (!url) return "";
   if (url.startsWith("data:") || url.startsWith("blob:")) return url;
@@ -166,11 +186,11 @@ function resolveAssetUrl(url: string): string {
   return url.startsWith("/") ? url : `/${url}`;
 }
 
-/**
- * Pure React inline span highlighter for a paragraph/table block.
- * Highlights every `[start, end]` finding on `nodeId` and scrolls to the
- * corresponding Finding Card when clicked — with zero Tiptap extension crashes.
- */
+function formatCheckLabel(checkId: string): string {
+  const clean = checkId.replace(/^check\./, "").replace(/_/g, " ");
+  return clean.replace(/\b\w/g, (c) => c.toUpperCase());
+}
+
 function renderHighlightedBlock(
   blockText: string,
   nodeId: string | undefined,
@@ -211,7 +231,9 @@ function renderHighlightedBlock(
       };
     })
     .filter((r) => r.end > r.start)
-    .sort((a, b) => a.start - b.start || b.finding.severity - a.finding.severity);
+    .sort(
+      (a, b) => a.start - b.start || b.finding.severity - a.finding.severity,
+    );
 
   if (blockFindings.length === 0) {
     return blockText;
@@ -264,11 +286,6 @@ function renderHighlightedBlock(
   return segments;
 }
 
-/**
- * Extract pixel bounding boxes `[x, y, w, h]` from both:
- * 1. Direct `ImageNode` findings (`locator.kind === "bbox"`).
- * 2. Low-confidence / micro-height OCR `TextNode` findings.
- */
 function extractBannerOverlays(
   findings: FindingItem[],
   imageNodes: ImageNodeMeta[],
@@ -334,7 +351,7 @@ function extractBannerOverlays(
 export function SubmissionDetailPage() {
   const { id } = useParams<{ id: string }>();
   const submissionId = Number(id);
-  const { username, displayName, role, switchRole, logout } = useAuth();
+  const { username, displayName, role, switchRole } = useAuth();
   const navigate = useNavigate();
 
   const [submission, setSubmission] = useState<Submission | null>(null);
@@ -353,7 +370,12 @@ export function SubmissionDetailPage() {
   );
   const [selectedAssetIdx, setSelectedAssetIdx] = useState<number>(0);
 
-  // Direct Draft Editor state (Stage 1: Creator can edit copy & re-scan)
+  // Left Canvas View Mode: Split (Both), Copy Only, Banner Only, or Discussion
+  const [canvasMode, setCanvasMode] = useState<
+    "split" | "copy" | "banner" | "discussion"
+  >("split");
+
+  // Direct Draft Editor state
   const [isEditingDraft, setIsEditingDraft] = useState<boolean>(false);
   const [draftEditValue, setDraftEditValue] = useState<string>("");
   const [draftChangeNote, setDraftChangeNote] = useState<string>(
@@ -361,7 +383,7 @@ export function SubmissionDetailPage() {
   );
   const [savingDraft, setSavingDraft] = useState<boolean>(false);
 
-  // Sensitivity / Conformal Risk Control (alpha) state
+  // Conformal Risk Control (alpha)
   const [conformalAlpha, setConformalAlpha] = useState<number>(0.1);
 
   // Track which SlotDiff tables have been expanded by the user
@@ -369,7 +391,7 @@ export function SubmissionDetailPage() {
     Record<number, boolean>
   >({});
 
-  // Structured Deliberate Override / Dismiss / Remediation popover state
+  // Structured Override / Dismiss / Remediation popover state
   const [overrideTarget, setOverrideTarget] = useState<{
     rowId: number;
     mode: "overridden" | "dismissed" | "accepted";
@@ -413,6 +435,13 @@ export function SubmissionDetailPage() {
       ]);
       setSubmission(sub);
       setFindings(fnd);
+      if (fnd.length > 0) {
+        setSelectedFindingId((prev) =>
+          prev !== null && fnd.some((item) => item.row_id === prev)
+            ? prev
+            : fnd[0].row_id,
+        );
+      }
       setAudit(aud);
       setVersions(vers);
       setComments(cmts);
@@ -470,7 +499,6 @@ export function SubmissionDetailPage() {
     load,
   ]);
 
-  // Default Authorised Legal Reviewer (admin) to Claim-Only & Overrides view
   useEffect(() => {
     let active = true;
     void Promise.resolve().then(() => {
@@ -494,6 +522,9 @@ export function SubmissionDetailPage() {
             .filter((b) => b && !b.startsWith("!["));
     setDraftEditValue(textOnlyBlocks.join("\n\n"));
     setIsEditingDraft(true);
+    if (canvasMode === "banner" || canvasMode === "discussion") {
+      setCanvasMode("copy");
+    }
   }
 
   async function handleSaveEditedDraft() {
@@ -516,7 +547,9 @@ export function SubmissionDetailPage() {
     }
   }
 
-  function handleScan() {
+  function handleScan(overrideAlpha?: number) {
+    const targetAlpha =
+      typeof overrideAlpha === "number" ? overrideAlpha : conformalAlpha;
     setScanning(true);
     setError(null);
 
@@ -531,7 +564,7 @@ export function SubmissionDetailPage() {
         setScanning(false);
         setError(err.message);
       },
-      conformalAlpha,
+      targetAlpha,
     );
   }
 
@@ -627,7 +660,6 @@ export function SubmissionDetailPage() {
     }
   }
 
-  // Filter findings and sort priority-grouped: Open Blockers -> Open Warnings -> Resolved
   const filteredFindings = useMemo(() => {
     const base = findings.filter((f) => {
       if (filter === "blockers") return f.severity >= 50;
@@ -705,6 +737,22 @@ export function SubmissionDetailPage() {
     }
   }, []);
 
+  function stepFindingSelection(delta: number) {
+    if (filteredFindings.length === 0) return;
+    const currIdx = filteredFindings.findIndex(
+      (f) => f.row_id === selectedFindingId,
+    );
+    const nextIdx =
+      currIdx < 0
+        ? 0
+        : (currIdx + delta + filteredFindings.length) %
+          filteredFindings.length;
+    const target = filteredFindings[nextIdx];
+    if (target) {
+      handleSelectFindingFromSpan(target.row_id);
+    }
+  }
+
   const tiptapDocContent = useMemo(
     () => ({
       type: "doc",
@@ -754,20 +802,22 @@ export function SubmissionDetailPage() {
 
   if (loading) {
     return (
-      <div className="detail-page">
-        <div className="loading-state">Opening Review Studio...</div>
+      <div className="cg-studio-shell">
+        <div className="cg-empty-box" style={{ margin: "3rem auto", maxWidth: 520 }}>
+          Opening Multimodal Review Studio…
+        </div>
       </div>
     );
   }
 
   if (!submission) {
     return (
-      <div className="detail-page">
-        <div className="error-banner">
+      <div className="cg-studio-shell">
+        <div className="cg-alert-banner" style={{ margin: "2rem auto", maxWidth: 680 }}>
           <span>Submission not found</span>
           <button
             type="button"
-            className="btn-secondary"
+            className="cg-btn cg-btn-secondary cg-btn-sm"
             onClick={() => navigate("/dashboard")}
           >
             ← Back to Queue
@@ -790,77 +840,56 @@ export function SubmissionDetailPage() {
   const canCreatorEditDraft =
     submission.status === "draft" || submission.status === "changes_requested";
 
+  const generalComments = comments.filter((c) => c.finding_id === null);
+
   return (
-    <div className="detail-page">
-      {/* Top Bar */}
-      <header className="console-header-curved">
-        <div className="header-left">
+    <div className="cg-studio-shell">
+      {/* ── Row 1: Compact Studio Top Command Bar ── */}
+      <header className="cg-studio-topbar">
+        <div className="cg-studio-topbar-left">
           <button
             type="button"
             onClick={() => navigate("/dashboard")}
-            className="btn-ghost"
+            className="cg-btn cg-btn-ghost cg-btn-sm"
+            title="Return to Campaign Triage Queue"
           >
-            ← Queue
+            <ArrowLeft size={14} />
+            <span>Queue</span>
           </button>
-          <div className="detail-title-group">
-            <h1>{submission.title}</h1>
-            <div className="detail-meta">
+
+          <div className="cg-studio-title-block">
+            <div className="cg-studio-title-row">
+              <h1>{submission.title}</h1>
               <span className={`status-badge status-${submission.status}`}>
                 {submission.status.replace("_", " ")}
               </span>
-              <span className="meta-item">
-                Playbook: <strong>{submission.canon_id}</strong> (
+            </div>
+            <div className="cg-studio-meta-row">
+              <span>
+                Playbook: <code>{submission.canon_id}</code> (
                 <code>{submission.canon_hash.slice(0, 8)}…</code>)
               </span>
-              <span className="meta-item">
-                SHA-256: <code>{submission.content_hash.slice(0, 10)}…</code>
+              <span>·</span>
+              <span>
+                AST SHA-256: <code>{submission.content_hash.slice(0, 10)}…</code>
               </span>
             </div>
           </div>
         </div>
 
-        <div className="header-right">
-          {/* Authenticated User Identity & Locked RBAC Role Badge */}
-          <div
-            className="user-identity-pill"
-            title={`Authenticated as ${displayName || username} (@${username})`}
-          >
-            <span className="user-identity-avatar">
-              {(displayName || username || "U").slice(0, 1).toUpperCase()}
-            </span>
-            <div className="user-identity-text">
-              <span className="user-identity-name">
-                {displayName || username}
-              </span>
-              <span className="user-identity-handle">@{username}</span>
-            </div>
-          </div>
-
+        <div className="cg-studio-topbar-right">
+          {/* In-Session RBAC Role Switcher */}
           <label
-            className="status-badge status-approved"
-            style={{
-              padding: "0.24rem 0.62rem",
-              fontSize: "0.74rem",
-              display: "inline-flex",
-              alignItems: "center",
-              gap: "0.35rem",
-            }}
+            className="cg-role-Select-pill"
             title="Switch active RBAC role in-session (POST /api/auth/switch-role)"
           >
-            <span>🔒 Role:</span>
+            <span className="cg-role-dot" />
+            <span className="cg-role-select-prefix">Role:</span>
             <select
               aria-label="Active Governance Role"
               value={role || "creator"}
               onChange={(e) => {
                 void switchRole(e.target.value);
-              }}
-              style={{
-                background: "transparent",
-                border: "none",
-                color: "inherit",
-                fontWeight: 700,
-                fontSize: "0.74rem",
-                cursor: "pointer",
               }}
             >
               <option value="creator">{ROLE_DISPLAY.creator}</option>
@@ -869,450 +898,488 @@ export function SubmissionDetailPage() {
             </select>
           </label>
 
+          <div
+            className="cg-user-pill"
+            title={`Authenticated as ${displayName || username} (@${username})`}
+          >
+            <span className="cg-user-avatar">
+              {(displayName || username || "U").slice(0, 1).toUpperCase()}
+            </span>
+            <span className="cg-user-handle">@{username}</span>
+          </div>
+
           <button
             type="button"
-            className="btn-secondary"
+            className="cg-btn cg-btn-secondary cg-btn-sm"
             onClick={() => setShowVersionsModal(true)}
+            title="Inspect immutable content revision history"
           >
-            Revisions ({versions.length || 1})
+            <History size={13} />
+            <span>Revisions ({versions.length || 1})</span>
           </button>
 
           <button
             type="button"
-            className="btn-secondary"
+            className="cg-btn cg-btn-secondary cg-btn-sm"
             onClick={() => setShowAuditModal(true)}
+            title="Inspect hash-chained RFC 9162 Merkle audit log"
           >
-            Audit Trail ({audit.length})
+            <Clock size={13} />
+            <span>Audit Log ({audit.length})</span>
           </button>
 
           <button
             type="button"
-            className="btn-secondary"
+            className="cg-btn cg-btn-secondary cg-btn-sm"
             onClick={handleExportCertificate}
             disabled={exportingCert}
-            title="Download signed Governance Certificate JSON"
+            title="Download Ed25519 + RFC 9162 Governance Certificate JSON"
           >
-            {exportingCert ? "Exporting..." : "⛨ Export Certificate"}
+            <Download size={13} />
+            <span>{exportingCert ? "Exporting…" : "Certificate"}</span>
           </button>
 
           <button
             type="button"
-            className="btn-primary"
-            onClick={handleScan}
+            className="cg-btn cg-btn-primary cg-btn-sm"
+            onClick={() => handleScan()}
             disabled={scanning}
           >
-            {scanning ? "Scanning..." : "⚡ Run Governance Check"}
+            <RefreshCw size={13} className={scanning ? "cg-spin" : ""} />
+            <span>{scanning ? "Scanning…" : "Run Check"}</span>
           </button>
         </div>
       </header>
 
-      {error && (
-        <div className="error-banner" role="alert">
-          <span>{error}</span>
-          <button
-            type="button"
-            className="btn-ghost"
-            style={{ padding: "0.15rem 0.5rem", fontSize: "0.75rem" }}
-            onClick={() => setError(null)}
-          >
-            Dismiss
-          </button>
-        </div>
-      )}
-
-      {/* 4-Stage Collaborative Workflow Stepper & Action Gate */}
+      {/* ── Row 2: Slim Horizontal 4-Stage Gate & Action Bar ── */}
       <section
-        className="studio-workflow-stepper"
-        aria-label="4-Stage Governance Progress"
+        className="cg-studio-gatebar"
+        aria-label="4-Stage Governance Progress & Gate Actions"
       >
-        <div className="stepper-track">
+        {/* Left: Compact 4-Step Progress Track */}
+        <div className="cg-gate-steps">
           {WORKFLOW_STAGES.map((st) => {
             const isCurrent = st.num === activeStageObj.num;
             const isCompleted = st.num < activeStageObj.num;
             return (
               <div
                 key={st.key}
-                className={`stepper-node ${isCurrent ? "current" : ""} ${
+                className={`cg-gate-step ${isCurrent ? "current" : ""} ${
                   isCompleted ? "completed" : ""
                 }`}
+                title={`${st.title} (${st.ownerLabel}): ${st.desc}`}
               >
-                <div className="stepper-node-header">
-                  <span className="stepper-badge">
-                    {isCompleted ? "✓" : st.num}
-                  </span>
-                  <div>
-                    <div className="stepper-title">{st.title}</div>
-                    <div className="stepper-owner">Role: {st.ownerLabel}</div>
-                  </div>
+                <span className="cg-gate-step-num">
+                  {isCompleted ? "✓" : `0${st.num}`}
+                </span>
+                <div className="cg-gate-step-text">
+                  <span className="cg-gate-step-title">{st.title}</span>
+                  <span className="cg-gate-step-owner">{st.ownerLabel}</span>
                 </div>
-                <p className="stepper-desc">{st.desc}</p>
               </div>
             );
           })}
         </div>
 
-        <div className="stepper-actions-bar">
-          <div className="stepper-gate-summary">
-            <span className="gate-pill gate-blocker">
-              {blockerCount} Open Blocker{blockerCount === 1 ? "" : "s"}
+        {/* Center: Live Fault Counters */}
+        <div className="cg-gate-counters">
+          <span
+            className={`cg-counter-pill ${
+              blockerCount > 0 ? "pill-blocker" : "pill-clean"
+            }`}
+          >
+            {blockerCount} Blocker{blockerCount === 1 ? "" : "s"}
+          </span>
+          <span className="cg-counter-pill pill-warning">
+            {warningCount} Warning{warningCount === 1 ? "" : "s"}
+          </span>
+          <span className="cg-counter-pill pill-resolved">
+            {resolvedCount} Resolved
+          </span>
+          {blockerCount > 0 && (
+            <span className="cg-gate-lock-hint">
+              <Lock size={12} /> Resolve Blockers to unlock stage sign-off
             </span>
-            <span className="gate-pill gate-warning">
-              {warningCount} Open Warning{warningCount === 1 ? "" : "s"}
-            </span>
-            <span className="gate-pill gate-resolved">
-              {resolvedCount} Resolved
-            </span>
-            {blockerCount > 0 && (
-              <span className="gate-lock-notice">
-                🔒 Approval &amp; Release locked until all {blockerCount} Blocker
-                {blockerCount === 1 ? "" : "s"} are resolved
-              </span>
-            )}
-          </div>
-
-          <div className="stepper-cta-group">
-            {availableActions.length > 0 ? (
-              availableActions.map((a) => {
-                const blockedByGate =
-                  (a.action === "approve" || a.action === "publish") &&
-                  blockerCount > 0;
-                return (
-                  <button
-                    key={a.action}
-                    type="button"
-                    disabled={blockedByGate}
-                    title={
-                      blockedByGate
-                        ? `Resolve ${blockerCount} open Blocker(s) before ${a.action}`
-                        : a.label
-                    }
-                    className={`btn-action btn-action-${a.action}`}
-                    onClick={() => setWfAction(a.action)}
-                  >
-                    {a.label}
-                  </button>
-                );
-              })
-            ) : submission.status === "published" ? (
-              <span className="published-seal-badge">
-                ✓ Approved &amp; Released — Certificate Ready
-              </span>
-            ) : (
-              <div className="role-handoff-hint">
-                <span>
-                  🔒 Stage {activeStageObj.num} requires{" "}
-                  <strong>{activeStageObj.ownerLabel}</strong> sign-off (signed
-                  in as <code>@{username}</code>).
-                </span>
-                {activeStageObj.ownerRole !== "published" && (
-                  <button
-                    type="button"
-                    className="btn-secondary"
-                    style={{ padding: "0.3rem 0.7rem", fontSize: "0.78rem" }}
-                    onClick={() => {
-                      logout();
-                      navigate(
-                        `/login?role=${activeStageObj.ownerRole}&redirect=/submissions/${submissionId}`,
-                      );
-                    }}
-                  >
-                    Sign In with {activeStageObj.ownerLabel} Account →
-                  </button>
-                )}
-              </div>
-            )}
-          </div>
-        </div>
-      </section>
-
-      {/* Workflow transition confirmation modal */}
-      {wfAction && (
-        <div className="modal-overlay" onClick={() => setWfAction(null)}>
-          <div className="modal card" onClick={(e) => e.stopPropagation()}>
-            <h3>
-              Confirm Stage Transition:{" "}
-              <span style={{ textTransform: "capitalize" }}>
-                {wfAction.replace("_", " ")}
-              </span>
-            </h3>
-            <p
-              style={{
-                fontSize: "0.84rem",
-                color: "var(--text-secondary)",
-                marginBottom: "0.75rem",
-              }}
-            >
-              This transition will be recorded in the tamper-evident audit log
-              under <strong>@{username}</strong> ({role}).
-            </p>
-            <div className="form-group">
-              <label htmlFor="wf-comment">Review Note (optional)</label>
-              <textarea
-                id="wf-comment"
-                rows={3}
-                value={wfComment}
-                onChange={(e) => setWfComment(e.target.value)}
-                placeholder="Add context for this decision..."
-              />
-            </div>
-            <div className="modal-actions">
-              <button
-                type="button"
-                className="btn-ghost"
-                onClick={() => setWfAction(null)}
-              >
-                Cancel
-              </button>
-              <button
-                type="button"
-                className="btn-primary"
-                onClick={handleWorkflow}
-              >
-                Confirm Transition
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* Split-Screen Review Studio */}
-      <div className="detail-content">
-        {/* LEFT PANE: Banner Inspector + Campaign Document + Discussion */}
-        <div className="editor-pane">
-          {/* 1. Promotional Banner Inspector */}
-          {activeBannerAsset && (
-            <section className="content-panel card banner-overlay-section">
-              <div className="banner-panel-header">
-                <div>
-                  <h2>Promotional Banner &amp; Visual Inspector</h2>
-                  <p className="gov-panel-desc" style={{ marginBottom: 0 }}>
-                    Inspecting logo geometry, brand colour accuracy, contrast
-                    legibility, and fine-print disclaimers (
-                    {activeBannerAsset.width}×{activeBannerAsset.height}px).
-                  </p>
-                </div>
-                {imageNodes.length > 1 && (
-                  <div className="banner-asset-tabs">
-                    {imageNodes.map((img, idx) => (
-                      <button
-                        key={img.node_id}
-                        type="button"
-                        className={`filter-tab ${
-                          selectedAssetIdx === idx ? "active" : ""
-                        }`}
-                        onClick={() => setSelectedAssetIdx(idx)}
-                      >
-                        Banner #{idx + 1} ({img.width}×{img.height})
-                      </button>
-                    ))}
-                  </div>
-                )}
-              </div>
-
-              <div className="banner-canvas-wrapper">
-                <div
-                  className="banner-stage"
-                  style={{
-                    position: "relative",
-                    display: "inline-block",
-                    maxWidth: "100%",
-                  }}
-                >
-                  <img
-                    src={resolveAssetUrl(activeBannerAsset.url)}
-                    alt={activeBannerAsset.alt ?? "Campaign Banner"}
-                    className="banner-stage-img"
-                  />
-                  <svg
-                    className="banner-svg-overlay"
-                    viewBox={`0 0 ${activeBannerAsset.width} ${activeBannerAsset.height}`}
-                    preserveAspectRatio="xMidYMid meet"
-                  >
-                    {bannerOverlays
-                      .filter(
-                        (ov) =>
-                          ov.assetIndex === selectedAssetIdx ||
-                          imageNodes.length === 1,
-                      )
-                      .map((ov) => {
-                        const isSelected = selectedFindingId === ov.rowId;
-                        const strokeColor =
-                          ov.resolution !== "open"
-                            ? "#10b981"
-                            : ov.severity >= 50
-                              ? "#ef4444"
-                              : "#f59e0b";
-                        return (
-                          <g
-                            key={ov.rowId}
-                            style={{
-                              pointerEvents: "all",
-                              cursor: "pointer",
-                            }}
-                            onClick={() => handleSelectFindingFromSpan(ov.rowId)}
-                          >
-                            <rect
-                              x={ov.x}
-                              y={ov.y}
-                              width={Math.max(ov.w, 12)}
-                              height={Math.max(ov.h, 12)}
-                              fill={
-                                isSelected
-                                  ? "rgba(239, 68, 68, 0.22)"
-                                  : "rgba(239, 68, 68, 0.08)"
-                              }
-                              stroke={strokeColor}
-                              strokeWidth={isSelected ? 4 : 2.5}
-                              rx={3}
-                            />
-                            <text
-                              x={ov.x + 4}
-                              y={Math.max(14, ov.y - 4)}
-                              fill="#ffffff"
-                              stroke="#111827"
-                              strokeWidth={0.6}
-                              fontSize={Math.max(
-                                11,
-                                Math.round(activeBannerAsset.height * 0.032),
-                              )}
-                              fontWeight="bold"
-                            >
-                              {ov.checkId} (S={ov.severity})
-                            </text>
-                          </g>
-                        );
-                      })}
-                  </svg>
-                </div>
-              </div>
-            </section>
           )}
+        </div>
 
-          {/* 2. Campaign Document & Inline Highlights */}
-          <section className="content-panel card">
-            <div className="editor-panel-header">
-              <div>
-                <h2>Campaign Content &amp; Highlighted Findings</h2>
-                <p className="gov-panel-desc" style={{ marginBottom: 0 }}>
-                  Click any highlighted phrase in the document to jump to its
-                  finding card on the right.
-                </p>
-              </div>
-              {canCreatorEditDraft && (
+        {/* Right: Primary Stage Transition CTA or Role Switch Helper */}
+        <div className="cg-gate-actions">
+          {availableActions.length > 0 ? (
+            availableActions.map((a) => {
+              const blockedByGate =
+                (a.action === "approve" || a.action === "publish") &&
+                blockerCount > 0;
+              return (
+                <button
+                  key={a.action}
+                  type="button"
+                  disabled={blockedByGate}
+                  title={
+                    blockedByGate
+                      ? `Resolve ${blockerCount} open Blocker(s) before ${a.action}`
+                      : a.label
+                  }
+                  className={`cg-btn cg-btn-sm ${
+                    a.action === "approve" || a.action === "publish"
+                      ? "cg-btn-emerald"
+                      : a.action === "submit"
+                        ? "cg-btn-primary"
+                        : "cg-btn-secondary"
+                  }`}
+                  onClick={() => setWfAction(a.action)}
+                >
+                  <span>{a.label}</span>
+                </button>
+              );
+            })
+          ) : submission.status === "published" ? (
+            <span className="cg-published-seal">
+              <CheckCircle2 size={14} /> Released &amp; Merkle Sealed
+            </span>
+          ) : (
+            <div className="cg-handoff-inline">
+              <span>
+                Stage {activeStageObj.num} owned by{" "}
+                <strong>{activeStageObj.ownerLabel}</strong>
+              </span>
+              {activeStageObj.ownerRole !== "published" && (
                 <button
                   type="button"
-                  className={isEditingDraft ? "btn-ghost" : "btn-secondary"}
+                  className="cg-btn cg-btn-primary cg-btn-sm"
                   onClick={() => {
-                    if (isEditingDraft) {
-                      setIsEditingDraft(false);
-                    } else {
-                      handleStartEditDraft();
-                    }
+                    void switchRole(activeStageObj.ownerRole);
                   }}
                 >
-                  {isEditingDraft
-                    ? "Cancel Editing"
-                    : "✎ Edit Campaign Copy & Re-Scan"}
+                  <span>Switch to {activeStageObj.ownerLabel} Role →</span>
                 </button>
               )}
             </div>
+          )}
+        </div>
+      </section>
 
-            {isEditingDraft ? (
-              <div className="draft-inline-editor">
-                <label
-                  htmlFor="studio-draft-textarea"
-                  className="draft-editor-label"
+      {error && (
+        <div className="cg-alert-banner" role="alert" style={{ margin: "0.75rem 1.5rem 0" }}>
+          <span>{error}</span>
+          <button
+            type="button"
+            className="cg-btn cg-btn-ghost cg-btn-sm"
+            onClick={() => setError(null)}
+          >
+            <X size={14} /> Dismiss
+          </button>
+        </div>
+      )}
+
+      {/* ── Main 2-Column Split-Screen Review IDE ── */}
+      <div className="cg-studio-workspace">
+        {/* LEFT COLUMN: Multi-Modal Asset Canvas (Copy + Banner + Discussion) */}
+        <div className="cg-studio-canvas-col">
+          {/* Canvas Mode Switcher Bar */}
+          <div className="cg-canvas-toolbar">
+            <div className="cg-canvas-tabs" role="tablist">
+              <button
+                type="button"
+                role="tab"
+                aria-selected={canvasMode === "split"}
+                className={`cg-canvas-tab ${
+                  canvasMode === "split" ? "active" : ""
+                }`}
+                onClick={() => setCanvasMode("split")}
+              >
+                <Layers size={13} />
+                <span>All Assets</span>
+              </button>
+              <button
+                type="button"
+                role="tab"
+                aria-selected={canvasMode === "copy"}
+                className={`cg-canvas-tab ${
+                  canvasMode === "copy" ? "active" : ""
+                }`}
+                onClick={() => setCanvasMode("copy")}
+              >
+                <FileText size={13} />
+                <span>Copy &amp; Claims ({textBlocks.length})</span>
+              </button>
+              {imageNodes.length > 0 && (
+                <button
+                  type="button"
+                  role="tab"
+                  aria-selected={canvasMode === "banner"}
+                  className={`cg-canvas-tab ${
+                    canvasMode === "banner" ? "active" : ""
+                  }`}
+                  onClick={() => setCanvasMode("banner")}
                 >
-                  Edit Campaign Copy / Tables (separate blocks with a blank
-                  line):
-                </label>
-                <textarea
-                  id="studio-draft-textarea"
-                  rows={10}
-                  className="draft-editor-textarea"
-                  value={draftEditValue}
-                  onChange={(e) => setDraftEditValue(e.target.value)}
-                />
-                <div className="draft-editor-footer">
-                  <input
-                    type="text"
-                    className="draft-change-note-input"
-                    value={draftChangeNote}
-                    onChange={(e) => setDraftChangeNote(e.target.value)}
-                    placeholder="Revision note (e.g. Added mandatory eligibility condition)"
-                  />
-                  <button
-                    type="button"
-                    className="btn-primary"
-                    disabled={savingDraft}
-                    onClick={handleSaveEditedDraft}
-                  >
-                    {savingDraft
-                      ? "Saving & Re-Scanning..."
-                      : "Save Revision & Re-Scan"}
-                  </button>
-                </div>
-              </div>
-            ) : (
-              <div className="content-preview tiptap-wrapper">
-                {textBlocks.length > 0 ? (
-                  tiptapEditor ? (
-                    <EditorContent editor={tiptapEditor} />
-                  ) : (
-                    <div className="ProseMirror">
-                      {textBlocks.map((block, idx) => (
-                        <p
-                          key={paragraphNodeIds[idx] ?? idx}
-                          style={{ margin: "0 0 0.85rem" }}
-                        >
-                          {renderHighlightedBlock(
-                            block,
-                            paragraphNodeIds[idx],
-                            findings,
-                            selectedFindingId,
-                            handleSelectFindingFromSpan,
-                          )}
-                        </p>
-                      ))}
-                    </div>
-                  )
-                ) : (
-                  <p className="text-muted">
-                    No text content blocks in this bundle.
-                  </p>
-                )}
-              </div>
-            )}
-          </section>
-
-          {/* 3. Collaborative Review Discussion Thread */}
-          <section className="content-panel card">
-            <div
-              className="gov-panel-header"
-              style={{ marginBottom: "0.6rem" }}
-            >
-              <h2 style={{ marginBottom: 0 }}>
-                Review Discussion (
-                {comments.filter((c) => c.finding_id === null).length})
-              </h2>
-              <span className="sub-canon-tag">
-                Creator · Brand Manager · Legal
-              </span>
+                  <ImageIcon size={13} />
+                  <span>
+                    Visual Banners ({imageNodes.length} ·{" "}
+                    {bannerOverlays.length} pins)
+                  </span>
+                </button>
+              )}
+              <button
+                type="button"
+                role="tab"
+                aria-selected={canvasMode === "discussion"}
+                className={`cg-canvas-tab ${
+                  canvasMode === "discussion" ? "active" : ""
+                }`}
+                onClick={() => setCanvasMode("discussion")}
+              >
+                <MessageSquare size={13} />
+                <span>Review Notes ({generalComments.length})</span>
+              </button>
             </div>
 
-            <div className="general-comments-list">
-              {comments.filter((c) => c.finding_id === null).length === 0 ? (
-                <p
-                  className="text-muted"
-                  style={{ fontSize: "0.82rem", marginBottom: "0.6rem" }}
-                >
-                  No review notes yet. Add a note below for the Brand Manager or
-                  Legal Reviewer.
-                </p>
+            {canCreatorEditDraft && canvasMode !== "discussion" && (
+              <button
+                type="button"
+                className={`cg-btn cg-btn-sm ${
+                  isEditingDraft ? "cg-btn-ghost" : "cg-btn-secondary"
+                }`}
+                onClick={() => {
+                  if (isEditingDraft) {
+                    setIsEditingDraft(false);
+                  } else {
+                    handleStartEditDraft();
+                  }
+                }}
+              >
+                <Edit3 size={13} />
+                <span>
+                  {isEditingDraft ? "Cancel Editing" : "Edit Copy & Re-Scan"}
+                </span>
+              </button>
+            )}
+          </div>
+
+          {/* 1. Promotional Banner Stage (Shown in Split or Banner Mode) */}
+          {activeBannerAsset &&
+            (canvasMode === "split" || canvasMode === "banner") && (
+              <section className="cg-canvas-card cg-animate-swap">
+                <div className="cg-canvas-card-header">
+                  <div>
+                    <span className="cg-mono-label">
+                      VISUAL ASSET INSPECTOR · {activeBannerAsset.width}×
+                      {activeBannerAsset.height}px
+                    </span>
+                    <h2>
+                      Promotional Banner Stage (CIEDE2000 ΔE₀₀ · WCAG 2.1 · ORB
+                      0.5H)
+                    </h2>
+                  </div>
+
+                  {imageNodes.length > 1 && (
+                    <div className="cg-banner-Asset-tabs">
+                      {imageNodes.map((img, idx) => (
+                        <button
+                          key={img.node_id}
+                          type="button"
+                          className={`cg-filter-pill ${
+                            selectedAssetIdx === idx ? "active" : ""
+                          }`}
+                          onClick={() => setSelectedAssetIdx(idx)}
+                        >
+                          Banner #{idx + 1} ({img.width}×{img.height})
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                </div>
+
+                <div className="banner-canvas-wrapper">
+                  <div
+                    className="banner-stage"
+                    style={{
+                      position: "relative",
+                      display: "inline-block",
+                      maxWidth: "100%",
+                    }}
+                  >
+                    <img
+                      src={resolveAssetUrl(activeBannerAsset.url)}
+                      alt={activeBannerAsset.alt ?? "Campaign Banner"}
+                      className="banner-stage-img"
+                    />
+                    <svg
+                      className="banner-svg-overlay"
+                      viewBox={`0 0 ${activeBannerAsset.width} ${activeBannerAsset.height}`}
+                      preserveAspectRatio="xMidYMid meet"
+                    >
+                      {bannerOverlays
+                        .filter(
+                          (ov) =>
+                            ov.assetIndex === selectedAssetIdx ||
+                            imageNodes.length === 1,
+                        )
+                        .map((ov) => {
+                          const isSelected = selectedFindingId === ov.rowId;
+                          const strokeColor =
+                            ov.resolution !== "open"
+                              ? "#10b981"
+                              : ov.severity >= 50
+                                ? "#ef4444"
+                                : "#f59e0b";
+                          return (
+                            <g
+                              key={ov.rowId}
+                              style={{
+                                pointerEvents: "all",
+                                cursor: "pointer",
+                              }}
+                              onClick={() =>
+                                handleSelectFindingFromSpan(ov.rowId)
+                              }
+                            >
+                              <rect
+                                x={ov.x}
+                                y={ov.y}
+                                width={Math.max(ov.w, 12)}
+                                height={Math.max(ov.h, 12)}
+                                fill={
+                                  isSelected
+                                    ? "rgba(239, 68, 68, 0.24)"
+                                    : "rgba(239, 68, 68, 0.08)"
+                                }
+                                stroke={strokeColor}
+                                strokeWidth={isSelected ? 4 : 2.5}
+                                rx={4}
+                              />
+                              <text
+                                x={ov.x + 6}
+                                y={Math.max(16, ov.y - 6)}
+                                fill="#ffffff"
+                                stroke="#09090b"
+                                strokeWidth={0.7}
+                                fontSize={Math.max(
+                                  11,
+                                  Math.round(activeBannerAsset.height * 0.03),
+                                )}
+                                fontWeight="bold"
+                              >
+                                {ov.checkId} (S={ov.severity})
+                              </text>
+                            </g>
+                          );
+                        })}
+                    </svg>
+                  </div>
+                </div>
+              </section>
+            )}
+
+          {/* 2. Campaign Copy & ProseMirror Highlights (Shown in Split or Copy Mode) */}
+          {(canvasMode === "split" || canvasMode === "copy") && (
+            <section className="cg-canvas-card cg-animate-swap">
+              <div className="cg-canvas-card-header">
+                <div>
+                  <span className="cg-mono-label">
+                    DOCUMENT AST &amp; PROSEMIRROR INLINE DECORATIONS
+                  </span>
+                  <h2>Campaign Copy, KFS Tables &amp; Highlighted Claims</h2>
+                </div>
+                <span className="cg-canvas-hint">
+                  Click any highlighted span to focus its fault card →
+                </span>
+              </div>
+
+              {isEditingDraft ? (
+                <div className="draft-inline-editor cg-animate-swap">
+                  <label
+                    htmlFor="studio-draft-textarea"
+                    className="draft-editor-label"
+                  >
+                    Edit Campaign Copy / Tables (separate blocks with a blank
+                    line):
+                  </label>
+                  <textarea
+                    id="studio-draft-textarea"
+                    rows={10}
+                    className="draft-editor-textarea"
+                    value={draftEditValue}
+                    onChange={(e) => setDraftEditValue(e.target.value)}
+                  />
+                  <div className="draft-editor-footer">
+                    <input
+                      type="text"
+                      className="draft-change-note-input"
+                      value={draftChangeNote}
+                      onChange={(e) => setDraftChangeNote(e.target.value)}
+                      placeholder="Revision note (e.g. Added mandatory eligibility condition)"
+                    />
+                    <button
+                      type="button"
+                      className="cg-btn cg-btn-primary"
+                      disabled={savingDraft}
+                      onClick={handleSaveEditedDraft}
+                    >
+                      {savingDraft
+                        ? "Saving & Re-Scanning…"
+                        : "Save Revision & Re-Scan"}
+                    </button>
+                  </div>
+                </div>
               ) : (
-                comments
-                  .filter((c) => c.finding_id === null)
-                  .map((c) => (
+                <div className="content-preview tiptap-wrapper">
+                  {textBlocks.length > 0 ? (
+                    tiptapEditor ? (
+                      <EditorContent editor={tiptapEditor} />
+                    ) : (
+                      <div className="ProseMirror">
+                        {textBlocks.map((block, idx) => (
+                          <p
+                            key={paragraphNodeIds[idx] ?? idx}
+                            style={{ margin: "0 0 0.85rem" }}
+                          >
+                            {renderHighlightedBlock(
+                              block,
+                              paragraphNodeIds[idx],
+                              findings,
+                              selectedFindingId,
+                              handleSelectFindingFromSpan,
+                            )}
+                          </p>
+                        ))}
+                      </div>
+                    )
+                  ) : (
+                    <p className="text-muted">
+                      No text content blocks in this bundle.
+                    </p>
+                  )}
+                </div>
+              )}
+            </section>
+          )}
+
+          {/* 3. Collaborative Review Discussion (Shown in Split or Discussion Mode) */}
+          {(canvasMode === "split" || canvasMode === "discussion") && (
+            <section className="cg-canvas-card cg-animate-swap">
+              <div className="cg-canvas-card-header">
+                <div>
+                  <span className="cg-mono-label">
+                    COLLABORATIVE REVIEW NOTES
+                  </span>
+                  <h2>
+                    Campaign Discussion Thread ({generalComments.length})
+                  </h2>
+                </div>
+                <span className="cg-brand-version">
+                  Creator · Brand Manager · Legal
+                </span>
+              </div>
+
+              <div className="general-comments-list">
+                {generalComments.length === 0 ? (
+                  <p className="cg-empty-inline-note">
+                    No general review notes yet. Leave a handoff note below for
+                    the Brand Manager or Legal Reviewer.
+                  </p>
+                ) : (
+                  generalComments.map((c) => (
                     <div key={c.id} className="comment-item">
                       <span className="comment-author">
                         @{c.author_name} ({c.role}):
@@ -1320,131 +1387,146 @@ export function SubmissionDetailPage() {
                       <span className="comment-body">{c.body}</span>
                     </div>
                   ))
+                )}
+              </div>
+
+              <div className="inline-comment-composer">
+                <input
+                  type="text"
+                  value={generalCommentBody}
+                  onChange={(e) => setGeneralCommentBody(e.target.value)}
+                  placeholder="Write a review handoff note on this campaign…"
+                  className="comment-input"
+                />
+                <button
+                  type="button"
+                  className="cg-btn cg-btn-secondary cg-btn-sm"
+                  disabled={postingComment || !generalCommentBody.trim()}
+                  onClick={() => handlePostComment(null, generalCommentBody)}
+                >
+                  Post Note
+                </button>
+              </div>
+            </section>
+          )}
+        </div>
+
+        {/* RIGHT COLUMN: Sleek Progressive-Disclosure Fault Inspector */}
+        <aside className="cg-studio-inspector-col">
+          {/* Sticky Fault Inspector Header */}
+          <div className="cg-inspector-toolbar">
+            <div className="cg-inspector-toolbar-top">
+              <div className="cg-inspector-filter-group">
+                <button
+                  type="button"
+                  className={`cg-filter-pill ${
+                    filter === "all" ? "active" : ""
+                  }`}
+                  onClick={() => setFilter("all")}
+                >
+                  All ({findings.length})
+                </button>
+                <button
+                  type="button"
+                  className={`cg-filter-pill pill-blocker-tab ${
+                    filter === "blockers" ? "active" : ""
+                  }`}
+                  onClick={() => setFilter("blockers")}
+                >
+                  Blockers ({blockerCount})
+                </button>
+                <button
+                  type="button"
+                  className={`cg-filter-pill pill-warning-tab ${
+                    filter === "warnings" ? "active" : ""
+                  }`}
+                  onClick={() => setFilter("warnings")}
+                >
+                  Warnings ({warningCount})
+                </button>
+                <button
+                  type="button"
+                  className={`cg-filter-pill ${
+                    filter === "claims_only" ? "active" : ""
+                  }`}
+                  onClick={() => setFilter("claims_only")}
+                  title="Filter to factual claims, disclosures, blockers, and overrides"
+                >
+                  Claims &amp; Overrides
+                </button>
+              </div>
+
+              {/* Prev / Next Fault Stepper */}
+              {filteredFindings.length > 1 && (
+                <div className="cg-fault-stepper-btns">
+                  <button
+                    type="button"
+                    className="cg-icon-btn"
+                    onClick={() => stepFindingSelection(-1)}
+                    title="Previous finding"
+                  >
+                    <ChevronUp size={14} />
+                  </button>
+                  <button
+                    type="button"
+                    className="cg-icon-btn"
+                    onClick={() => stepFindingSelection(1)}
+                    title="Next finding"
+                  >
+                    <ChevronDown size={14} />
+                  </button>
+                </div>
               )}
             </div>
 
-            <div className="inline-comment-composer">
-              <input
-                type="text"
-                value={generalCommentBody}
-                onChange={(e) => setGeneralCommentBody(e.target.value)}
-                placeholder="Write a review note on this campaign..."
-                className="comment-input"
-              />
-              <button
-                type="button"
-                className="btn-secondary"
-                disabled={postingComment || !generalCommentBody.trim()}
-                onClick={() => handlePostComment(null, generalCommentBody)}
+            <div className="cg-inspector-toolbar-bottom">
+              <div
+                className="cg-strictness-control"
+                title="Distribution-free Conformal Risk Control (Angelopoulos et al.)"
               >
-                Post Note
-              </button>
-            </div>
-          </section>
-        </div>
+                <Sliders size={12} />
+                <label htmlFor="alpha-select">Conformal Strictness:</label>
+                <select
+                  id="alpha-select"
+                  value={conformalAlpha}
+                  onChange={(e) => {
+                    const nextVal = Number(e.target.value);
+                    setConformalAlpha(nextVal);
+                    handleScan(nextVal);
+                  }}
+                >
+                  <option value={0.04}>Strict (α = 0.04 · Legal/BFSI)</option>
+                  <option value={0.1}>Balanced (α = 0.10 · Standard)</option>
+                  <option value={0.2}>Permissive (α = 0.20 · Early Draft)</option>
+                </select>
+              </div>
 
-        {/* RIGHT PANE: Sticky Priority-Grouped Findings Sidebar */}
-        <aside className="findings-pane">
-          {/* Confidentiality & AI / External Service Disclosure Banner */}
-          <div
-            className="card"
-            style={{
-              padding: "0.65rem 0.9rem",
-              marginBottom: "0.75rem",
-              background: "rgba(15, 118, 110, 0.05)",
-              border: "1px solid rgba(15, 118, 110, 0.24)",
-              fontSize: "0.76rem",
-              color: "#1e293b",
-            }}
-          >
-            <div
-              style={{
-                display: "flex",
-                justifyContent: "space-between",
-                alignItems: "center",
-                gap: "0.5rem",
-              }}
-            >
-              <strong>
-                🔒 Confidential Material Protection &amp; AI Disclosure
-              </strong>
-              <span className="tier-badge">DPDP 2025 Compliant</span>
-            </div>
-            <div style={{ marginTop: "0.22rem", color: "#475569" }}>
-              Raw documents, KFS tables, and banners never leave this container.
-              Every finding below discloses whether it used{" "}
-              <strong>Tier 1 Deterministic Math (Zero AI)</strong>,{" "}
-              <strong>Tier 2 Local NLI (MiniCheck-FT5 ONNX)</strong>, or{" "}
-              <strong>Tier 3 PII-Scrubbed Rewrite</strong>.
+              <span
+                className="cg-dpdp-micro-pill"
+                title="Raw documents and banners never leave this container; PII is masked locally via PiiVault before any optional Tier 3 rewrite."
+              >
+                <ShieldCheck size={12} /> DPDP Local Vault
+              </span>
             </div>
           </div>
 
-          <div className="findings-toolbar card">
-            <div className="findings-filter-tabs">
-              <button
-                type="button"
-                className={`filter-tab ${filter === "all" ? "active" : ""}`}
-                onClick={() => setFilter("all")}
-              >
-                All ({findings.length})
-              </button>
-              <button
-                type="button"
-                className={`filter-tab filter-blocker ${
-                  filter === "blockers" ? "active" : ""
-                }`}
-                onClick={() => setFilter("blockers")}
-              >
-                Blockers ({blockerCount})
-              </button>
-              <button
-                type="button"
-                className={`filter-tab filter-warning ${
-                  filter === "warnings" ? "active" : ""
-                }`}
-                onClick={() => setFilter("warnings")}
-              >
-                Warnings ({warningCount})
-              </button>
-              <button
-                type="button"
-                className={`filter-tab ${
-                  filter === "claims_only" ? "active" : ""
-                }`}
-                onClick={() => setFilter("claims_only")}
-                title="Legal Reviewer view: filters to claims, disclosures, blockers, and overrides"
-              >
-                ⚖ Claims &amp; Overrides
-              </button>
-            </div>
-
-            <div className="conformal-alpha-control">
-              <label htmlFor="alpha-select">Review Strictness:</label>
-              <select
-                id="alpha-select"
-                value={conformalAlpha}
-                onChange={(e) => setConformalAlpha(Number(e.target.value))}
-              >
-                <option value={0.04}>Strict (BFSI / Legal Sign-Off)</option>
-                <option value={0.1}>Balanced (Standard Review)</option>
-                <option value={0.2}>Permissive (Early Draft)</option>
-              </select>
-            </div>
-          </div>
-
+          {/* Fault Cards List */}
           {scanning ? (
-            <div className="empty-state card">
-              Scanning campaign against {submission.canon_id}...
+            <div className="cg-empty-box">
+              Auditing campaign against <code>{submission.canon_id}</code>…
             </div>
           ) : filteredFindings.length === 0 ? (
-            <div className="empty-state card">
-              {findings.length === 0
-                ? "✓ Zero compliance issues found! This campaign bundle passes all active playbook rules."
-                : "No findings match the current filter."}
+            <div className="cg-empty-box cg-empty-clean">
+              <CheckCircle2 size={24} className="cg-text-emerald" />
+              <p>
+                {findings.length === 0
+                  ? "Zero compliance issues found! This campaign bundle passes all active playbook rules."
+                  : "No findings match the active filter."}
+              </p>
             </div>
           ) : (
-            <div className="findings-list">
-              {filteredFindings.map((f) => {
+            <div className="cg-fault-list">
+              {filteredFindings.map((f, idx) => {
                 const isBlocker = f.severity >= 50;
                 const isSelected = selectedFindingId === f.row_id;
                 const evidence = f.payload?.evidence ?? {};
@@ -1468,71 +1550,84 @@ export function SubmissionDetailPage() {
                   f.payload?.suggestion &&
                     f.payload.suggestion.replacements.length > 0,
                 );
+                const findingComments = comments.filter(
+                  (c) => c.finding_id === f.row_id,
+                );
+
+                const shortTierBadge = trace
+                  ? trace.ai_used
+                    ? `Tier 2 NLI · ${trace.model_name ?? "Local ONNX"}`
+                    : String(trace.tier).toLowerCase() === "smt"
+                      ? "Tier 1.5 · Z3 SMT"
+                      : "Tier 1 · Deterministic"
+                  : "Tier 1 · Deterministic";
 
                 return (
-                  <div
+                  <article
                     key={f.row_id}
                     id={`finding-card-${f.row_id}`}
                     onClick={() => setSelectedFindingId(f.row_id)}
-                    className={`finding-card card ${
-                      isBlocker ? "finding-blocker" : "finding-warning"
-                    } ${f.resolution !== "open" ? "finding-resolved" : ""} ${
-                      isSelected ? "finding-selected" : ""
+                    className={`cg-fault-card finding-card ${
+                      isBlocker ? "fault-blocker" : "fault-warning"
+                    } ${f.resolution !== "open" ? "fault-resolved" : ""} ${
+                      isSelected ? "selected finding-selected" : ""
                     }`}
                   >
-                    <div className="finding-header">
+                    {/* Card Top Metadata Bar */}
+                    <div className="cg-fault-card-top">
+                      <span className="cg-fault-index">#{idx + 1}</span>
                       <span
-                        className={`severity-pill ${
-                          isBlocker ? "sev-blocker" : "sev-warning"
+                        className={`cg-sev-badge ${
+                          f.resolution !== "open"
+                            ? "sev-pass"
+                            : isBlocker
+                              ? "sev-blocker"
+                              : "sev-warning"
                         }`}
                       >
-                        {isBlocker ? "BLOCKER" : "WARNING"} · S={f.severity}
+                        {f.resolution !== "open"
+                          ? f.resolution.toUpperCase()
+                          : `${isBlocker ? "BLOCKER" : "WARNING"} · ${f.severity}`}
                       </span>
-                      <span className="check-id">{f.check_id}</span>
-                      {trace && (
-                        <span
-                          className="tier-badge"
-                          title={`Tier: ${trace.tier} | AI Used: ${trace.ai_used ? "Yes" : "No"} | Model: ${trace.model_sha ?? trace.model_name ?? "Deterministic Math"} | External Service: ${trace.rewriter_provider ?? trace.external_service ?? (trace.external_call ? "External API" : "None (100% Local)")}${trace.latency_ms != null ? ` | Latency: ${trace.latency_ms.toFixed(1)}ms` : ""}`}
-                        >
-                          {trace.ai_used
-                            ? `AI: ${trace.model_sha ?? trace.model_name ?? "Local NLI"} (${trace.rewriter_provider ?? trace.external_service ?? (trace.external_call ? "External" : "Local")})`
-                            : String(trace.tier).toLowerCase() === "smt"
-                              ? "TIER 1.5 · SMT SOLVER (100% LOCAL)"
-                              : "TIER 1 · ZERO AI (100% LOCAL)"}
-                        </span>
-                      )}
-                      {f.resolution !== "open" && (
-                        <span className={`resolution-badge res-${f.resolution}`}>
-                          {f.resolution}
-                        </span>
-                      )}
+
+                      <span className="cg-fault-category">
+                        {formatCheckLabel(f.check_id)}
+                      </span>
+
+                      <span
+                        className="cg-fault-tier-pill"
+                        title={
+                          trace
+                            ? `Tier: ${trace.tier} | Model: ${trace.model_sha ?? trace.model_name ?? "Deterministic Math"}${trace.latency_ms != null ? ` | ${trace.latency_ms.toFixed(1)}ms` : ""}`
+                            : "Deterministic local check"
+                        }
+                      >
+                        {shortTierBadge}
+                      </span>
                     </div>
 
-                    <p className="finding-message">{f.message}</p>
+                    {/* Primary Finding Message */}
+                    <p className="cg-fault-message">{f.message}</p>
 
+                    {/* Grounding Citation */}
                     {f.payload?.rule_ref?.source_text && (
-                      <div className="finding-rule">
-                        <strong>
-                          Approved Playbook Rule ({f.payload.rule_ref.rule_id}):
-                        </strong>{" "}
-                        {f.payload.rule_ref.source_text}
+                      <div className="cg-fault-rule-box">
+                        <span className="cg-mono-label">
+                          PLAYBOOK RULE · {f.payload.rule_ref.rule_id}
+                        </span>
+                        <p>{f.payload.rule_ref.source_text}</p>
                       </div>
                     )}
 
-                    {/* Claim Comparison Table (SlotDiff) */}
+                    {/* Progressive Disclosure 1: QASem 4-Column SlotDiff Table */}
                     {isSlotDiff && slots.length > 0 && (
                       <div
-                        className="slot-diff-box"
+                        className="cg-fault-slotdiff-wrap"
                         onClick={(e) => e.stopPropagation()}
                       >
-                        <div
-                          className="slot-diff-header"
-                          style={{
-                            cursor: "pointer",
-                            display: "flex",
-                            justifyContent: "space-between",
-                            alignItems: "center",
-                          }}
+                        <button
+                          type="button"
+                          className="cg-slotdiff-toggle-bar"
                           onClick={() =>
                             setExpandedSlotDiffs((prev) => ({
                               ...prev,
@@ -1541,195 +1636,168 @@ export function SubmissionDetailPage() {
                           }
                         >
                           <span>
-                            <strong>Claim vs. Approved Fact Comparison</strong>
+                            <Eye size={13} />
+                            <strong>
+                              QASem Claim vs. Approved Fact SlotDiff
+                            </strong>
                             {entailmentProb !== null && (
-                              <span>
-                                {" "}
-                                · Match Confidence ={" "}
-                                {(entailmentProb * 100).toFixed(1)}%
-                              </span>
+                              <code style={{ marginLeft: "0.4rem" }}>
+                                NLI={(entailmentProb * 100).toFixed(1)}%
+                              </code>
                             )}
                           </span>
-                          <button
-                            type="button"
-                            className="btn-ghost"
-                            style={{
-                              padding: "0.15rem 0.5rem",
-                              fontSize: "0.75rem",
-                            }}
-                          >
-                            {isSlotExpanded
-                              ? "▲ Hide Comparison"
-                              : "▼ Inspect Claim Comparison"}
-                          </button>
-                        </div>
+                          <span className="cg-slotdiff-toggle-action">
+                            {isSlotExpanded ? "Hide Matrix ▲" : "Inspect Matrix ▼"}
+                          </span>
+                        </button>
 
                         {isSlotExpanded && (
-                          <table className="slot-diff-table">
-                            <thead>
-                              <tr>
-                                <th>Attribute</th>
-                                <th>Approved Fact</th>
-                                <th>Campaign Draft</th>
-                                <th>Status</th>
-                              </tr>
-                            </thead>
-                            <tbody>
-                              {slots.map((s, idx) => (
-                                <tr key={idx}>
-                                  <td>
-                                    <strong>{s.slot ?? s.slot_name}</strong>
-                                  </td>
-                                  <td>{s.canon_value ?? "—"}</td>
-                                  <td>{s.draft_value ?? "—"}</td>
-                                  <td className={`slot-${s.status}`}>
-                                    {s.status.toUpperCase()}
-                                  </td>
+                          <div className="cg-slotdiff-table-container cg-animate-swap">
+                            <table className="cg-slotdiff-table">
+                              <thead>
+                                <tr>
+                                  <th>Slot</th>
+                                  <th>Approved Canon</th>
+                                  <th>Campaign Draft</th>
+                                  <th>Status</th>
                                 </tr>
-                              ))}
-                            </tbody>
-                          </table>
+                              </thead>
+                              <tbody>
+                                {slots.map((s, sIdx) => (
+                                  <tr key={sIdx}>
+                                    <td>
+                                      <code>{s.slot ?? s.slot_name}</code>
+                                    </td>
+                                    <td>{s.canon_value ?? "—"}</td>
+                                    <td>{s.draft_value ?? "—"}</td>
+                                    <td>
+                                      <span
+                                        className={`cg-slot-badge slot-${s.status}`}
+                                      >
+                                        {s.status.toUpperCase()}
+                                      </span>
+                                    </td>
+                                  </tr>
+                                ))}
+                              </tbody>
+                            </table>
+                          </div>
                         )}
                       </div>
                     )}
 
+                    {/* Progressive Disclosure 2: Suggested Text Replacement */}
                     {f.payload?.suggestion && (
-                      <div className="finding-suggestion">
-                        <strong>Suggested Fix:</strong>{" "}
-                        {f.payload.suggestion.label ??
-                          f.payload.suggestion.explanation}
+                      <div className="cg-fault-suggestion-box">
+                        <div className="cg-fault-suggestion-header">
+                          <span className="cg-mono-label">
+                            RECOMMENDED REMEDIATION
+                          </span>
+                        </div>
+                        <p className="cg-fault-suggestion-text">
+                          {f.payload.suggestion.label ??
+                            f.payload.suggestion.explanation}
+                        </p>
                         {f.payload.suggestion.replacements.map((r, i) => (
-                          <code key={i} className="replacement-chip">
-                            → &ldquo;{r.replacement}&rdquo;
-                          </code>
+                          <div key={i} className="cg-replacement-diff">
+                            <span className="cg-diff-plus">+</span>
+                            <code>{r.replacement}</code>
+                          </div>
                         ))}
                       </div>
                     )}
 
+                    {/* Progressive Disclosure 3: 3-Candidate DesignAlternativeProvider Swatches */}
                     {Array.isArray(evidence.design_alternatives) &&
                       evidence.design_alternatives.length > 0 && (
                         <div
-                          className="design-alternatives-box"
+                          className="cg-fault-swatches-box"
                           onClick={(e) => e.stopPropagation()}
-                          style={{
-                            marginTop: "0.5rem",
-                            padding: "0.55rem 0.7rem",
-                            borderRadius: "6px",
-                            background: "rgba(15, 23, 42, 0.04)",
-                            border: "1px solid rgba(148, 163, 184, 0.3)",
-                            fontSize: "0.78rem",
-                          }}
                         >
-                          <div style={{ fontWeight: 600, marginBottom: "0.35rem" }}>
-                            🎨 Multi-Candidate Visual Repair (DesignAlternativeProvider · {evidence.design_alternatives.length} Re-Verified Options):
+                          <div className="cg-evidence-header">
+                            <span>
+                              3-Candidate WCAG &amp; Brand Palette Alternatives
+                            </span>
+                            <code>DesignAlternativeProvider</code>
                           </div>
-                          <div
-                            style={{
-                              display: "flex",
-                              flexWrap: "wrap",
-                              gap: "0.45rem",
-                            }}
-                          >
-                            {evidence.design_alternatives.map((alt: any, idx: number) => (
-                              <div
-                                key={alt.candidate_id ?? idx}
-                                style={{
-                                  display: "inline-flex",
-                                  alignItems: "center",
-                                  gap: "0.4rem",
-                                  padding: "0.28rem 0.55rem",
-                                  borderRadius: "5px",
-                                  border: "1px solid rgba(100, 116, 139, 0.35)",
-                                  background: "#ffffff",
-                                }}
-                              >
-                                <span
-                                  aria-label={`Preview ${alt.foreground_hex} on ${alt.background_hex}`}
-                                  style={{
-                                    display: "inline-block",
-                                    padding: "0.1rem 0.38rem",
-                                    borderRadius: "4px",
-                                    backgroundColor: alt.background_hex ?? "#FFFFFF",
-                                    color: alt.foreground_hex ?? "#000000",
-                                    fontWeight: 700,
-                                    fontFamily: "monospace",
-                                    border: "1px solid rgba(0,0,0,0.15)",
-                                  }}
+                          <div className="cg-swatch-grid">
+                            {evidence.design_alternatives.map(
+                              (alt: any, aIdx: number) => (
+                                <div
+                                  key={alt.candidate_id ?? aIdx}
+                                  className="cg-swatch-card"
                                 >
-                                  Aa {alt.foreground_hex}
-                                </span>
-                                <span>
-                                  <strong>{alt.contrast_ratio}:1</strong>
-                                  {typeof alt.delta_e_from_brand === "number" && (
-                                    <span style={{ opacity: 0.75 }}>
-                                      {" "}· ΔE₀₀={alt.delta_e_from_brand}
+                                  <div className="cg-swatch-top">
+                                    <span
+                                      className="cg-swatch-chip"
+                                      style={{
+                                        backgroundColor:
+                                          alt.foreground_hex ?? "#000000",
+                                      }}
+                                    />
+                                    <code>{alt.foreground_hex}</code>
+                                    <span className="cg-swatch-pass">
+                                      {alt.contrast_ratio}:1
                                     </span>
+                                  </div>
+                                  <div className="cg-swatch-label">
+                                    {alt.label ?? `Option ${aIdx + 1}`}
+                                  </div>
+                                  {typeof alt.delta_e_from_brand ===
+                                    "number" && (
+                                    <div className="cg-swatch-meta">
+                                      <span>
+                                        ΔE₀₀ = {alt.delta_e_from_brand}
+                                      </span>
+                                    </div>
                                   )}
-                                </span>
-                              </div>
-                            ))}
+                                </div>
+                              ),
+                            )}
                           </div>
                         </div>
                       )}
 
+                    {/* Progressive Disclosure 4: Tier 3 Surgical Rewrite Result */}
                     {rewritePreviews[f.row_id] && (
-                      <div
-                        className="gov-clean-box"
-                        style={{ marginTop: "0.5rem", fontSize: "0.8rem" }}
-                      >
-                        <div>
-                          <strong>Suggested Rewrite:</strong>{" "}
-                          {rewritePreviews[f.row_id].reverified
-                            ? "✓ Verified against playbook rules"
-                            : "Ready for review"}{" "}
-                          · Edit Distance:{" "}
-                          {(
-                            rewritePreviews[f.row_id].edit_distance_ratio * 100
-                          ).toFixed(1)}
-                          % · PII Masked:{" "}
-                          {rewritePreviews[f.row_id].pii_masked_count} ·
-                          Provider: {rewritePreviews[f.row_id].used_provider}
+                      <div className="cg-fault-rewrite-preview cg-animate-swap">
+                        <div className="cg-evidence-header">
+                          <span>
+                            ✓ Surgical Rewrite Verified (Edit Ratio:{" "}
+                            {(
+                              rewritePreviews[f.row_id].edit_distance_ratio *
+                              100
+                            ).toFixed(1)}
+                            % · PII Masked:{" "}
+                            {rewritePreviews[f.row_id].pii_masked_count})
+                          </span>
+                          <code>{rewritePreviews[f.row_id].used_provider}</code>
                         </div>
                         {rewritePreviews[f.row_id].provider_notice && (
-                          <div
-                            style={{
-                              marginTop: "0.25rem",
-                              padding: "0.25rem 0.45rem",
-                              borderRadius: "4px",
-                              backgroundColor:
-                                rewritePreviews[f.row_id].api_key_configured === false
-                                  ? "rgba(217, 119, 6, 0.14)"
-                                  : "rgba(16, 185, 129, 0.12)",
-                              color:
-                                rewritePreviews[f.row_id].api_key_configured === false
-                                  ? "#b45309"
-                                  : "#065f46",
-                              fontSize: "0.75rem",
-                            }}
-                          >
+                          <div className="cg-rewrite-notice">
                             {rewritePreviews[f.row_id].provider_notice}
                           </div>
                         )}
-                        <div style={{ marginTop: "0.25rem" }}>
+                        <div className="cg-replacement-diff">
+                          <span className="cg-diff-plus">+</span>
                           <code>
-                            → &ldquo;{rewritePreviews[f.row_id].rewritten_text}
-                            &rdquo;
+                            {rewritePreviews[f.row_id].rewritten_text}
                           </code>
                         </div>
                       </div>
                     )}
 
+                    {/* Recorded Resolution Rationale */}
                     {f.resolution !== "open" && f.resolution_reason && (
-                      <div className="finding-override-reason">
-                        <strong>Recorded Review Note:</strong>{" "}
-                        {f.resolution_reason}
+                      <div className="cg-recorded-note">
+                        <strong>Review Note:</strong> {f.resolution_reason}
                       </div>
                     )}
 
-                    {/* Action Buttons on Open Findings */}
+                    {/* Action Bar on Open Findings */}
                     {f.resolution === "open" && (
                       <div
-                        className="finding-actions"
+                        className="cg-fault-actions-bar"
                         onClick={(e) => e.stopPropagation()}
                       >
                         {hasTextSuggestion ? (
@@ -1738,21 +1806,24 @@ export function SubmissionDetailPage() {
                             disabled={acceptLockedByForcingFunction}
                             title={
                               acceptLockedByForcingFunction
-                                ? "Inspect the Claim Comparison table above first to unlock this action."
+                                ? "Inspect the SlotDiff matrix above first to unlock."
                                 : "Apply suggested replacement to document"
                             }
-                            className="btn-resolve btn-accept"
+                            className="cg-btn cg-btn-emerald cg-btn-sm"
                             onClick={() => handleResolve(f.row_id, "accepted")}
                           >
-                            {acceptLockedByForcingFunction
-                              ? "🔒 Inspect Claim Comparison First"
-                              : "✓ Accept & Apply Fix"}
+                            <Check size={13} />
+                            <span>
+                              {acceptLockedByForcingFunction
+                                ? "Inspect SlotDiff First"
+                                : "Accept & Apply Fix"}
+                            </span>
                           </button>
                         ) : (
                           <button
                             type="button"
                             disabled={acceptLockedByForcingFunction}
-                            className="btn-resolve btn-accept"
+                            className="cg-btn cg-btn-emerald cg-btn-sm"
                             onClick={() => {
                               setOverrideTarget({
                                 rowId: f.row_id,
@@ -1761,9 +1832,12 @@ export function SubmissionDetailPage() {
                               setOverrideReason("");
                             }}
                           >
-                            {acceptLockedByForcingFunction
-                              ? "🔒 Inspect Comparison First"
-                              : "✓ Mark Remediated"}
+                            <Check size={13} />
+                            <span>
+                              {acceptLockedByForcingFunction
+                                ? "Inspect SlotDiff First"
+                                : "Mark Remediated"}
+                            </span>
                           </button>
                         )}
 
@@ -1771,20 +1845,23 @@ export function SubmissionDetailPage() {
                           typeof f.payload?.locator?.end === "number" && (
                             <button
                               type="button"
-                              className="btn-resolve"
+                              className="cg-btn cg-btn-secondary cg-btn-sm"
                               disabled={rewritingRowId === f.row_id}
                               onClick={() => handleTier3Rewrite(f.row_id)}
                             >
-                              {rewritingRowId === f.row_id
-                                ? "Generating..."
-                                : "✨ Suggest Rewrite"}
+                              <Wand2 size={13} />
+                              <span>
+                                {rewritingRowId === f.row_id
+                                  ? "Rewriting…"
+                                  : "Surgical Rewrite"}
+                              </span>
                             </button>
                           )}
 
                         {!isBlocker && (
                           <button
                             type="button"
-                            className="btn-resolve btn-override"
+                            className="cg-btn cg-btn-secondary cg-btn-sm"
                             onClick={() => {
                               setOverrideTarget({
                                 rowId: f.row_id,
@@ -1793,7 +1870,7 @@ export function SubmissionDetailPage() {
                               setOverrideReason("");
                             }}
                           >
-                            Override Warning
+                            <span>Override</span>
                           </button>
                         )}
 
@@ -1801,7 +1878,7 @@ export function SubmissionDetailPage() {
                           (role === "reviewer" || role === "admin") && (
                             <button
                               type="button"
-                              className="btn-resolve btn-dismiss"
+                              className="cg-btn cg-btn-ghost cg-btn-sm"
                               onClick={() => {
                                 setOverrideTarget({
                                   rowId: f.row_id,
@@ -1810,25 +1887,23 @@ export function SubmissionDetailPage() {
                                 setOverrideReason("");
                               }}
                             >
-                              Dismiss Warning
+                              <span>Dismiss</span>
                             </button>
                           )}
 
                         <button
                           type="button"
-                          className="btn-resolve"
+                          className="cg-btn cg-btn-ghost cg-btn-sm"
                           onClick={() =>
                             setCommentTargetRowId(
-                              commentTargetRowId === f.row_id ? null : f.row_id,
+                              commentTargetRowId === f.row_id
+                                ? null
+                                : f.row_id,
                             )
                           }
                         >
-                          💬 Comment (
-                          {
-                            comments.filter((c) => c.finding_id === f.row_id)
-                              .length
-                          }
-                          )
+                          <MessageSquare size={12} />
+                          <span>{findingComments.length}</span>
                         </button>
                       </div>
                     )}
@@ -1857,21 +1932,21 @@ export function SubmissionDetailPage() {
                           onChange={(e) => setOverrideReason(e.target.value)}
                           placeholder={
                             overrideTarget.mode === "accepted"
-                              ? "Explain how this visual/layout issue was resolved..."
-                              : "Provide context for overriding or dismissing this warning..."
+                              ? "Explain how this visual/layout issue was resolved…"
+                              : "Provide context for overriding or dismissing this warning…"
                           }
                         />
                         <div className="override-popover-actions">
                           <button
                             type="button"
-                            className="btn-ghost"
+                            className="cg-btn cg-btn-ghost cg-btn-sm"
                             onClick={() => setOverrideTarget(null)}
                           >
                             Cancel
                           </button>
                           <button
                             type="button"
-                            className="btn-primary"
+                            className="cg-btn cg-btn-primary cg-btn-sm"
                             disabled={overrideReason.trim().length < 5}
                             onClick={() =>
                               handleResolve(
@@ -1888,34 +1963,32 @@ export function SubmissionDetailPage() {
                     )}
 
                     {/* Inline Comments Thread on this Finding Card */}
-                    {(comments.some((c) => c.finding_id === f.row_id) ||
+                    {(findingComments.length > 0 ||
                       commentTargetRowId === f.row_id) && (
                       <div
                         className="finding-comments-box"
                         onClick={(e) => e.stopPropagation()}
                       >
-                        {comments
-                          .filter((c) => c.finding_id === f.row_id)
-                          .map((c) => (
-                            <div key={c.id} className="comment-item">
-                              <span className="comment-author">
-                                @{c.author_name} ({c.role}):
-                              </span>{" "}
-                              <span className="comment-body">{c.body}</span>
-                            </div>
-                          ))}
+                        {findingComments.map((c) => (
+                          <div key={c.id} className="comment-item">
+                            <span className="comment-author">
+                              @{c.author_name} ({c.role}):
+                            </span>{" "}
+                            <span className="comment-body">{c.body}</span>
+                          </div>
+                        ))}
                         {commentTargetRowId === f.row_id && (
                           <div className="inline-comment-composer">
                             <input
                               type="text"
                               value={commentBody}
                               onChange={(e) => setCommentBody(e.target.value)}
-                              placeholder="Add comment on this finding..."
+                              placeholder="Add comment on this finding…"
                               className="comment-input"
                             />
                             <button
                               type="button"
-                              className="btn-primary"
+                              className="cg-btn cg-btn-primary cg-btn-sm"
                               disabled={postingComment || !commentBody.trim()}
                               onClick={() =>
                                 handlePostComment(f.row_id, commentBody)
@@ -1927,13 +2000,72 @@ export function SubmissionDetailPage() {
                         )}
                       </div>
                     )}
-                  </div>
+                  </article>
                 );
               })}
             </div>
           )}
         </aside>
       </div>
+
+      {/* Workflow Transition Confirmation Modal */}
+      {wfAction && (
+        <div className="modal-overlay" onClick={() => setWfAction(null)}>
+          <div className="modal card" onClick={(e) => e.stopPropagation()}>
+            <div className="cg-gov-card-header">
+              <h3>
+                Confirm Stage Transition:{" "}
+                <span style={{ textTransform: "capitalize" }}>
+                  {wfAction.replace("_", " ")}
+                </span>
+              </h3>
+              <button
+                type="button"
+                className="cg-btn cg-btn-ghost cg-btn-sm"
+                onClick={() => setWfAction(null)}
+              >
+                <X size={14} />
+              </button>
+            </div>
+            <p
+              style={{
+                fontSize: "0.84rem",
+                color: "var(--cg-text-secondary)",
+                marginBottom: "0.85rem",
+              }}
+            >
+              This transition will be sealed in the tamper-evident RFC 9162
+              Merkle audit log under <strong>@{username}</strong> ({role}).
+            </p>
+            <div className="cg-field-group">
+              <label htmlFor="wf-comment">Review Sign-Off Note (optional)</label>
+              <textarea
+                id="wf-comment"
+                rows={3}
+                value={wfComment}
+                onChange={(e) => setWfComment(e.target.value)}
+                placeholder="Add context for this stage decision…"
+              />
+            </div>
+            <div className="modal-actions">
+              <button
+                type="button"
+                className="cg-btn cg-btn-ghost"
+                onClick={() => setWfAction(null)}
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                className="cg-btn cg-btn-primary"
+                onClick={handleWorkflow}
+              >
+                Confirm Transition
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Revision History Modal */}
       {showVersionsModal && (
@@ -1945,20 +2077,22 @@ export function SubmissionDetailPage() {
             className="modal card modal-wide"
             onClick={(e) => e.stopPropagation()}
           >
-            <div className="gov-panel-header">
-              <h3>Submission Revision History</h3>
+            <div className="cg-gov-card-header">
+              <div>
+                <h3>Immutable Submission Revision History</h3>
+                <p>
+                  Every accepted fix or copy edit records an immutable revision
+                  with its own SHA-256 content hash.
+                </p>
+              </div>
               <button
                 type="button"
-                className="btn-ghost"
+                className="cg-btn cg-btn-ghost cg-btn-sm"
                 onClick={() => setShowVersionsModal(false)}
               >
-                ✕ Close
+                <X size={14} /> Close
               </button>
             </div>
-            <p className="gov-panel-desc">
-              Every accepted fix or copy edit records an immutable revision with
-              its own content hash.
-            </p>
             <div className="audit-timeline">
               {versions.map((v) => (
                 <div key={v.version_number} className="audit-event card">
@@ -1994,18 +2128,24 @@ export function SubmissionDetailPage() {
             className="modal card modal-wide"
             onClick={(e) => e.stopPropagation()}
           >
-            <div className="gov-panel-header">
-              <h3>Approval &amp; Sign-Off Audit Trail</h3>
+            <div className="cg-gov-card-header">
+              <div>
+                <h3>RFC 9162 Merkle &amp; Ed25519 Audit Ledger</h3>
+                <p>
+                  Hash-chained state transitions with cryptographic inclusion
+                  proofs.
+                </p>
+              </div>
               <button
                 type="button"
-                className="btn-ghost"
+                className="cg-btn cg-btn-ghost cg-btn-sm"
                 onClick={() => setShowAuditModal(false)}
               >
-                ✕ Close
+                <X size={14} /> Close
               </button>
             </div>
             {audit.length === 0 ? (
-              <p className="gov-panel-desc">
+              <p className="cg-empty-inline-note">
                 No stage transitions recorded yet. Submit, approve, or release
                 this campaign to record signed audit events.
               </p>
@@ -2013,11 +2153,11 @@ export function SubmissionDetailPage() {
               <>
                 {audit[0].tree_head && (
                   <div
-                    className="gov-clean-box"
+                    className="cg-clean-note"
                     style={{ marginBottom: "1rem" }}
                   >
                     <div>
-                      <strong>Cryptographic Audit Summary:</strong>
+                      <strong>Cryptographic Tree Head Summary:</strong>
                     </div>
                     <div
                       className="audit-hashes"
@@ -2035,7 +2175,7 @@ export function SubmissionDetailPage() {
                         </code>
                       </span>
                       <span>
-                        Signature:{" "}
+                        Ed25519 Sig:{" "}
                         <code>
                           {(
                             audit[0].tree_head.signature_hex ??
@@ -2046,7 +2186,7 @@ export function SubmissionDetailPage() {
                         </code>
                       </span>
                       <span>
-                        Total Events:{" "}
+                        Tree Size:{" "}
                         <strong>{audit[0].tree_head.tree_size}</strong>
                       </span>
                     </div>
