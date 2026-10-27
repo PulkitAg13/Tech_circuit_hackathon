@@ -78,6 +78,12 @@ CREATE TABLE IF NOT EXISTS workflow_events (
     event_hash TEXT NOT NULL,
     created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
+CREATE INDEX IF NOT EXISTS idx_submissions_canon_id ON submissions(canon_id);
+CREATE INDEX IF NOT EXISTS idx_submissions_creator_id ON submissions(creator_id);
+CREATE INDEX IF NOT EXISTS idx_findings_submission_id ON findings(submission_id);
+CREATE INDEX IF NOT EXISTS idx_workflow_events_submission_id ON workflow_events(submission_id);
+CREATE INDEX IF NOT EXISTS idx_sub_versions_sub_id ON submission_versions(submission_id);
+CREATE INDEX IF NOT EXISTS idx_sub_comments_sub_id ON submission_comments(submission_id);
 INSERT OR IGNORE INTO users (id, username, display_name, role, password_hash)
 VALUES (
     1, 'creative_lead', 'Agency Creative Lead', 'creator',
@@ -148,6 +154,8 @@ def _get_sqlite_conn() -> sqlite3.Connection:
         try:
             conn = sqlite3.connect(db_path, check_same_thread=False)
             conn.row_factory = sqlite3.Row
+            conn.execute("PRAGMA journal_mode=WAL;")
+            conn.execute("PRAGMA synchronous=NORMAL;")
             conn.executescript(_SQLITE_DDL)
             conn.commit()
             _shared_sqlite_conn = conn
@@ -157,6 +165,8 @@ def _get_sqlite_conn() -> sqlite3.Connection:
             )
             conn = sqlite3.connect(tmp_path, check_same_thread=False)
             conn.row_factory = sqlite3.Row
+            conn.execute("PRAGMA journal_mode=WAL;")
+            conn.execute("PRAGMA synchronous=NORMAL;")
             conn.executescript(_SQLITE_DDL)
             conn.commit()
             _shared_sqlite_conn = conn

@@ -689,6 +689,9 @@ def detect_banner_text_boxes(gray_img: np.ndarray, *, min_width: int = 16) -> tu
     return detect_text_band_boxes(gray_img, min_width=min_width)
 
 
+_BANNER_AST_CACHE: dict[tuple[Any, ...], ContentAST] = {}
+
+
 def parse_banner_image(
     source: str | Path | bytes,
     *,
@@ -699,13 +702,31 @@ def parse_banner_image(
 ) -> ContentAST:
     """Parse an image file or byte buffer into an `ImageNode` plus OCR `TextNode`s."""
     try:
+        stat_cache_key: tuple[Any, ...] | None = None
         if isinstance(source, (str, Path)):
             file_path = Path(source)
-            if not file_path.is_file():
+            try:
+                st = file_path.stat()
+            except OSError:
                 logger.warning("Image file not found: %s", file_path)
                 return ContentAST(nodes=())
-            raw_bytes = file_path.read_bytes()
             asset_path = str(file_path)
+            if ocr_engine == "auto":
+                stat_cache_key = (
+                    "stat",
+                    asset_path,
+                    st.st_mtime_ns,
+                    st.st_size,
+                    path,
+                    alt,
+                    tuple(ocr_texts),
+                    id(default_ocr_engine._paddle_en),
+                    id(default_ocr_engine._paddle_hi),
+                )
+                cached_stat_ast = _BANNER_AST_CACHE.get(stat_cache_key)
+                if cached_stat_ast is not None:
+                    return cached_stat_ast
+            raw_bytes = file_path.read_bytes()
         elif isinstance(source, (bytes, bytearray, memoryview)):
             raw_bytes = bytes(source)
             asset_path = path
@@ -714,6 +735,22 @@ def parse_banner_image(
 
         if not raw_bytes:
             return ContentAST(nodes=())
+
+        cache_key: tuple[Any, ...] | None = None
+        if ocr_engine == "auto":
+            raw_digest = hashlib.blake2b(raw_bytes, digest_size=16).digest()
+            cache_key = (
+                raw_digest,
+                asset_path,
+                path,
+                alt,
+                tuple(ocr_texts),
+                id(default_ocr_engine._paddle_en),
+                id(default_ocr_engine._paddle_hi),
+            )
+            cached_ast = _BANNER_AST_CACHE.get(cache_key)
+            if cached_ast is not None:
+                return cached_ast
 
         with Image.open(io.BytesIO(raw_bytes)) as im:
             width, height = im.size
@@ -736,7 +773,11 @@ def parse_banner_image(
         if t.strip()
     ]
     if ocr_engine is not None:
-        ocr_input: str | bytes = asset_path if Path(asset_path).is_file() else raw_bytes
+        ocr_input: str | bytes = (
+            raw_bytes
+            if (ocr_engine == "auto" and default_ocr_engine._paddle_en is None)
+            else (asset_path if Path(asset_path).is_file() else raw_bytes)
+        )
         ocr_boxes.extend(default_ocr_engine.extract(ocr_input, custom_engine=ocr_engine))
 
     for idx, box in enumerate(ocr_boxes):
@@ -753,7 +794,14 @@ def parse_banner_image(
             node_path = f"{path}/ocr[{idx}]"
         nodes.append(TextNode.from_text(cleaned, path=node_path))
 
-    return ContentAST(nodes=tuple(nodes))
+    result_ast = ContentAST(nodes=tuple(nodes))
+    if cache_key is not None:
+        if len(_BANNER_AST_CACHE) >= 512:
+            _BANNER_AST_CACHE.clear()
+        _BANNER_AST_CACHE[cache_key] = result_ast
+        if stat_cache_key is not None:
+            _BANNER_AST_CACHE[stat_cache_key] = result_ast
+    return result_ast
 
 
 parse_image = parse_banner_image

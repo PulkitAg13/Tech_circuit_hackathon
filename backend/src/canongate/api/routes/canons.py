@@ -5,6 +5,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import json
+import re
 from collections import defaultdict
 from pathlib import Path
 from typing import Any
@@ -613,6 +614,9 @@ def _classify_finding_category(check_id: str) -> tuple[str, str]:
     )
 
 
+_RULE_ID_EXTRACT_RE = re.compile(r'"rule_id"\s*:\s*"([^"]+)"')
+
+
 def _aggregate_canon_friction(
     findings: list,
 ) -> tuple[
@@ -635,13 +639,20 @@ def _aggregate_canon_friction(
 
     for f in findings:
         rule_key = f.check_id
-        if f.payload_json:
-            try:
-                payload = json.loads(f.payload_json)
-                if isinstance(payload.get("rule_ref"), dict) and payload["rule_ref"].get("rule_id"):
-                    rule_key = payload["rule_ref"]["rule_id"]
-            except Exception:
-                pass
+        p_json = f.payload_json
+        if p_json and '"rule_id"' in p_json:
+            m_rule = _RULE_ID_EXTRACT_RE.search(p_json)
+            if m_rule and m_rule.group(1):
+                rule_key = m_rule.group(1)
+            else:
+                try:
+                    payload = json.loads(p_json)
+                    if isinstance(payload.get("rule_ref"), dict) and payload["rule_ref"].get(
+                        "rule_id"
+                    ):
+                        rule_key = payload["rule_ref"]["rule_id"]
+                except Exception:
+                    pass
 
         rule_stats[rule_key]["total"] += 1
         if f.resolution in ("overridden", "dismissed"):

@@ -1343,8 +1343,16 @@ def _shift_or_supersede_finding_payload(
                         r_span["end"] = re_ + net_shift
 
 
+_TEXT_AST_CACHE: dict[str, ContentAST] = {}
+
+
 def _parse_submission_ast(raw: str) -> ContentAST:
     """Parse raw submission text into a `ContentAST`, linearizing Markdown pipe tables."""
+    can_cache_text = "![" not in raw
+    if can_cache_text:
+        cached = _TEXT_AST_CACHE.get(raw)
+        if cached is not None:
+            return cached
     base_ast = parse_text(raw)
     expanded_nodes: list[Node] = []
     for node in base_ast:
@@ -1370,7 +1378,12 @@ def _parse_submission_ast(raw: str) -> ContentAST:
                 expanded_nodes.extend(tbl_ast.nodes)
                 continue
         expanded_nodes.append(node)
-    return ContentAST(nodes=tuple(expanded_nodes))
+    res_ast = ContentAST(nodes=tuple(expanded_nodes))
+    if can_cache_text:
+        if len(_TEXT_AST_CACHE) >= 512:
+            _TEXT_AST_CACHE.clear()
+        _TEXT_AST_CACHE[raw] = res_ast
+    return res_ast
 
 
 def _to_response(sub) -> SubmissionResponse:
