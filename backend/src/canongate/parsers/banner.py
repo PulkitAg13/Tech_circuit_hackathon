@@ -683,36 +683,10 @@ default_ocr_engine = BannerOCREngine()
 
 
 def detect_banner_text_boxes(gray_img: np.ndarray, *, min_width: int = 16) -> tuple[BBox, ...]:
-    """Locate horizontal text-line bounding boxes using SIMD morphological gradients."""
-    if gray_img.ndim == 3:
-        gray_img = cv2.cvtColor(gray_img, cv2.COLOR_RGB2GRAY)
+    """Locate horizontal text-line bounding boxes via shared Sobel + Otsu pipeline."""
+    from canongate.checks._vision import detect_text_band_boxes
 
-    h, w = gray_img.shape
-    if h < 16 or w < 16:
-        return ()
-
-    grad_x = cv2.Sobel(gray_img, ddepth=cv2.CV_16S, dx=1, dy=0, ksize=3)
-    abs_grad = cv2.convertScaleAbs(grad_x)
-    otsu_t, _ = cv2.threshold(abs_grad, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
-    eff_t = max(24.0, min(float(otsu_t), 40.0))
-    _, thresh = cv2.threshold(abs_grad, eff_t, 255, cv2.THRESH_BINARY)
-    v_kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (1, max(60, int(h * 0.55))))
-    thresh = cv2.subtract(thresh, cv2.morphologyEx(thresh, cv2.MORPH_OPEN, v_kernel))
-
-    kw = max(9, w // 25)
-    kh = max(3, h // 80)
-    kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (kw, kh))
-    closed = cv2.morphologyEx(thresh, cv2.MORPH_CLOSE, kernel)
-
-    contours, _ = cv2.findContours(closed, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-    boxes: list[BBox] = []
-    for cnt in contours:
-        bx, by, bw, bh = cv2.boundingRect(cnt)
-        if bw >= min_width and 4 <= bh <= int(h * 0.45) and bw >= bh:
-            boxes.append(BBox(x=int(bx), y=int(by), w=int(bw), h=int(bh)))
-
-    boxes.sort()
-    return tuple(boxes)
+    return detect_text_band_boxes(gray_img, min_width=min_width)
 
 
 def parse_banner_image(

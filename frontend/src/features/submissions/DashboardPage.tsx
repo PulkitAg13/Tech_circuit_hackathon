@@ -92,21 +92,21 @@ const QUICK_SAMPLE_PRESETS = [
     canonId: "indian-digital-lending",
     title: "Acme QuickLoan Diwali Festival Campaign",
     content:
-      "Celebrate this festive season with Acme QuickLoan! Get 0% interest on all personal loans with guaranteed instant approval in 60 seconds.\n\nPrincipal: ₹50,000 | Processing Fee: ₹1,500 | Total Interest: ₹3,500 | Tenure: 6 Months | Stated APR: 14.00%.",
+      "Celebrate this season with Acme QuickLoan! Get 0% processing fee on loans with guaranteed approval and no credit check — cheap personal credit for everyone.\n\nPrincipal: Rs 50,000 | Processing Fee: Rs 1,500 | Total Interest: Rs 3,500 | Tenure: 6 Months | Annual Percentage Rate (APR) is 14%.\n\n<div style=\"color: #777777; background-color: #FFFFFF;\">T&C apply. Contact support@acmeloans.in.</div>",
   },
   {
     label: "ASCI Nutraceutical Launch",
     canonId: "indian-d2c-nutra",
-    title: "VitalGlow Marine Peptides Instagram Launch",
+    title: "AyurGlow Curcumin Gold Elixir Launch",
     content:
-      "Transform your skin overnight: VitalGlow Marine Peptides are clinically proven to permanently reverse skin aging in 7 days with 100% doctor-endorsed zero side effects.",
+      "Experience our miracle cure formula with 2x faster absorption and 100% fat burn results! AyurGlow cures diabetes naturally in 7 days.",
   },
   {
-    label: "Enterprise Cloud Keynote",
+    label: "Acme Brand & Palette Audit",
     canonId: "acme-corp",
-    title: "Acme Cloud Shield Enterprise Launch Copy",
+    title: "Acme Cloud Enterprise Launch Landing Page",
     content:
-      "Deploy Acme Cloud Shield for 100% unhackable zero-downtime infrastructure backed by unlimited SLA payouts on every tier across 24 global regions.",
+      "Why buy cheap legacy tools when our cutting-edge platform helps users modernize? Acme Corp has over 500 employees serving global enterprises.\n\n<div style=\"color: #777777; background-color: #FFFFFF;\">Enterprise SLA footnote text.</div>",
   },
 ] as const;
 

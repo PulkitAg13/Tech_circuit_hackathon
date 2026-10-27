@@ -28,9 +28,9 @@ async def _seed_default_users() -> None:
     """Ensure starter evaluation accounts exist on a fresh database."""
     async with async_session() as session, session.begin():
         for uname, dname, role, pw in _DEFAULT_DEMO_USERS:
+            pw_hash = hashlib.sha256(pw.encode()).hexdigest()
             existing = await get_user_by_username(session, uname)
             if not existing:
-                pw_hash = hashlib.sha256(pw.encode()).hexdigest()
                 await create_user(
                     session,
                     username=uname,
@@ -38,6 +38,13 @@ async def _seed_default_users() -> None:
                     role=role,
                     password_hash=pw_hash,
                 )
+            elif existing.password_hash != pw_hash:
+                existing.password_hash = pw_hash
+                if getattr(session, "is_sqlite_fallback", False):
+                    session.conn.execute(
+                        "UPDATE users SET password_hash = ? WHERE username = ?",
+                        (pw_hash, uname),
+                    )
 
 
 _LEGACY_DEMO_TITLES = (

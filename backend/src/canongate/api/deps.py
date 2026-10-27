@@ -6,11 +6,15 @@ import base64
 import datetime as dt
 import hashlib
 import hmac
+import inspect
 import json
 from pathlib import Path
-from typing import Annotated, Any
+from typing import Annotated, Any, get_args, get_origin
 
+import fastapi as _fastapi
+import fastapi.dependencies.utils as _fdu
 from fastapi import Depends, Header, HTTPException
+from fastapi import params as _fparams
 
 from canongate.canon.impact import _canon_to_yaml
 from canongate.canon.loader import load_canon
@@ -23,6 +27,27 @@ try:
     import jwt as _pyjwt
 except ImportError:
     _pyjwt = None  # type: ignore[assignment]
+
+_orig_get_typed_sig = _fdu.get_typed_signature
+
+
+def _annotated_aware_typed_signature(call: Any) -> inspect.Signature:
+    sig = _orig_get_typed_sig(call)
+    new_params = []
+    for p in sig.parameters.values():
+        if p.default is inspect.Parameter.empty and get_origin(p.annotation) is Annotated:
+            args = get_args(p.annotation)
+            for meta in args[1:]:
+                if isinstance(meta, _fparams.Depends):
+                    p = p.replace(annotation=args[0], default=meta)
+                    break
+        new_params.append(p)
+    return sig.replace(parameters=new_params)
+
+
+_fver = tuple(int(x) for x in getattr(_fastapi, "__version__", "0.0").split(".")[:2])
+if _fver < (0, 95):
+    _fdu.get_typed_signature = _annotated_aware_typed_signature
 
 _settings = Settings()
 
