@@ -174,15 +174,41 @@ def _get_sqlite_conn() -> sqlite3.Connection:
 
 
 if HAS_SQLALCHEMY:
+    from sqlalchemy import event, text
     from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
     engine = create_async_engine(_settings.db_url, echo=False)
     async_session = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
 
+    if "sqlite" in _settings.db_url:
+
+        @event.listens_for(engine.sync_engine, "connect")
+        def _set_sqlite_pragma(dbapi_connection: Any, connection_record: Any) -> None:
+            cursor = dbapi_connection.cursor()
+            cursor.execute("PRAGMA journal_mode=WAL;")
+            cursor.execute("PRAGMA synchronous=NORMAL;")
+            cursor.close()
+
     async def init_db() -> None:
         """Create all tables. Idempotent."""
         async with engine.begin() as conn:
             await conn.run_sync(Base.metadata.create_all)
+            if "sqlite" in _settings.db_url:
+                _indices = (
+                    "CREATE INDEX IF NOT EXISTS idx_submissions_canon_id ON submissions(canon_id);",
+                    "CREATE INDEX IF NOT EXISTS idx_submissions_creator_id "
+                    "ON submissions(creator_id);",
+                    "CREATE INDEX IF NOT EXISTS idx_findings_submission_id "
+                    "ON findings(submission_id);",
+                    "CREATE INDEX IF NOT EXISTS idx_workflow_events_submission_id "
+                    "ON workflow_events(submission_id);",
+                    "CREATE INDEX IF NOT EXISTS idx_sub_versions_sub_id "
+                    "ON submission_versions(submission_id);",
+                    "CREATE INDEX IF NOT EXISTS idx_sub_comments_sub_id "
+                    "ON submission_comments(submission_id);",
+                )
+                for idx_stmt in _indices:
+                    await conn.execute(text(idx_stmt))
 
 else:
     AsyncSession = SqliteAsyncSession  # type: ignore[misc,assignment]

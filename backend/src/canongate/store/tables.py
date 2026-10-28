@@ -45,10 +45,12 @@ if HAS_SQLALCHEMY:
         title: Mapped[str] = mapped_column(String(256), default="Untitled")
         raw_content: Mapped[str] = mapped_column(Text, nullable=False)
         content_hash: Mapped[str] = mapped_column(String(64), nullable=False)
-        canon_id: Mapped[str] = mapped_column(String(64), nullable=False)
+        canon_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
         canon_hash: Mapped[str] = mapped_column(String(64), nullable=False)
         status: Mapped[str] = mapped_column(String(32), default="draft")
-        creator_id: Mapped[int] = mapped_column(Integer, ForeignKey("users.id"), nullable=False)
+        creator_id: Mapped[int] = mapped_column(
+            Integer, ForeignKey("users.id"), nullable=False, index=True
+        )
         created_at: Mapped[dt.datetime] = mapped_column(DateTime, server_default=func.now())
         updated_at: Mapped[dt.datetime] = mapped_column(
             DateTime, server_default=func.now(), onupdate=func.now()
@@ -72,7 +74,7 @@ if HAS_SQLALCHEMY:
 
         id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
         submission_id: Mapped[int] = mapped_column(
-            Integer, ForeignKey("submissions.id"), nullable=False
+            Integer, ForeignKey("submissions.id"), nullable=False, index=True
         )
         version_number: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
         raw_content: Mapped[str] = mapped_column(Text, nullable=False)
@@ -90,7 +92,7 @@ if HAS_SQLALCHEMY:
         id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
         finding_id: Mapped[str] = mapped_column(String(32), nullable=False)
         submission_id: Mapped[int] = mapped_column(
-            Integer, ForeignKey("submissions.id"), nullable=False
+            Integer, ForeignKey("submissions.id"), nullable=False, index=True
         )
         check_id: Mapped[str] = mapped_column(String(64), nullable=False)
         node_id: Mapped[str] = mapped_column(String(64), nullable=False)
@@ -110,7 +112,7 @@ if HAS_SQLALCHEMY:
 
         id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
         submission_id: Mapped[int] = mapped_column(
-            Integer, ForeignKey("submissions.id"), nullable=False
+            Integer, ForeignKey("submissions.id"), nullable=False, index=True
         )
         finding_id: Mapped[int | None] = mapped_column(
             Integer, ForeignKey("findings.id"), nullable=True
@@ -128,7 +130,7 @@ if HAS_SQLALCHEMY:
 
         id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
         submission_id: Mapped[int] = mapped_column(
-            Integer, ForeignKey("submissions.id"), nullable=False
+            Integer, ForeignKey("submissions.id"), nullable=False, index=True
         )
         action: Mapped[str] = mapped_column(String(32), nullable=False)
         from_status: Mapped[str] = mapped_column(String(32), nullable=False)
