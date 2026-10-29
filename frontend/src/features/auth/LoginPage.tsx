@@ -1,17 +1,13 @@
 import { useState, type FormEvent } from "react";
 import { useAuth } from "./context";
-import { useNavigate, useSearchParams, Link } from "react-router-dom";
+import { useNavigate, useSearchParams } from "react-router-dom";
 import {
   ShieldCheck,
   Lock,
   User,
   KeyRound,
   ArrowRight,
-  CheckCircle2,
   Briefcase,
-  Cpu,
-  FileCheck2,
-  Layers,
   Play,
 } from "lucide-react";
 
@@ -20,19 +16,19 @@ const ROLE_OPTIONS = [
     value: "creator",
     stage: "STAGE 01",
     label: "Creator (Marketing / Agency Author)",
-    desc: "Uploads campaign bundles, runs pre-flight checks, fixes Blockers, and documents context on Warning overrides.",
+    desc: "Uploads campaign bundles, runs pre-flight checks, fixes Blockers, and documents warning overrides.",
   },
   {
     value: "reviewer",
     stage: "STAGE 02",
     label: "Brand Manager (Playbook & Brand Review)",
-    desc: "Ingests & calibrates Brand Playbooks, reviews revision diffs & overrides, and approves brand compliance.",
+    desc: "Manages brand playbooks, reviews revision diffs and warning overrides, and approves brand compliance.",
   },
   {
     value: "admin",
     stage: "STAGE 03",
     label: "Authorised Legal Reviewer (Compliance Sign-Off)",
-    desc: "Audits statutory SlotDiff claims & Merkle ledger to execute final legal sign-off and C2PA release.",
+    desc: "Audits statutory claims and ledger proofs to execute final legal sign-off and release.",
   },
 ] as const;
 
@@ -41,25 +37,25 @@ const DEMO_ACCOUNTS = [
     username: "creative_lead",
     role: "creator",
     stage: "STAGE 01",
-    title: "Creator Workspace",
+    title: "Creator",
     handle: "@creative_lead",
-    summary: "Draft pre-flight, surgical copy repair & WCAG swatch fixes",
+    summary: "Draft pre-flight & copy repair",
   },
   {
     username: "brand_manager",
     role: "reviewer",
     stage: "STAGE 02",
-    title: "Brand Manager Console",
+    title: "Brand Manager",
     handle: "@brand_manager",
-    summary: "Playbook calibration, override review & v1.1 PR generation",
+    summary: "Playbooks & override review",
   },
   {
     username: "legal_counsel",
     role: "admin",
     stage: "STAGE 03",
-    title: "Legal Counsel Sign-Off",
+    title: "Legal Counsel",
     handle: "@legal_counsel",
-    summary: "Statutory KFS/ASCI audit, final release & Merkle certificate",
+    summary: "Statutory sign-off & certificate",
   },
 ] as const;
 
@@ -68,22 +64,19 @@ export function LoginPage() {
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
   const requestedRole = searchParams.get("role");
-  const redirectPath = searchParams.get("redirect") || "/dashboard";
+  const redirectPath = searchParams.get("redirect") || "/";
 
-  // Mode: Sign In vs Create Account
   const [authMode, setAuthMode] = useState<"signin" | "signup">("signin");
 
   const matchedDemo = requestedRole
     ? DEMO_ACCOUNTS.find((a) => a.role === requestedRole)
     : undefined;
 
-  // Sign In state
   const [signInUsername, setSignInUsername] = useState<string>(
     () => matchedDemo?.username ?? "creative_lead",
   );
   const [signInPassword, setSignInPassword] = useState("demoPassword123!");
 
-  // Sign Up state
   const [signUpName, setSignUpName] = useState("");
   const [signUpUsername, setSignUpUsername] = useState("");
   const [signUpPassword, setSignUpPassword] = useState("");
@@ -91,7 +84,6 @@ export function LoginPage() {
     () => requestedRole ?? "creator",
   );
 
-  // UI state
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [quickLaunchingUser, setQuickLaunchingUser] = useState<string | null>(
@@ -161,44 +153,30 @@ export function LoginPage() {
 
   return (
     <div className="cg-auth-shell">
-      {/* Top Architectural Bar */}
       <header className="cg-topbar">
         <div className="cg-topbar-inner">
           <div className="cg-topbar-left">
-            <Link to="/" className="cg-brand">
+            <div className="cg-brand">
               <span className="cg-brand-mark" aria-hidden="true">
                 <ShieldCheck size={17} strokeWidth={2.2} />
               </span>
               <span className="cg-brand-name">CanonGate</span>
-              <span className="cg-brand-version">RBAC Gateway</span>
-            </Link>
-          </div>
-          <div className="cg-topbar-right">
-            <Link to="/" className="cg-btn cg-btn-ghost">
-              ← Back to Product Overview
-            </Link>
+              <span className="cg-brand-version">Console</span>
+            </div>
           </div>
         </div>
       </header>
 
-      {/* Main Split Gateway */}
       <main className="cg-auth-main">
-        <div className="cg-auth-grid">
-          {/* Left Column: 1-Click Role Sandbox + Credential Form */}
+        <div className="cg-auth-single-wrap">
           <section className="cg-auth-card">
-            {/* 1-Click Role Persona Quick-Launch Section */}
             <div className="cg-auth-quicklaunch">
               <div className="cg-auth-quicklaunch-top">
-                <span className="cg-mono-label">
-                  QUICK ROLE SWITCHER (1-CLICK LAUNCH)
-                </span>
-                <span className="cg-auth-quicklaunch-badge">
-                  Zero-Config Seeded Accounts
-                </span>
+                <span className="cg-mono-label">QUICK ROLE LAUNCH</span>
+                <span className="cg-auth-quicklaunch-badge">Seeded Accounts</span>
               </div>
               <p className="cg-auth-quicklaunch-desc">
-                Select any role below to enter the live governance console
-                immediately, or use the credential form underneath.
+                Select a role to open the governance workspace immediately, or sign in with credentials below.
               </p>
 
               <div className="cg-auth-persona-grid">
@@ -236,10 +214,9 @@ export function LoginPage() {
             </div>
 
             <div className="cg-auth-divider">
-              <span>OR SIGN IN / REGISTER WITH CREDENTIALS</span>
+              <span>OR SIGN IN WITH CREDENTIALS</span>
             </div>
 
-            {/* Segmented Mode Switcher */}
             <div className="cg-auth-tabs" role="tablist">
               <button
                 type="button"
@@ -253,7 +230,7 @@ export function LoginPage() {
                   setAuthMode("signin");
                 }}
               >
-                Sign In to Existing Account
+                Sign In
               </button>
               <button
                 type="button"
@@ -267,7 +244,7 @@ export function LoginPage() {
                   setAuthMode("signup");
                 }}
               >
-                Create New Role Account
+                Create Account
               </button>
             </div>
 
@@ -303,7 +280,7 @@ export function LoginPage() {
                   <div className="cg-field-label-row">
                     <label htmlFor="password">Password</label>
                     <span className="cg-field-hint">
-                      Demo password: <code>demoPassword123!</code>
+                      Demo: <code>demoPassword123!</code>
                     </span>
                   </div>
                   <div className="cg-input-with-icon">
@@ -326,7 +303,7 @@ export function LoginPage() {
                   disabled={loading || quickLaunchingUser !== null}
                 >
                   <span>
-                    {loading ? "Authenticating…" : "Sign In to Governance Console"}
+                    {loading ? "Signing in…" : "Sign In"}
                   </span>
                   <ArrowRight size={16} className="cg-arrow-shift" />
                 </button>
@@ -371,7 +348,7 @@ export function LoginPage() {
                 </div>
 
                 <div className="cg-field-group">
-                  <label htmlFor="signup-role">Assigned Governance Role</label>
+                  <label htmlFor="signup-role">Role</label>
                   <div className="cg-input-with-icon">
                     <Briefcase size={15} className="cg-field-icon" />
                     <select
@@ -399,7 +376,7 @@ export function LoginPage() {
                     <input
                       id="signup-password"
                       type="password"
-                      placeholder="Create a strong password"
+                      placeholder="Create a password"
                       value={signUpPassword}
                       onChange={(e) => setSignUpPassword(e.target.value)}
                       required
@@ -414,95 +391,13 @@ export function LoginPage() {
                   disabled={loading}
                 >
                   <span>
-                    {loading
-                      ? "Creating Account…"
-                      : "Register & Enter Governance Studio"}
+                    {loading ? "Creating account…" : "Create Account"}
                   </span>
                   <ArrowRight size={16} className="cg-arrow-shift" />
                 </button>
               </form>
             )}
           </section>
-
-          {/* Right Column: Architectural RBAC & Cryptographic Workflow Spec */}
-          <aside className="cg-auth-spec-panel">
-            <div className="cg-auth-spec-top">
-              <span className="cg-mono-label" style={{ color: "#38BDF8" }}>
-                TAMPER-EVIDENT ROLE SEPARATION
-              </span>
-              <h2>4-Stage Collaborative Pre-Publish Gate</h2>
-              <p>
-                Every action in CanonGate is bound to an authenticated RBAC
-                identity and recorded in an append-only RFC 9162 SHA-256 Merkle
-                audit tree.
-              </p>
-            </div>
-
-            <div className="cg-auth-stage-list">
-              <div className="cg-auth-stage-item">
-                <span className="cg-auth-stage-num">01</span>
-                <div>
-                  <strong>Creator Pre-Flight (@creative_lead)</strong>
-                  <p>
-                    Runs Tier 1–2 checks, applies ≤35% surgical rewrites and
-                    WCAG contrast swatches, and documents warning overrides.
-                  </p>
-                </div>
-              </div>
-
-              <div className="cg-auth-stage-item">
-                <span className="cg-auth-stage-num">02</span>
-                <div>
-                  <strong>Brand Governance (@brand_manager)</strong>
-                  <p>
-                    Reviews inline ProseMirror diffs and banner bounding boxes,
-                    calibrates rule thresholds, and approves brand compliance.
-                  </p>
-                </div>
-              </div>
-
-              <div className="cg-auth-stage-item">
-                <span className="cg-auth-stage-num">03</span>
-                <div>
-                  <strong>Legal &amp; Statutory Sign-Off (@legal_counsel)</strong>
-                  <p>
-                    Verifies QASem SlotDiff claims, Z3 KFS APR math, and
-                    mandatory statutory disclosures to issue final release.
-                  </p>
-                </div>
-              </div>
-
-              <div className="cg-auth-stage-item">
-                <span className="cg-auth-stage-num">04</span>
-                <div>
-                  <strong>Cryptographic Release Seal (Ed25519 + C2PA 2.2)</strong>
-                  <p>
-                    Generates a self-contained JSON certificate verifiable
-                    offline via <code>uv run canongate verify cert.json</code>.
-                  </p>
-                </div>
-              </div>
-            </div>
-
-            <div className="cg-auth-spec-footer">
-              <div className="cg-auth-spec-pill">
-                <Cpu size={14} />
-                <span>100% Local Tier 1 &amp; 1.5 Math</span>
-              </div>
-              <div className="cg-auth-spec-pill">
-                <Layers size={14} />
-                <span>DPDP 2023 PII Vault</span>
-              </div>
-              <div className="cg-auth-spec-pill">
-                <FileCheck2 size={14} />
-                <span>In-Session Role Switcher Ready</span>
-              </div>
-              <div className="cg-auth-spec-pill">
-                <CheckCircle2 size={14} />
-                <span>RFC 9162 Merkle Proofs</span>
-              </div>
-            </div>
-          </aside>
         </div>
       </main>
     </div>

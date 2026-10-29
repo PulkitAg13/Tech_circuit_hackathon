@@ -4,19 +4,12 @@ test.describe('CanonGate Golden Path E2E', () => {
   test('Full governance lifecycle: Creator fixes blockers -> Brand Approves -> Legal Approves -> Certificate Issued', async ({
     page,
   }) => {
-    // 1. Open Public Home Page and verify live workbench & role gateway
+    // 1. Open root URL (redirects unauthenticated users to minimal Login gateway)
     await page.goto('/');
-    await expect(
-      page.getByRole('heading', { name: /Pre-Publish Brand & Regulatory/i })
-    ).toBeVisible();
-    await expect(page.getByText('Workspace Role Gateway')).toBeVisible();
-
-    // 2. Navigate to Login Page and sign in via Quick Role Switcher as Creator
-    await page.goto('/login');
     await expect(page.getByText('CanonGate').first()).toBeVisible();
     await page.getByTestId('quick-login-creative_lead').click();
 
-    await expect(page).toHaveURL(/\/dashboard/);
+    await expect(page).toHaveURL(/\/(dashboard)?$/);
     await expect(page.getByText('@creative_lead')).toBeVisible();
 
     // 3. Ensure New Campaign Bundle form is open

@@ -1,15 +1,36 @@
-import { useState, useCallback, type ReactNode } from "react";
+import { useState, useCallback, useEffect, type ReactNode } from "react";
 import {
   login as apiLogin,
   register as apiRegister,
   switchRole as apiSwitchRole,
+  getMe as apiGetMe,
+  isJwtExpired,
   type TokenResponse,
 } from "../../api/client";
 import { AuthContext, type AuthState } from "./context";
 
+function clearStorage() {
+  localStorage.removeItem("cg_token");
+  localStorage.removeItem("cg_username");
+  localStorage.removeItem("cg_display_name");
+  localStorage.removeItem("cg_role");
+}
+
 function loadFromStorage(): AuthState {
+  const token = localStorage.getItem("cg_token");
+  if (!token || isJwtExpired(token)) {
+    if (token) {
+      clearStorage();
+    }
+    return {
+      token: null,
+      username: null,
+      displayName: null,
+      role: null,
+    };
+  }
   return {
-    token: localStorage.getItem("cg_token"),
+    token,
     username: localStorage.getItem("cg_username"),
     displayName:
       localStorage.getItem("cg_display_name") ||
@@ -26,15 +47,60 @@ function saveToStorage(res: TokenResponse) {
   localStorage.setItem("cg_role", res.role);
 }
 
-function clearStorage() {
-  localStorage.removeItem("cg_token");
-  localStorage.removeItem("cg_username");
-  localStorage.removeItem("cg_display_name");
-  localStorage.removeItem("cg_role");
-}
-
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [state, setState] = useState<AuthState>(loadFromStorage);
+
+  const logout = useCallback(() => {
+    clearStorage();
+    setState({ token: null, username: null, displayName: null, role: null });
+  }, []);
+
+  useEffect(() => {
+    function handleAuthExpired() {
+      logout();
+    }
+    function handleAuthRefreshed(e: Event) {
+      const detail = (e as CustomEvent<TokenResponse>).detail;
+      if (detail && detail.token) {
+        saveToStorage(detail);
+        setState({
+          token: detail.token,
+          username: detail.username,
+          displayName: detail.display_name || detail.username,
+          role: detail.role,
+        });
+      }
+    }
+    window.addEventListener("cg:auth-expired", handleAuthExpired);
+    window.addEventListener("cg:auth-refreshed", handleAuthRefreshed);
+    return () => {
+      window.removeEventListener("cg:auth-expired", handleAuthExpired);
+      window.removeEventListener("cg:auth-refreshed", handleAuthRefreshed);
+    };
+  }, [logout]);
+
+  // Silently verify/refresh the token on startup so active sessions never hit a 24h cliff
+  useEffect(() => {
+    if (!state.token) return;
+    let active = true;
+    void apiGetMe()
+      .then((res) => {
+        if (!active) return;
+        saveToStorage(res);
+        setState({
+          token: res.token,
+          username: res.username,
+          displayName: res.display_name || res.username,
+          role: res.role,
+        });
+      })
+      .catch(() => {
+        // Handled by client.ts 401 interceptor
+      });
+    return () => {
+      active = false;
+    };
+  }, [state.token]);
 
   const loginFn = useCallback(async (username: string, password: string) => {
     const res = await apiLogin(username, password);
@@ -75,11 +141,6 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       displayName: res.display_name || prev.displayName || res.username,
       role: res.role,
     }));
-  }, []);
-
-  const logout = useCallback(() => {
-    clearStorage();
-    setState({ token: null, username: null, displayName: null, role: null });
   }, []);
 
   return (

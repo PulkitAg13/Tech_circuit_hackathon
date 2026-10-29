@@ -2,8 +2,6 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
 import { AuthProvider } from "./features/auth/AuthContext";
 import { useAuth } from "./features/auth/context";
-import { HomePage } from "./features/home/HomePage";
-import { HackathonPage } from "./features/home/HackathonPage";
 import { LoginPage } from "./features/auth/LoginPage";
 import { DashboardPage } from "./features/submissions/DashboardPage";
 import { SubmissionDetailPage } from "./features/submissions/SubmissionDetailPage";
@@ -28,19 +26,15 @@ function AppRoutes() {
 
   return (
     <Routes>
-      {/* ── Public Hackathon Pitch Page ── */}
-      <Route path="/" element={<HackathonPage />} />
-
-      {/* ── Public Interactive Pre-Flight Sandbox (former home page) ── */}
-      <Route path="/playground" element={<HomePage />} />
-
-      {/* ── Auth / Sign In Page ── */}
+      {/* ── Minimal Workspace Homepage (Campaign Queue & Playbook Studio) ── */}
       <Route
-        path="/login"
-        element={isAuthenticated ? <Navigate to="/dashboard" replace /> : <LoginPage />}
+        path="/"
+        element={
+          <ProtectedRoute>
+            <DashboardPage />
+          </ProtectedRoute>
+        }
       />
-
-      {/* ── Main Governance Console & Submissions ── */}
       <Route
         path="/dashboard"
         element={
@@ -49,7 +43,14 @@ function AppRoutes() {
           </ProtectedRoute>
         }
       />
-      <Route path="/app" element={<Navigate to="/dashboard" replace />} />
+      <Route path="/app" element={<Navigate to="/" replace />} />
+      <Route path="/playground" element={<Navigate to="/" replace />} />
+
+      {/* ── Minimal Sign-In Card ── */}
+      <Route
+        path="/login"
+        element={isAuthenticated ? <Navigate to="/" replace /> : <LoginPage />}
+      />
 
       {/* ── Multimodal Review Studio ── */}
       <Route

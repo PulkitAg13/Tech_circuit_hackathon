@@ -34,8 +34,30 @@ export function isStaticOrGitHubPages(): boolean {
   return false;
 }
 
+export function isJwtExpired(token: string | null): boolean {
+  if (!token) return true;
+  if (token.startsWith("browser_jwt_")) return false;
+  const parts = token.split(".");
+  if (parts.length !== 3) return false;
+  try {
+    const base64 = parts[1].replace(/-/g, "+").replace(/_/g, "/");
+    const padded = base64 + "=".repeat((4 - (base64.length % 4)) % 4);
+    const payload = JSON.parse(atob(padded)) as { exp?: number };
+    if (typeof payload.exp === "number") {
+      return payload.exp * 1000 <= Date.now() + 5000;
+    }
+    return false;
+  } catch {
+    return false;
+  }
+}
+
 function getToken(): string | null {
-  return localStorage.getItem("cg_token");
+  const token = localStorage.getItem("cg_token");
+  if (token && isJwtExpired(token)) {
+    return null;
+  }
+  return token;
 }
 
 function authHeaders(): Record<string, string> {
@@ -46,9 +68,87 @@ function authHeaders(): Record<string, string> {
   };
 }
 
+let _reauthPromise: Promise<TokenResponse | null> | null = null;
+
+async function trySilentReauth(base: string): Promise<TokenResponse | null> {
+  if (_reauthPromise) return _reauthPromise;
+  _reauthPromise = (async () => {
+    const storedUser = localStorage.getItem("cg_username") || "creative_lead";
+    const storedRole = localStorage.getItem("cg_role");
+    const storedDisplay = localStorage.getItem("cg_display_name") || storedUser;
+    try {
+      let loginRes = await fetch(`${base}/auth/login`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          username: storedUser,
+          password: "demoPassword123!",
+        }),
+      });
+      if (!loginRes.ok) {
+        // Fallback to creative_lead demo persona or re-register if DB was reset
+        loginRes = await fetch(`${base}/auth/register`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            username: storedUser,
+            password: "demoPassword123!",
+            role: storedRole || "creator",
+            display_name: storedDisplay,
+          }),
+        });
+      }
+      if (!loginRes.ok) return null;
+      let data = (await loginRes.json()) as TokenResponse;
+      if (storedRole && data.role !== storedRole) {
+        const switchRes = await fetch(`${base}/auth/switch-role`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${data.token}`,
+          },
+          body: JSON.stringify({ role: storedRole }),
+        });
+        if (switchRes.ok) {
+          data = (await switchRes.json()) as TokenResponse;
+        }
+      }
+      localStorage.setItem("cg_token", data.token);
+      localStorage.setItem("cg_username", data.username);
+      localStorage.setItem(
+        "cg_display_name",
+        data.display_name || storedDisplay || data.username,
+      );
+      localStorage.setItem("cg_role", data.role);
+      if (typeof window !== "undefined") {
+        window.dispatchEvent(
+          new CustomEvent("cg:auth-refreshed", { detail: data }),
+        );
+      }
+      return data;
+    } catch {
+      return null;
+    } finally {
+      _reauthPromise = null;
+    }
+  })();
+  return _reauthPromise;
+}
+
+function clearAndNotifyExpiredAuth() {
+  localStorage.removeItem("cg_token");
+  localStorage.removeItem("cg_username");
+  localStorage.removeItem("cg_display_name");
+  localStorage.removeItem("cg_role");
+  if (typeof window !== "undefined") {
+    window.dispatchEvent(new CustomEvent("cg:auth-expired"));
+  }
+}
+
 async function request<T>(
   path: string,
   options: RequestInit = {},
+  isRetry = false,
 ): Promise<T> {
   if (isStaticOrGitHubPages()) {
     return handleBrowserRequest<T>(path, options);
@@ -56,6 +156,21 @@ async function request<T>(
 
   const base = getApiBase();
   try {
+    // Proactively refresh if the token in storage is already expired
+    const rawToken = localStorage.getItem("cg_token");
+    if (
+      rawToken &&
+      isJwtExpired(rawToken) &&
+      !path.startsWith("/auth/login") &&
+      !path.startsWith("/auth/register")
+    ) {
+      const refreshed = await trySilentReauth(base);
+      if (!refreshed) {
+        clearAndNotifyExpiredAuth();
+        throw new ApiError(401, "Session expired. Please sign in again.");
+      }
+    }
+
     const res = await fetch(`${base}${path}`, {
       ...options,
       headers: {
@@ -73,6 +188,20 @@ async function request<T>(
     }
 
     if (!res.ok) {
+      if (
+        res.status === 401 &&
+        !isRetry &&
+        !path.startsWith("/auth/login") &&
+        !path.startsWith("/auth/register")
+      ) {
+        const refreshed = await trySilentReauth(base);
+        if (refreshed) {
+          return request<T>(path, options, true);
+        }
+        clearAndNotifyExpiredAuth();
+        throw new ApiError(401, "Session expired. Please sign in again.");
+      }
+
       if (
         res.status === 404 &&
         !window.location.hostname.includes("localhost") &&
@@ -118,6 +247,18 @@ async function handleBrowserRequest<T>(
           ? "admin"
           : "creator");
     const display = body.display_name || username;
+    return {
+      token: `browser_jwt_${username}_${Date.now()}`,
+      username,
+      role,
+      display_name: display,
+    } as unknown as T;
+  }
+
+  if (path === "/auth/me") {
+    const username = localStorage.getItem("cg_username") || "creative_lead";
+    const role = localStorage.getItem("cg_role") || "creator";
+    const display = localStorage.getItem("cg_display_name") || username;
     return {
       token: `browser_jwt_${username}_${Date.now()}`,
       username,
@@ -669,6 +810,10 @@ export function register(
       display_name: displayName || username,
     }),
   });
+}
+
+export function getMe(): Promise<TokenResponse> {
+  return request("/auth/me");
 }
 
 export function switchRole(role: string): Promise<TokenResponse> {

@@ -261,12 +261,14 @@ export function DashboardPage() {
 
   const refresh = useCallback(async () => {
     setLoading(true);
-    try {
-      const [subs, cans] = await Promise.all([listSubmissions(), listCanons()]);
-      setSubmissions(subs);
-      if (subs.length === 0) {
-        setShowForm(true);
-      }
+    setError(null);
+    const [subsRes, cansRes] = await Promise.allSettled([
+      listSubmissions(),
+      listCanons(),
+    ]);
+
+    if (cansRes.status === "fulfilled") {
+      const cans = cansRes.value;
       setCanons(cans);
       if (cans.length > 0) {
         const defaultCanon =
@@ -289,12 +291,28 @@ export function DashboardPage() {
           return resolvedGovId;
         });
       }
+    }
+
+    if (subsRes.status === "fulfilled") {
+      setSubmissions(subsRes.value);
+      if (subsRes.value.length === 0) {
+        setShowForm(true);
+      }
+    } else {
+      setError((subsRes.reason as Error)?.message || "Failed to load submissions");
+    }
+
+    setLoading(false);
+  }, [syncRuleSliders]);
+
+  async function handleRoleSwitch(targetRole: string) {
+    setError(null);
+    try {
+      await switchRole(targetRole);
     } catch (err) {
       setError((err as Error).message);
-    } finally {
-      setLoading(false);
     }
-  }, [syncRuleSliders]);
+  }
 
   useEffect(() => {
     let active = true;
@@ -810,7 +828,7 @@ export function DashboardPage() {
                 className={`cg-btn cg-btn-sm ${
                   role === "creator" ? "cg-btn-primary" : "cg-btn-secondary"
                 }`}
-                onClick={() => void switchRole("creator")}
+                onClick={() => void handleRoleSwitch("creator")}
               >
                 Creator
               </button>
@@ -819,7 +837,7 @@ export function DashboardPage() {
                 className={`cg-btn cg-btn-sm ${
                   role === "reviewer" ? "cg-btn-primary" : "cg-btn-secondary"
                 }`}
-                onClick={() => void switchRole("reviewer")}
+                onClick={() => void handleRoleSwitch("reviewer")}
               >
                 Brand
               </button>
@@ -828,7 +846,7 @@ export function DashboardPage() {
                 className={`cg-btn cg-btn-sm ${
                   role === "admin" ? "cg-btn-primary" : "cg-btn-secondary"
                 }`}
-                onClick={() => void switchRole("admin")}
+                onClick={() => void handleRoleSwitch("admin")}
               >
                 Legal
               </button>
@@ -878,206 +896,81 @@ export function DashboardPage() {
 
         {activeTab === "submissions" ? (
           <div key="tab-submissions" className="cg-animate-swap">
-            {/* ── Role Context Header & Primary Actions ── */}
-            <section className="cg-console-hero-bar">
-              <div className="cg-console-hero-left">
-                <div className="cg-console-eyebrow">
-                  <span className="cg-role-stage-tag">
-                    {currentRoleMeta.stageOwned}
-                  </span>
-                  <span>Active Role: {currentRoleMeta.label}</span>
-                  {myActionCount > 0 && (
-                    <span className="cg-action-needed-pill">
-                      ● {myActionCount} awaiting your action
-                    </span>
-                  )}
-                </div>
-                <h2 className="cg-console-title">
-                  Pre-Publication Campaign Triage &amp; Governance Queue
+            {/* ── Minimal Workspace Toolbar ── */}
+            <section className="cg-console-hero-bar" style={{ paddingBottom: "0.85rem", marginBottom: "1rem", alignItems: "center" }}>
+              <div className="cg-console-hero-left" style={{ display: "flex", alignItems: "center", gap: "0.75rem", flexWrap: "wrap" }}>
+                <h2 className="cg-console-title" style={{ margin: 0, fontSize: "1.2rem" }}>
+                  Campaign Queue
                 </h2>
-                <p className="cg-console-subtitle">
-                  {currentRoleMeta.responsibility}
-                </p>
+                <span className="cg-role-stage-tag">
+                  {currentRoleMeta.shortLabel}
+                </span>
+                {myActionCount > 0 && (
+                  <span className="cg-action-needed-pill">
+                    ● {myActionCount} awaiting your action
+                  </span>
+                )}
               </div>
 
               <div className="cg-console-hero-actions">
                 {trialSubmissions.length === 0 ? (
                   <button
                     type="button"
-                    className="cg-btn cg-btn-secondary"
+                    className="cg-btn cg-btn-secondary cg-btn-sm"
                     disabled={startingTrial}
                     onClick={() => void handleStartGuidedTrialRun()}
-                    title="Launch a guided walkthrough sample that you can clear with 1 click when done"
+                    title="Load a sample campaign bundle to test the review workflow"
                   >
-                    <Sparkles size={14} />
+                    <Sparkles size={13} />
                     <span>
-                      {startingTrial ? "Starting Trial…" : "Start Guided Trial Run"}
+                      {startingTrial ? "Loading…" : "Load Sample Run"}
                     </span>
                   </button>
                 ) : (
                   <button
                     type="button"
-                    className="cg-btn cg-btn-secondary"
+                    className="cg-btn cg-btn-secondary cg-btn-sm"
                     disabled={clearingTrial}
                     onClick={() => void handleClearAllTrialRuns()}
-                    title="Delete all [Trial Run] sample items and reset workspace to a clean slate"
+                    title="Remove sample bundles from queue"
                   >
-                    <Trash2 size={14} />
+                    <Trash2 size={13} />
                     <span>
                       {clearingTrial
-                        ? "Clearing Trial…"
-                        : `Finish Trial & Clear Sample (${trialSubmissions.length})`}
+                        ? "Clearing…"
+                        : `Clear Sample (${trialSubmissions.length})`}
                     </span>
                   </button>
                 )}
                 <button
                   type="button"
-                  className="cg-btn cg-btn-secondary"
+                  className="cg-btn cg-btn-secondary cg-btn-sm"
                   onClick={() => {
                     setShowForm(true);
                     setSelectedCanon(CUSTOM_PLAYBOOK_VALUE);
                   }}
                 >
-                  <Upload size={14} />
-                  <span>Onboard Company Guidelines</span>
+                  <Upload size={13} />
+                  <span>Import Playbook</span>
                 </button>
                 <button
                   type="button"
-                  className="cg-btn cg-btn-primary"
+                  className="cg-btn cg-btn-primary cg-btn-sm"
                   onClick={() => setShowForm(!showForm)}
                 >
                   {showForm ? (
                     <>
-                      <X size={15} />
+                      <X size={14} />
                       <span>Close Composer</span>
                     </>
                   ) : (
                     <>
-                      <Plus size={15} />
+                      <Plus size={14} />
                       <span>New Campaign Bundle</span>
                     </>
                   )}
                 </button>
               </div>
-            </section>
-
-            {/* ── Guided Trial Run Active Banner (1-Click Clean Reset) ── */}
-            {trialSubmissions.length > 0 && (
-              <div
-                className="cg-alert-banner"
-                style={{
-                  background: "#EFF6FF",
-                  borderColor: "#93C5FD",
-                  color: "#1E3A8A",
-                  marginBottom: "1rem",
-                  display: "flex",
-                  alignItems: "center",
-                  justifyContent: "space-between",
-                  gap: "1rem",
-                  flexWrap: "wrap",
-                }}
-              >
-                <div>
-                  <strong>Guided Trial Run Active:</strong> You have{" "}
-                  {trialSubmissions.length} sample walkthrough bundle(s) in your
-                  queue. Click into it to test the 4-stage review flow, or click{" "}
-                  <strong>Finish Trial &amp; Reset Workspace</strong> when you
-                  are ready for a clean slate.
-                </div>
-                <div style={{ display: "flex", gap: "0.5rem" }}>
-                  <button
-                    type="button"
-                    className="cg-btn cg-btn-primary cg-btn-sm"
-                    onClick={() =>
-                      navigate(`/submissions/${trialSubmissions[0].id}`)
-                    }
-                  >
-                    <span>Resume Trial Run →</span>
-                  </button>
-                  <button
-                    type="button"
-                    className="cg-btn cg-btn-secondary cg-btn-sm"
-                    disabled={clearingTrial}
-                    onClick={() => void handleClearAllTrialRuns()}
-                  >
-                    <Trash2 size={13} />
-                    <span>
-                      {clearingTrial
-                        ? "Resetting…"
-                        : "Finish Trial & Reset Workspace"}
-                    </span>
-                  </button>
-                </div>
-              </div>
-            )}
-
-            {/* ── 4-Stage Interactive Pipeline Filter Strip ── */}
-            <section
-              className="cg-pipeline-strip"
-              aria-label="4-Stage Governance Workflow"
-            >
-              {[
-                {
-                  key: "stage1",
-                  num: "01",
-                  title: "Creator Pre-Flight",
-                  sub: "Draft & Surgical Fixes",
-                  count: stageCounts.stage1,
-                  owned: role === "creator",
-                },
-                {
-                  key: "stage2",
-                  num: "02",
-                  title: "Brand Review",
-                  sub: "Diffs & Overrides",
-                  count: stageCounts.stage2,
-                  owned: role === "reviewer",
-                },
-                {
-                  key: "stage3",
-                  num: "03",
-                  title: "Legal Sign-Off",
-                  sub: "Statutory & KFS Claims",
-                  count: stageCounts.stage3,
-                  owned: role === "admin",
-                },
-                {
-                  key: "stage4",
-                  num: "04",
-                  title: "Released & Sealed",
-                  sub: "Merkle + C2PA Cert",
-                  count: stageCounts.stage4,
-                  owned: false,
-                },
-              ].map((st) => {
-                const isSelected = stageFilter === st.key;
-                return (
-                  <button
-                    key={st.key}
-                    type="button"
-                    className={`cg-pipeline-card ${
-                      isSelected ? "selected" : ""
-                    } ${st.owned ? "owned-by-me" : ""}`}
-                    onClick={() =>
-                      setStageFilter(isSelected ? "all" : st.key)
-                    }
-                  >
-                    <div className="cg-pipeline-card-top">
-                      <span className="cg-pipeline-step-tag">
-                        STAGE {st.num}
-                      </span>
-                      {st.owned && (
-                        <span className="cg-pipeline-your-stage">
-                          YOUR STAGE
-                        </span>
-                      )}
-                      <span className="cg-pipeline-count">{st.count}</span>
-                    </div>
-                    <div className="cg-pipeline-name">{st.title}</div>
-                    <div className="cg-pipeline-sub">{st.sub}</div>
-                  </button>
-                );
-              })}
             </section>
 
             {/* ── Campaign Bundle Composer (Collapsible / Drawer Card) ── */}
@@ -1088,13 +981,10 @@ export function DashboardPage() {
               >
                 <div className="cg-composer-header">
                   <div>
-                    <span className="cg-mono-label">
-                      MULTI-MODAL BUNDLE COMPOSER · PIPELINE B PRE-FLIGHT
-                    </span>
-                    <h3>Submit Campaign Content for Pre-Publication Audit</h3>
+                    <h3>New Campaign Pre-Flight Audit</h3>
                   </div>
                   <div className="cg-composer-presets">
-                    <span className="cg-mono-label">1-Click Sample Fill:</span>
+                    <span className="cg-mono-label">Sample Drafts:</span>
                     {QUICK_SAMPLE_PRESETS.map((preset) => (
                       <button
                         key={preset.label}
@@ -1783,24 +1673,15 @@ export function DashboardPage() {
           /* ── Tab 2: Progressive-Disclosure Playbook & Rule Studio ── */
           <div key="tab-governance" className="cg-gov-studio cg-animate-swap">
             {/* Top Bar of Playbook Studio */}
-            <div className="cg-console-hero-bar">
+            <div className="cg-console-hero-bar" style={{ paddingBottom: "0.85rem", marginBottom: "1rem", alignItems: "center" }}>
               <div className="cg-console-hero-left">
-                <div className="cg-console-eyebrow">
-                  <span className="cg-role-stage-tag">PIPELINE A &amp; C</span>
-                  <span>Playbook Compiler, Friction Telemetry &amp; Calibration</span>
-                </div>
-                <h2 className="cg-console-title">
-                  Brand Playbooks &amp; Closed-Loop Rule Studio
+                <h2 className="cg-console-title" style={{ margin: 0, fontSize: "1.2rem" }}>
+                  Brand Playbooks &amp; Rules
                 </h2>
-                <p className="cg-console-subtitle">
-                  Inspect compiled rules, track Empirical Bayes override
-                  friction, auto-draft Canon v1.1 pull requests, or onboard new
-                  company guideline documents.
-                </p>
               </div>
 
               <div className="cg-gov-selector-box">
-                <label htmlFor="gov-canon-select">Active Playbook Canon</label>
+                <label htmlFor="gov-canon-select">Active Playbook</label>
                 <select
                   id="gov-canon-select"
                   value={govCanonId}
