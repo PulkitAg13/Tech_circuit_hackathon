@@ -136,16 +136,21 @@ async function handleBrowserRequest<T>(
     } as unknown as T;
   }
 
-  // Canons
+  // Gate Check (`POST /api/gate/check`)
+  if (path === "/gate/check" && method === "POST") {
+    return browserBackend.gateCheck(body) as unknown as T;
+  }
+
+  // Canons (`GET /api/canons`) — matches exact hashes & counts from `canons/*.yaml`
   if (path === "/canons" && method === "GET") {
     return [
       {
         id: "indian-digital-lending",
         version: "1.0",
-        hash: "5f1d4b1392e21b71d9d4351656bfaef38b438d15a5563914a1a54ea7d8ad462d",
+        hash: "1cd1ac13e83f1b00b2f9d64dd24a887c3cbd189830ba14b0e6c08f77a2e832ec",
         term_count: 4,
         color_count: 2,
-        fact_count: 3,
+        fact_count: 2,
         trigger_count: 1,
         logo_count: 1,
         has_voice_profile: true,
@@ -153,84 +158,222 @@ async function handleBrowserRequest<T>(
           {
             id: "term-guaranteed-approval",
             rule_type: "terminology",
-            label: "Guaranteed Approval (RBI DL Directives)",
+            label: "guaranteed approval → subject to credit assessment",
             severity: 85,
-            source_text: "Loans must never guarantee instant approval without bureau pull.",
+            source_text: "RBI Digital Lending Directions: never promise guaranteed loan approval without underwriting.",
           },
           {
             id: "term-no-credit-check",
             rule_type: "terminology",
-            label: "No Credit Check (Mandatory Underwriting)",
+            label: "no credit check → streamlined credit verification",
             severity: 80,
-            source_text: "Credit facility advertisements must disclose regulated NBFC underwriting.",
+            source_text: "RBI KYC / Bureau mandate: all regulated NBFC loans require bureau reporting.",
           },
           {
             id: "term-free-money",
             rule_type: "terminology",
-            label: "Free Money (ASCI BFSI Code)",
+            label: "free money → credit facility",
             severity: 75,
-            source_text: "Borrowing facilities must never be framed as unencumbered gifts.",
+            source_text: "ASCI BFSI code: do not portray credit or loans as free money.",
           },
           {
             id: "term-cheap",
-            rule_type: "voice",
-            label: "Cheap vs Competitive-Rate (Brand Tone)",
+            rule_type: "terminology",
+            label: "cheap → competitive-rate",
             severity: 40,
             source_text: "Brand voice: use 'competitive-rate' rather than 'cheap'.",
+          },
+          {
+            id: "fact-kfs-processing-fee",
+            rule_type: "fact",
+            label: "0% processing fee on loans (under Rs 50,000; first-time borrowers only)",
+            severity: 75,
+            source_text: "0% processing fee on loans [under Rs 50,000, for first-time borrowers only]",
+          },
+          {
+            id: "fact-kfs-apr-ceiling",
+            rule_type: "fact",
+            label: "Annual Percentage Rate (APR) is 18% (up to Rs 2,00,000)",
+            severity: 80,
+            source_text: "Annual Percentage Rate (APR) is 18% [up to Rs 2,00,000]",
+          },
+          {
+            id: "trig-kfs-schedule",
+            rule_type: "trigger",
+            label: "Trigger: 0% processing fee → Subject to RBI Key Fact Statement (KFS) schedule",
+            severity: 75,
+            source_text: "Subject to RBI Key Fact Statement (KFS) schedule",
+          },
+          {
+            id: "color-rbi-trust-navy",
+            rule_type: "palette",
+            label: "Trust Navy (#0D3B66 · ΔE₀₀ ≤ 3.0)",
+            max_delta_e: 3.0,
+            source_text: "#0D3B66",
+          },
+          {
+            id: "color-upi-emerald",
+            rule_type: "palette",
+            label: "Verified Emerald (#1B8A5A · ΔE₀₀ ≤ 3.0)",
+            max_delta_e: 3.0,
+            source_text: "#1B8A5A",
+          },
+          {
+            id: "lending-voice",
+            rule_type: "voice",
+            label: "Voice Profile (max 28 words, passive ≤ 25%, FK ≤ 12.0)",
+            severity: 35,
+            max_sentence_words: 28,
+            max_passive_voice_pct: 25.0,
+            max_flesch_kincaid_grade: 12.0,
+            source_text: "Transparent digital credit with upfront APR and zero hidden charges.",
+          },
+          {
+            id: "nbfc-primary-logo",
+            rule_type: "logo",
+            label: "NBFC Trust Mark (0.50H clear-space, aspect ≤ 2%)",
+            severity: 65,
+            clear_space_ratio_h: 0.5,
+            max_aspect_distortion_pct: 2.0,
+            source_text: "NBFC Trust Mark",
           },
         ],
       },
       {
         id: "indian-d2c-nutra",
         version: "1.0",
-        hash: "9a21b34e56f7890123456789abcdef0123456789abcdef0123456789abcdef01",
-        term_count: 2,
+        hash: "eb05d1784ad09bab4677f33a8f8ba1b6a83f4a23c38df07b8a96d8552a133899",
+        term_count: 3,
         color_count: 2,
         fact_count: 2,
-        trigger_count: 1,
-        logo_count: 1,
-        has_voice_profile: true,
+        trigger_count: 0,
+        logo_count: 0,
+        has_voice_profile: false,
         rules: [
           {
             id: "term-miracle-cure",
             rule_type: "terminology",
-            label: "Miracle Cure Claim (ASCI Nutra)",
+            label: "miracle cure → nutritional support",
             severity: 90,
-            source_text: "Cosmeceuticals and nutraceuticals cannot claim therapeutic miracle cure.",
+            source_text: "Drugs and Magic Remedies Act / ASCI: never claim a miracle cure.",
           },
           {
-            id: "term-100-cure",
+            id: "term-cures-diabetes",
             rule_type: "terminology",
-            label: "100% Cure Guarantee",
+            label: "cures diabetes → supports healthy glycemic metabolism",
+            severity: 95,
+            source_text: "ASCI Health Guidelines: nutraceuticals cannot claim to cure chronic disease.",
+          },
+          {
+            id: "term-100pct-fat-burn",
+            rule_type: "terminology",
+            label: "100% fat burn → supports active weight management",
+            severity: 80,
+            source_text: "CCPA 2022: absolute 100% physiological efficacy claims require clinical trial proof.",
+          },
+          {
+            id: "fact-curcumin-absorption",
+            rule_type: "fact",
+            label: "2x faster absorption (in-vitro ingredient study only; 8 weeks with piperine)",
             severity: 85,
-            source_text: "Cannot guarantee 100% cure rate without ICMR clinical trial registry publication.",
+            source_text: "2x faster absorption [in-vitro ingredient study only, when taken with piperine for 8 weeks]",
+          },
+          {
+            id: "fact-protein-per-serving",
+            rule_type: "fact",
+            label: "24g plant protein per scoop (per 35g serving size)",
+            severity: 75,
+            source_text: "24g plant protein per scoop [per 35g serving size]",
+          },
+          {
+            id: "color-botanical-sage",
+            rule_type: "palette",
+            label: "Botanical Sage (#2E6F40 · ΔE₀₀ ≤ 3.0)",
+            max_delta_e: 3.0,
+            source_text: "#2E6F40",
+          },
+          {
+            id: "color-turmeric-gold",
+            rule_type: "palette",
+            label: "Turmeric Gold (#D99B26 · ΔE₀₀ ≤ 3.5)",
+            max_delta_e: 3.5,
+            source_text: "#D99B26",
           },
         ],
       },
       {
         id: "acme-corp",
         version: "1.0",
-        hash: "3c4d5e6f7a8b9c0d1e2f3a4b5c6d7e8f9a0b1c2d3e4f5a6b7c8d9e0f1a2b3c4d",
-        term_count: 2,
-        color_count: 2,
+        hash: "5be7400ed3c8470ed07ed1cafeaade500f8f85619f333af28472e7f1d5ae06a9",
+        term_count: 4,
+        color_count: 3,
         fact_count: 2,
-        trigger_count: 1,
-        logo_count: 1,
-        has_voice_profile: true,
+        trigger_count: 0,
+        logo_count: 0,
+        has_voice_profile: false,
         rules: [
           {
             id: "term-cheap",
-            rule_type: "voice",
-            label: "Brand Tone (Affordable)",
+            rule_type: "terminology",
+            label: "cheap → affordable",
             severity: 60,
-            source_text: "Use 'affordable' instead of 'cheap'.",
+            source_text: "Brand voice: never use 'cheap' — it implies low quality.",
           },
           {
-            id: "term-revolutionary",
-            rule_type: "voice",
-            label: "Tone Grounding",
-            severity: 35,
-            source_text: "Prefer grounded active verbs like 'modernize'.",
+            id: "term-buy",
+            rule_type: "terminology",
+            label: "buy → purchase",
+            severity: 40,
+            source_text: "Formal tone: use 'purchase' instead of 'buy'.",
+          },
+          {
+            id: "term-users",
+            rule_type: "terminology",
+            label: "users → customers",
+            severity: 50,
+            source_text: "We serve customers, not users.",
+          },
+          {
+            id: "term-cutting-edge",
+            rule_type: "terminology",
+            label: "cutting-edge → innovative",
+            severity: 30,
+            source_text: "Avoid cliché buzzwords.",
+          },
+          {
+            id: "fact-founding",
+            rule_type: "fact",
+            label: "Acme Corp was founded in 2020.",
+            severity: 80,
+            source_text: "Acme Corp was founded in 2020.",
+          },
+          {
+            id: "fact-employees",
+            rule_type: "fact",
+            label: "Acme Corp has over 500 employees. (as of Q3 2025)",
+            severity: 75,
+            source_text: "Acme Corp has over 500 employees. [as of Q3 2025]",
+          },
+          {
+            id: "color-primary",
+            rule_type: "palette",
+            label: "Primary Blue (#1A73E8 · ΔE₀₀ ≤ 3.0)",
+            max_delta_e: 3.0,
+            source_text: "#1A73E8",
+          },
+          {
+            id: "color-accent",
+            rule_type: "palette",
+            label: "Accent Red (#EA4335 · ΔE₀₀ ≤ 5.0)",
+            max_delta_e: 5.0,
+            source_text: "#EA4335",
+          },
+          {
+            id: "color-dark",
+            rule_type: "palette",
+            label: "Dark Gray (#202124 · ΔE₀₀ ≤ 2.0)",
+            max_delta_e: 2.0,
+            source_text: "#202124",
           },
         ],
       },
@@ -293,12 +436,12 @@ async function handleBrowserRequest<T>(
           rule_id: "term-cheap",
           posterior_friction: 0.49,
           action: "calibrate",
-          before_summary: "Severity 60 (Warning)",
-          after_summary: "Severity 40 (Advisory)",
+          before_summary: "Severity 60 (Blocker)",
+          after_summary: "Severity 40 (Warning)",
           rationale: "High creator override frequency with zero legal escalation",
         },
       ],
-      yaml_diff: "@@ -12,2 +12,2 @@\n-  severity: 60\n+  severity: 40",
+      yaml_diff: "@@ -11,2 +11,2 @@\n-    severity: 60\n+    severity: 40",
       bundles_evaluated: 15,
       before_findings: 18,
       after_findings: 11,
@@ -318,7 +461,7 @@ async function handleBrowserRequest<T>(
       hash: sha256Hex(cId + "v1.1"),
       term_count: 4,
       color_count: 2,
-      fact_count: 3,
+      fact_count: 2,
       trigger_count: 1,
       logo_count: 1,
       has_voice_profile: true,
@@ -333,7 +476,7 @@ async function handleBrowserRequest<T>(
       previous_version: "1.0",
       new_version: "1.1",
       new_hash: sha256Hex(cId + "calibrated"),
-      yaml_preview: `id: ${cId}\nversion: 1.1\nrules:\n  - id: ${body.rule_id}\n    severity: ${body.severity ?? 40}`,
+      yaml_preview: `id: ${cId}\nversion: "1.1"\nterminology:\n  - id: ${body.rule_id}\n    severity: ${body.severity ?? 40}`,
     } as unknown as T;
   }
 
@@ -346,7 +489,7 @@ async function handleBrowserRequest<T>(
       term_count: 3,
       color_count: 2,
       fact_count: 2,
-      yaml_preview: `id: ${cId}\nversion: 1.0\n# Compiled via Pre-Flight LLM Anchor Extractor`,
+      yaml_preview: `id: ${cId}\nversion: "1.0"\n# Compiled via Pipeline A Grounded Anchor Extractor`,
       provenance: [
         {
           rule_id: "term-guaranteed-approval",
@@ -532,6 +675,72 @@ export function switchRole(role: string): Promise<TokenResponse> {
   return request("/auth/switch-role", {
     method: "POST",
     body: JSON.stringify({ role }),
+  });
+}
+
+// ── Synchronous Pre-Publish Gate (`POST /api/gate/check`) ────────────
+
+export interface GateFindingItem {
+  finding_id: string;
+  row_id?: number | null;
+  check_id: string;
+  node_id: string;
+  severity: number;
+  verdict: "BLOCKER" | "WARNING";
+  rule_id: string;
+  locator: {
+    kind?: string;
+    start?: number;
+    end?: number;
+    x?: number;
+    y?: number;
+    w?: number;
+    h?: number;
+  };
+  message: string;
+  suggestion_label?: string | null;
+  replacement_preview?: string | null;
+  tier: string;
+}
+
+export interface GateCheckRequestPayload {
+  canon_id: string;
+  adapter?: "auto" | "generic" | "shopify" | "webflow";
+  title?: string;
+  raw_content: string;
+  alpha?: number;
+  persist?: boolean;
+}
+
+export interface GateCheckResponsePayload {
+  decision: "allow" | "needs_review" | "block";
+  adapter_used: string;
+  canon_id: string;
+  canon_version: string;
+  canon_hash: string;
+  content_hash: string;
+  submission_id: number | null;
+  studio_url: string | null;
+  alpha: number;
+  conformal_threshold: number;
+  blocker_count: number;
+  warning_count: number;
+  total_findings: number;
+  latency_ms: number;
+  findings: GateFindingItem[];
+}
+
+export function runGateCheck(
+  payload: GateCheckRequestPayload,
+): Promise<GateCheckResponsePayload> {
+  return request("/gate/check", {
+    method: "POST",
+    body: JSON.stringify({
+      adapter: "generic",
+      alpha: 0.1,
+      persist: false,
+      ...payload,
+    }),
   });
 }
 

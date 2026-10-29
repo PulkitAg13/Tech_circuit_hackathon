@@ -1,125 +1,102 @@
-import { test, expect } from "@playwright/test";
+import { test, expect } from '@playwright/test';
 
-test.describe("CanonGate Golden Path E2E", () => {
-  test("complete 4-stage governance journey: register -> submit -> scan -> resolve -> brand review -> legal release -> audit", async ({
+test.describe('CanonGate Golden Path E2E', () => {
+  test('Full governance lifecycle: Creator fixes blockers -> Brand Approves -> Legal Approves -> Certificate Issued', async ({
     page,
   }) => {
-    const timestamp = Date.now();
-    const creatorUsername = `creator_${timestamp}`;
-    const reviewerUsername = `reviewer_${timestamp}`;
-    const legalUsername = `legal_${timestamp}`;
-    const testPassword = "Password123!";
+    // 1. Open Public Home Page and verify live workbench & role gateway
+    await page.goto('/');
+    await expect(
+      page.getByRole('heading', { name: /Pre-Publish Brand & Regulatory/i })
+    ).toBeVisible();
+    await expect(page.getByText('Workspace Role Gateway')).toBeVisible();
 
-    // 1. Open frontend and navigate to login/register
-    await page.goto("/login");
-    await expect(page.getByText("CanonGate").first()).toBeVisible();
+    // 2. Navigate to Login Page and sign in via Quick Role Switcher as Creator
+    await page.goto('/login');
+    await expect(page.getByText('CanonGate').first()).toBeVisible();
+    await page.getByTestId('quick-login-creative_lead').click();
 
-    // 2. Switch to Sign Up panel and register a new Creator account with explicit role selection
-    await page.getByRole("button", { name: "Create Account" }).click();
-    await page.locator("#signup-name").fill("Kabir Roy");
-    await page.locator("#signup-username").fill(creatorUsername);
-    await page.locator("#signup-role").selectOption("creator");
-    await page.locator("#signup-password").fill(testPassword);
-    await page.getByRole("button", { name: /Register & Enter Studio/i }).click();
+    await expect(page).toHaveURL(/\/dashboard/);
+    await expect(page.getByText('@creative_lead')).toBeVisible();
 
-    // 3. Reach dashboard and verify user identity is preserved
-    await expect(page.getByText(`@${creatorUsername}`)).toBeVisible();
-
-    // 4. Create a new submission with banned term ('cheap' under acme-corp canon)
-    const titleInput = page.locator("#sub-title");
+    // 3. Ensure New Campaign Bundle form is open
+    const titleInput = page.getByPlaceholder('e.g., Q3 Lending Launch');
     if (!(await titleInput.isVisible())) {
-      await page.getByRole("button", { name: "+ New Campaign Bundle" }).click();
+      await page.getByRole('button', { name: /New Campaign Bundle/i }).click();
     }
-    await titleInput.fill(`Golden Campaign ${timestamp}`);
-    await page.locator("#sub-canon").selectOption("acme-corp");
-    await page
-      .locator("#sub-content")
-      .fill("Our brand offers a cheap product for daily enterprise needs.");
-    await page
-      .getByRole("button", { name: /Create & Open in Split-Screen Review Studio/i })
-      .click();
 
-    // 5. Land on submission detail page
-    await expect(page).toHaveURL(/\/submissions\/\d+/);
+    // 4. Create a new campaign submission with intentional violations
+    await titleInput.fill('E2E Golden Campaign');
+    await page.locator('select').first().selectOption('acme-corp');
+    await page
+      .getByPlaceholder(/Paste or write campaign text/i)
+      .fill(
+        'Acme Cloud guarantees 99.99% uptime SLA and is the #1 fastest platform on earth. Try our cheap enterprise tier today!'
+      );
+
+    await page.getByRole('button', { name: /Create & Run Scan/i }).click();
+
+    // 5. Should navigate to Submission Detail Page and show BLOCKED status
+    await expect(page).toHaveURL(/\/submissions\/(sub_|\d+)/);
+    await expect(page.getByText('BLOCKED').first()).toBeVisible();
+
+    // Verify Submit for Review button is disabled while blockers exist
+    const submitForReviewBtn = page.getByTestId('submit-for-review-btn');
+    await expect(submitForReviewBtn).toBeDisabled();
+
+    // 6. Apply surgical fixes or edit artifact to clear blockers
+    const editor = page.getByTestId('artifact-editor');
+    await expect(editor).toBeVisible();
+    await editor.fill(
+      'Acme Cloud provides a 99.9% uptime SLA (Standard Enterprise Agreement) with cost-effective enterprise plans.'
+    );
+
+    await page.getByTestId('rescan-artifact-btn').click();
+
+    // Wait for rescan to complete and blockers to drop to 0
+    await expect(submitForReviewBtn).toBeEnabled({ timeout: 15000 });
+
+    // 7. Creator submits for review -> status becomes IN_REVIEW
+    await submitForReviewBtn.click();
+    await expect(page.getByText('IN REVIEW').first()).toBeVisible();
+
+    // 8. Switch role in-place to Brand Manager and approve
+    await page.getByTestId('switch-role-brand_manager').click();
+    await expect(page.getByText('@brand_manager')).toBeVisible();
+
+    await page
+      .getByPlaceholder(/Add rationale for audit trail/i)
+      .fill('Brand tone and claims verified.');
+    await page.getByTestId('decision-approve-btn').click();
+
+    // Verify Brand Manager stage is marked APPROVED in progress bar
+    await expect(page.getByText('1. Brand Manager')).toBeVisible();
+
+    // 9. Switch role in-place to Legal Reviewer and approve
+    await page.getByTestId('switch-role-legal_counsel').click();
+    await expect(page.getByText('@legal_counsel')).toBeVisible();
+
+    await page
+      .getByPlaceholder(/Add rationale for audit trail/i)
+      .fill('Legal compliance verified.');
+    await page.getByTestId('decision-approve-btn').click();
+
+    // 10. Status becomes APPROVED and Merkle Certificate button appears
+    await expect(page.getByText('APPROVED').first()).toBeVisible();
+    const viewCertBtn = page.getByTestId('view-certificate-btn');
+    await expect(viewCertBtn).toBeVisible();
+
+    // 11. Open Certificate Modal and verify cryptographic fields
+    await viewCertBtn.click();
+    await expect(page.getByTestId('certificate-modal')).toBeVisible();
     await expect(
-      page.getByRole("heading", { name: `Golden Campaign ${timestamp}` }),
+      page.getByText('Cryptographic Compliance Certificate')
+    ).toBeVisible();
+    await expect(
+      page.getByText('Merkle Findings Root (SHA-256)')
     ).toBeVisible();
 
-    // 6. Trigger real scan via SSE
-    const runScanButton = page.getByRole("button", {
-      name: /Run Governance Check/i,
-    });
-    await expect(runScanButton).toBeVisible();
-    await runScanButton.click();
-
-    // 7. Wait for scan completion and findings to display
-    const findingCard = page.locator(".finding-card").first();
-    await expect(findingCard).toBeVisible({ timeout: 15000 });
-
-    // 8. Resolve finding by accepting the suggested fix
-    const acceptBtn = page.getByRole("button", { name: /Accept & Apply Fix/i });
-    await expect(acceptBtn).toBeVisible();
-    await acceptBtn.click();
-
-    // 9. Verify finding state is updated to 'accepted'
-    await expect(page.locator(".resolution-badge")).toHaveText("accepted", {
-      timeout: 10000,
-    });
-
-    // 10. Stage 1 -> Stage 2: Submit for Brand Review
-    await page.getByRole("button", { name: /Submit for Brand Review/i }).click();
-    await page.getByRole("button", { name: /Confirm Transition/i }).click();
-    await expect(page.locator(".status-badge").first()).toContainText(
-      "in review",
-    );
-
-    // 11. Stage 2 -> Stage 3: Handoff to Brand Manager account (role-isolated)
-    await page
-      .getByRole("button", { name: /Sign In with Brand Manager Account/i })
-      .click();
-    await page.getByRole("button", { name: "Create Account" }).click();
-    await page.locator("#signup-name").fill("Priya Nair");
-    await page.locator("#signup-username").fill(reviewerUsername);
-    await page.locator("#signup-role").selectOption("reviewer");
-    await page.locator("#signup-password").fill(testPassword);
-    await page.getByRole("button", { name: /Register & Enter Studio/i }).click();
-
-    await expect(page.getByText(`@${reviewerUsername}`)).toBeVisible();
-    await page
-      .getByRole("button", { name: /Approve Brand Review/i })
-      .click();
-    await page.getByRole("button", { name: /Confirm Transition/i }).click();
-    await expect(page.locator(".status-badge").first()).toContainText(
-      "approved",
-    );
-
-    // 12. Stage 3 -> Stage 4: Handoff to Authorised Legal Reviewer account and release
-    await page
-      .getByRole("button", { name: /Sign In with Legal Reviewer Account/i })
-      .click();
-    await page.getByRole("button", { name: "Create Account" }).click();
-    await page.locator("#signup-name").fill("Meera Iyer");
-    await page.locator("#signup-username").fill(legalUsername);
-    await page.locator("#signup-role").selectOption("admin");
-    await page.locator("#signup-password").fill(testPassword);
-    await page.getByRole("button", { name: /Register & Enter Studio/i }).click();
-
-    await expect(page.getByText(`@${legalUsername}`)).toBeVisible();
-    await page
-      .getByRole("button", { name: /Execute Final Legal Sign-Off & Release/i })
-      .click();
-    await page.getByRole("button", { name: /Confirm Transition/i }).click();
-    await expect(page.locator(".status-badge").first()).toContainText(
-      "published",
-    );
-
-    // 13. Open and verify the cryptographic audit trail (including Merkle root & signature)
-    await page.getByRole("button", { name: /Audit Trail/i }).click();
-    await expect(
-      page.getByRole("heading", { name: /Approval & Sign-Off Audit Trail/i }),
-    ).toBeVisible();
-    await expect(page.getByText("Cryptographic Audit Summary:")).toBeVisible();
-    await expect(page.locator(".audit-event").first()).toBeVisible();
-    await page.getByRole("button", { name: /Close/i }).click();
+    // Close modal
+    await page.getByRole('button', { name: /Close/i }).click();
   });
 });

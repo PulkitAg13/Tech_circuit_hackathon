@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useEffect, useCallback } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import {
   ArrowRight,
@@ -6,88 +6,37 @@ import {
   CheckCircle2,
   Copy,
   Cpu,
-  Eye,
   FileCheck2,
-  GitPullRequest,
-  Layers,
-  Lock,
   Play,
-  Scale,
+  RefreshCw,
   ShieldAlert,
   ShieldCheck,
   Sliders,
-  Terminal,
+  Sparkles,
   Wand2,
 } from "lucide-react";
 import { useAuth } from "../auth/context";
+import {
+  listCanons,
+  runGateCheck,
+  createSubmission,
+  getApiBase,
+  type CanonSummary,
+  type GateCheckResponsePayload,
+} from "../../api/client";
 
 /* ──────────────────────────────────────────────────────────────────────────
- * Interactive Multi-Modal Workbench Scenarios (Real CanonGate Engine Data)
+ * Real Pre-Flight Trial Presets (Evaluated Live by POST /api/gate/check)
  * ────────────────────────────────────────────────────────────────────────── */
 
-interface SlotDiffRow {
-  slot: string;
-  draft: string;
-  canon: string;
-  status: "MATCH" | "DROPPED" | "CONTRADICTED";
-}
-
-interface SwatchCandidate {
-  label: string;
-  hex: string;
-  bgHex: string;
-  ratio: string;
-  deltaE: string;
-  badge: string;
-}
-
-interface WorkbenchFinding {
-  id: string;
-  pinLabel: string;
-  modality: "COPY" | "VISION" | "Z3_KFS";
-  severity: "blocker" | "warning";
-  tier: string;
-  checkId: string;
-  ruleRef: string;
-  riskScore: number;
-  title: string;
-  flaggedSpan: string;
-  repairedSpan: string;
-  explanation: string;
-  slotDiff?: SlotDiffRow[];
-  z3Proof?: {
-    formula: string;
-    statedValue: string;
-    solvedValue: string;
-    counterexample: string;
-  };
-  swatches?: SwatchCandidate[];
-  bbox?: { x: number; y: number; w: number; h: number };
-}
-
-interface WorkbenchScenario {
+interface TrialPreset {
   id: string;
   canonId: string;
-  canonVersion: string;
   sectorTag: string;
   title: string;
   assetName: string;
-  draftCopyParts: {
-    prefix: string;
-    span1: string;
-    mid: string;
-    span2: string;
-    suffix: string;
-  };
-  repairedCopyParts: {
-    prefix: string;
-    span1: string;
-    mid: string;
-    span2: string;
-    suffix: string;
-  };
-  editRatio: string;
-  piiMaskedCount: number;
+  draftCopy: string;
+  repairedCopy: string;
   banner: {
     headline: string;
     subline: string;
@@ -100,447 +49,174 @@ interface WorkbenchScenario {
     fgDefaultFixedHex: string;
     kfsBadge: string;
   };
-  hashes: {
-    canonHash: string;
-    draftHash: string;
-    repairedHash: string;
-    merkleRoot: string;
-    ed25519Sig: string;
-  };
-  findings: WorkbenchFinding[];
+  swatches: Array<{
+    label: string;
+    hex: string;
+    bgHex: string;
+    ratio: string;
+    deltaE: string;
+    badge: string;
+  }>;
 }
 
-const WORKBENCH_SCENARIOS: WorkbenchScenario[] = [
+const TRIAL_PRESETS: TrialPreset[] = [
   {
     id: "fintech",
     canonId: "indian-digital-lending",
-    canonVersion: "1.4.0",
-    sectorTag: "RBI 2025 KFS · CCPA 2022",
-    title: "Acme QuickLoan Festival Campaign",
-    assetName: "acme_diwali_kfs_bundle.yaml",
-    draftCopyParts: {
-      prefix: "Celebrate this season with Acme QuickLoan: enjoy ",
-      span1: "0% interest on all personal loans",
-      mid: " with ",
-      span2: "guaranteed instant approval in 60 seconds",
-      suffix:
-        ". Principal ₹50,000 · Processing Fee ₹1,500 · Interest ₹3,500 · Stated APR 14.00%.",
-    },
-    repairedCopyParts: {
-      prefix: "Celebrate this season with Acme QuickLoan: enjoy ",
-      span1:
-        "0% interest on personal loans under ₹50,000 for first-time borrowers",
-      mid: " with ",
-      span2:
-        "instant eligibility assessment subject to credit bureau verification",
-      suffix:
-        ". Principal ₹50,000 · Processing Fee ₹1,500 · Interest ₹3,500 · Effective APR 28.18% (KFS Attached).",
-    },
-    editRatio: "0.24 ≤ 0.35",
-    piiMaskedCount: 2,
+    sectorTag: "RBI 2025 KFS · ASCI BFSI",
+    title: "Acme QuickLoan Diwali Festival Campaign",
+    assetName: "acme_quickloan_bundle.yaml",
+    draftCopy:
+      "Celebrate this season with Acme QuickLoan! Get 0% processing fee on loans under Rs 1,00,000 with guaranteed approval and no credit check — cheap personal credit for everyone.\n\nAnnual Percentage Rate (APR) is 14%.\n\ncolor: #777777; background-color: #FFFFFF; — T&C apply.",
+    repairedCopy:
+      "Celebrate this season with Acme QuickLoan. Get 0% processing fee on loans under Rs 50,000 for first-time borrowers only, subject to credit assessment and streamlined credit verification. Subject to RBI Key Fact Statement (KFS) schedule.\n\ncolor: #767676; background-color: #FFFFFF; — Transparent digital credit with upfront APR.",
     banner: {
-      headline: "0% INTEREST FESTIVAL LOAN",
-      subline: "Instant ₹50,000 disbursal · Stated APR 14.00%",
-      disclaimerDraft: "T&C apply. Subject to internal policy.",
+      headline: "0% PROCESSING FEE FESTIVAL LOAN",
+      subline: "Instant Disbursal · Check KFS Schedule",
+      disclaimerDraft:
+        "color: #777777 on #FFFFFF (4.48:1 < 4.5:1) · T&C apply.",
       disclaimerFixed:
-        "Valid for first-time borrowers under ₹50,000. Effective APR 28.18% per RBI KFS.",
-      bgHex: "#F4F4F6",
+        "color: #767676 on #FFFFFF (4.54:1 PASS) · Under Rs 50,000 for first-time borrowers only. Subject to RBI Key Fact Statement (KFS) schedule.",
+      bgHex: "#FFFFFF",
       accentDraftHex: "#19528A",
       accentCanonHex: "#0D3B66",
-      fgDraftHex: "#787878",
+      fgDraftHex: "#777777",
       fgDefaultFixedHex: "#767676",
-      kfsBadge: "RBI/2024-25/18 KFS",
+      kfsBadge: "RBI 2025 KFS",
     },
-    hashes: {
-      canonHash: "dd5f040bb7ebed33",
-      draftHash: "8f91c204a7d10e42",
-      repairedHash: "2cc156965f6d260b",
-      merkleRoot: "b5baae0a9d4f010288266c930bd95702",
-      ed25519Sig: "ed25519:94a8f01c...7e2b9104",
-    },
-    findings: [
+    swatches: [
       {
-        id: "f-slot",
-        pinLabel: "C1",
-        modality: "COPY",
-        severity: "blocker",
-        tier: "Tier 2 · QASem + Calibrated NLI",
-        checkId: "check.factual_claim",
-        ruleRef: "fact.zero_interest_promo",
-        riskScore: 0.94,
-        title: "Dropped Mandatory Eligibility & Ceiling Qualifiers",
-        flaggedSpan: "0% interest on all personal loans",
-        repairedSpan:
-          "0% interest on personal loans under ₹50,000 for first-time borrowers",
-        explanation:
-          "Draft generalizes a conditional promotional rate ('0% interest') to all loans, dropping two mandatory canon qualifiers required under CCPA 2022 §2(28).",
-        slotDiff: [
-          {
-            slot: "metric",
-            draft: "0% interest",
-            canon: "0% interest",
-            status: "MATCH",
-          },
-          {
-            slot: "scope / ceiling",
-            draft: "all personal loans",
-            canon: "loans under ₹50,000",
-            status: "DROPPED",
-          },
-          {
-            slot: "target_cohort",
-            draft: "— (omitted)",
-            canon: "first-time borrowers",
-            status: "DROPPED",
-          },
-          {
-            slot: "disclosure",
-            draft: "— (omitted)",
-            canon: "processing fee of 2.5% applies",
-            status: "DROPPED",
-          },
-        ],
+        label: "Hue-Preserving WCAG AA",
+        hex: "#767676",
+        bgHex: "#FFFFFF",
+        ratio: "4.54:1",
+        deltaE: "ΔE₀₀ 0.4",
+        badge: "AA PASS",
       },
       {
-        id: "f-z3",
-        pinLabel: "K1",
-        modality: "Z3_KFS",
-        severity: "blocker",
-        tier: "Tier 1.5 · SymPy + Z3 QF_NRA",
-        checkId: "check.numeric_consistency",
-        ruleRef: "rbi.kfs.apr_reconciliation",
-        riskScore: 0.99,
-        title: "Algebraic APR & Fee Reconciliation Contradiction",
-        flaggedSpan:
-          "Principal ₹50,000 · Processing Fee ₹1,500 · Interest ₹3,500 · Stated APR 14.00%",
-        repairedSpan:
-          "Principal ₹50,000 · Processing Fee ₹1,500 · Interest ₹3,500 · Effective APR 28.18% (KFS Attached)",
-        explanation:
-          "Z3 nonlinear real arithmetic solver proved that ₹3,500 interest + ₹1,500 upfront fee on ₹50,000 over 6 monthly installments yields an effective annualized APR of 28.18%, contradicting the stated 14.00% APR.",
-        z3Proof: {
-          formula:
-            "APR_eff = ((Interest + UpfrontFee) / NetDisbursed) * (12 / TenureMonths) * (2 * N / (N + 1))",
-          statedValue: "14.00% APR",
-          solvedValue: "28.18% APR (Δ = +14.18%)",
-          counterexample:
-            "sat: [P = 50000, F = 1500, I = 3500, T = 6] => APR_actual = 0.2818 != 0.1400",
-        },
+        label: "High-Contrast WCAG AAA",
+        hex: "#595959",
+        bgHex: "#FFFFFF",
+        ratio: "7.00:1",
+        deltaE: "ΔE₀₀ 11.4",
+        badge: "AAA PASS",
       },
       {
-        id: "f-wcag",
-        pinLabel: "V1",
-        modality: "VISION",
-        severity: "blocker",
-        tier: "Tier 1 · OpenCV + WCAG 2.1",
-        checkId: "check.visual_contrast",
-        ruleRef: "wcag.aa.normal_text (4.5:1)",
-        riskScore: 0.91,
-        title: "Banner Disclaimer Contrast Below WCAG 2.1 AA Floor",
-        flaggedSpan: "Foreground #787878 on #F4F4F6 (4.06:1 < 4.50:1)",
-        repairedSpan: "Foreground #767676 on #F4F4F6 (4.54:1 PASS)",
-        explanation:
-          "Sobel + Otsu text-region segmentation isolated the bottom statutory disclaimer bar. Relative luminance ratio is 4.06:1, failing the 4.50:1 statutory floor for <18pt text.",
-        swatches: [
-          {
-            label: "WCAG AA Minimal Shift",
-            hex: "#6E6E6E",
-            bgHex: "#F4F4F6",
-            ratio: "4.62:1",
-            deltaE: "ΔE₀₀ 1.4",
-            badge: "AA PASS",
-          },
-          {
-            label: "WCAG AAA High-Contrast",
-            hex: "#525252",
-            bgHex: "#F4F4F6",
-            ratio: "7.14:1",
-            deltaE: "ΔE₀₀ 4.8",
-            badge: "AAA PASS",
-          },
-          {
-            label: "Canon Brand Navy Token",
-            hex: "#0D3B66",
-            bgHex: "#F4F4F6",
-            ratio: "10.38:1",
-            deltaE: "ΔE₀₀ 0.0",
-            badge: "BRAND + AAA",
-          },
-        ],
-        bbox: { x: 8, y: 74, w: 84, h: 18 },
+        label: "Canon Trust Navy Token",
+        hex: "#0D3B66",
+        bgHex: "#FFFFFF",
+        ratio: "11.45:1",
+        deltaE: "ΔE₀₀ 0.0",
+        badge: "BRAND + AAA",
       },
     ],
   },
   {
     id: "nutra",
     canonId: "indian-d2c-nutra",
-    canonVersion: "1.2.0",
-    sectorTag: "ASCI FY25-26 · FSSAI",
-    title: "VitalGlow Marine Collagen D2C Launch",
-    assetName: "vitalglow_instagram_bundle.yaml",
-    draftCopyParts: {
-      prefix: "Transform your skin with VitalGlow Peptides: ",
-      span1: "clinically proven to permanently reverse skin aging in 7 days",
-      mid: " and ",
-      span2: "100% doctor-endorsed with zero side effects",
-      suffix: ". Order your 30-day starter pack today.",
-    },
-    repairedCopyParts: {
-      prefix: "Support skin hydration with VitalGlow Peptides: ",
-      span1:
-        "shown in an 8-week consumer study (n=64) to improve skin elasticity by 18%",
-      mid: " and ",
-      span2: "formulated in FSSAI-compliant GMP facilities",
-      suffix:
-        ". Order your 30-day starter pack today. Not intended to diagnose, treat, cure, or prevent any disease.",
-    },
-    editRatio: "0.29 ≤ 0.35",
-    piiMaskedCount: 1,
+    sectorTag: "ASCI Health · CCPA 2022",
+    title: "AyurGlow Curcumin Gold Elixir Launch",
+    assetName: "ayurglow_nutra_bundle.yaml",
+    draftCopy:
+      "Experience our miracle cure formula with 2x faster absorption and 100% fat burn results! AyurGlow cures diabetes naturally in 7 days.\n\nFlat 27% discount — MRP inclusive of all taxes. GST and additional charges may apply on discounted price.\n\ncolor: #777777; background-color: #FFFFFF; — Results vary.",
+    repairedCopy:
+      "Experience our nutritional support formula with 2x faster absorption in an in-vitro ingredient study only when taken with piperine for 8 weeks. Supports active weight management and supports healthy glycemic metabolism.\n\ncolor: #767676; background-color: #FFFFFF; — Results vary.",
     banner: {
-      headline: "CLINICALLY PROVEN 7-DAY REVERSAL",
-      subline: "100% Doctor-Endorsed Marine Peptides",
-      disclaimerDraft: "Results vary by individual.",
+      headline: "AYURGLOW CURCUMIN · 2X ABSORPTION",
+      subline: "Botanical Wellness · Clinical & In-Vitro Substantiation",
+      disclaimerDraft:
+        "color: #777777 on #FFFFFF (4.48:1 < 4.5:1) · Flat 27% off + extra GST.",
       disclaimerFixed:
-        "Nutraceutical supplement. Not for medicinal use. 8-week study (n=64).",
-      bgHex: "#FAF8F5",
-      accentDraftHex: "#1E4D40",
-      accentCanonHex: "#134E4A",
-      fgDraftHex: "#827E78",
-      fgDefaultFixedHex: "#57534E",
-      kfsBadge: "FSSAI Lic. 10024022",
+        "color: #767676 on #FFFFFF (4.54:1 PASS) · In-vitro ingredient study only when taken with piperine for 8 weeks.",
+      bgHex: "#FFFFFF",
+      accentDraftHex: "#3A7D4E",
+      accentCanonHex: "#2E6F40",
+      fgDraftHex: "#777777",
+      fgDefaultFixedHex: "#767676",
+      kfsBadge: "ASCI Health",
     },
-    hashes: {
-      canonHash: "91a4c830e2f17b09",
-      draftHash: "4d82e109c3a711f0",
-      repairedHash: "7b39f401d8e622a5",
-      merkleRoot: "e4190c82a7f31109d4b2609188a1c30f",
-      ed25519Sig: "ed25519:31c9d84a...0f41e822",
-    },
-    findings: [
+    swatches: [
       {
-        id: "n-claim",
-        pinLabel: "C1",
-        modality: "COPY",
-        severity: "blocker",
-        tier: "Tier 2 · QASem + Calibrated NLI",
-        checkId: "check.factual_claim",
-        ruleRef: "fact.collagen_study_2025",
-        riskScore: 0.96,
-        title: "Unsubstantiated Clinical Timeframe & Permanence Claim",
-        flaggedSpan:
-          "clinically proven to permanently reverse skin aging in 7 days",
-        repairedSpan:
-          "shown in an 8-week consumer study (n=64) to improve skin elasticity by 18%",
-        explanation:
-          "Canon clinical dossier only substantiates an 18% elasticity improvement over 8 weeks (n=64). '7 days' and 'permanently reverse' violate ASCI Chapter I.1 truthfulness mandates.",
-        slotDiff: [
-          {
-            slot: "outcome",
-            draft: "permanently reverse skin aging",
-            canon: "improve skin elasticity by 18%",
-            status: "CONTRADICTED",
-          },
-          {
-            slot: "duration",
-            draft: "in 7 days",
-            canon: "after 8 weeks",
-            status: "CONTRADICTED",
-          },
-          {
-            slot: "sample_size",
-            draft: "— (omitted)",
-            canon: "consumer study (n=64)",
-            status: "DROPPED",
-          },
-        ],
+        label: "Hue-Preserving WCAG AA",
+        hex: "#767676",
+        bgHex: "#FFFFFF",
+        ratio: "4.54:1",
+        deltaE: "ΔE₀₀ 0.4",
+        badge: "AA PASS",
       },
       {
-        id: "n-trigger",
-        pinLabel: "C2",
-        modality: "COPY",
-        severity: "blocker",
-        tier: "Tier 1 · Deterministic Trigger AST",
-        checkId: "check.required_disclaimer",
-        ruleRef: "trigger.fssai_medicinal_disclaimer",
-        riskScore: 0.89,
-        title: "Missing Mandatory FSSAI Non-Medicinal Statutory Disclosure",
-        flaggedSpan: "100% doctor-endorsed with zero side effects",
-        repairedSpan:
-          "formulated in FSSAI-compliant GMP facilities ... Not intended to diagnose, treat, cure, or prevent any disease.",
-        explanation:
-          "Health & wellness efficacy claims trigger mandatory FSSAI Food Safety and Standards (Health Supplements) disclosure.",
+        label: "High-Contrast WCAG AAA",
+        hex: "#595959",
+        bgHex: "#FFFFFF",
+        ratio: "7.00:1",
+        deltaE: "ΔE₀₀ 11.4",
+        badge: "AAA PASS",
       },
       {
-        id: "n-wcag",
-        pinLabel: "V1",
-        modality: "VISION",
-        severity: "warning",
-        tier: "Tier 1 · OpenCV + WCAG 2.1",
-        checkId: "check.visual_contrast",
-        ruleRef: "wcag.aa.disclaimer",
-        riskScore: 0.78,
-        title: "Low-Contrast Supplement Footnote on Warm Canvas",
-        flaggedSpan: "Foreground #827E78 on #FAF8F5 (3.74:1 < 4.50:1)",
-        repairedSpan: "Foreground #57534E on #FAF8F5 (6.89:1 PASS)",
-        explanation:
-          "Footnote contrast ratio is 3.74:1 against warm ivory background, below the 4.50:1 ASCI legibility threshold.",
-        swatches: [
-          {
-            label: "WCAG AA Warm Stone",
-            hex: "#6B6661",
-            bgHex: "#FAF8F5",
-            ratio: "4.85:1",
-            deltaE: "ΔE₀₀ 1.9",
-            badge: "AA PASS",
-          },
-          {
-            label: "WCAG AAA Deep Umber",
-            hex: "#57534E",
-            bgHex: "#FAF8F5",
-            ratio: "6.89:1",
-            deltaE: "ΔE₀₀ 3.6",
-            badge: "AAA PASS",
-          },
-          {
-            label: "Canon Botanical Teal",
-            hex: "#134E4A",
-            bgHex: "#FAF8F5",
-            ratio: "8.92:1",
-            deltaE: "ΔE₀₀ 0.0",
-            badge: "BRAND + AAA",
-          },
-        ],
-        bbox: { x: 8, y: 74, w: 84, h: 18 },
+        label: "Canon Botanical Sage",
+        hex: "#2E6F40",
+        bgHex: "#FFFFFF",
+        ratio: "6.12:1",
+        deltaE: "ΔE₀₀ 0.0",
+        badge: "BRAND + AA",
       },
     ],
   },
   {
     id: "enterprise",
     canonId: "acme-corp",
-    canonVersion: "2.1.0",
-    sectorTag: "Brand Book · Palette ΔE₀₀ & ORB Logo",
-    title: "Acme Cloud Enterprise Security Keynote",
-    assetName: "acme_keynote_hero_bundle.yaml",
-    draftCopyParts: {
-      prefix: "Deploy Acme Cloud Shield for ",
-      span1: "100% unhackable zero-downtime infrastructure",
-      mid: " backed by ",
-      span2: "unlimited SLA payouts on every tier",
-      suffix: " across 24 global regions.",
-    },
-    repairedCopyParts: {
-      prefix: "Deploy Acme Cloud Shield for ",
-      span1: "SOC 2 Type II certified infrastructure with 99.99% uptime SLA",
-      mid: " backed by ",
-      span2: "service credit remedies for Enterprise Plan customers",
-      suffix: " across 24 global regions.",
-    },
-    editRatio: "0.26 ≤ 0.35",
-    piiMaskedCount: 1,
+    sectorTag: "Brand Book · WCAG 2.1 AA",
+    title: "Acme Cloud Enterprise Launch Landing Page",
+    assetName: "acme_launch.yaml",
+    draftCopy:
+      "Why buy cheap legacy tools when our cutting-edge platform helps users modernize? Acme Corp has over 500 employees serving global enterprises.\n\ncolor: #777777; background-color: #FFFFFF; — Enterprise SLA footnote text.",
+    repairedCopy:
+      "Purchase affordable tools when our innovative platform helps customers modernize. Acme Corp has over 500 employees as of Q3 2025.\n\ncolor: #767676; background-color: #FFFFFF; — Enterprise SLA footnote text.",
     banner: {
-      headline: "ACME CLOUD SHIELD · ZERO DOWNTIME",
-      subline: "Enterprise Mesh · 24 Global Regions",
-      disclaimerDraft: "SLA terms subject to change without notice.",
+      headline: "ACME CLOUD · ENTERPRISE PLATFORM",
+      subline: "Over 500 Employees (as of Q3 2025)",
+      disclaimerDraft:
+        "color: #777777 on #FFFFFF (4.48:1 < 4.5:1) · Enterprise SLA footnote.",
       disclaimerFixed:
-        "99.99% uptime SLA applies to Enterprise tier per Master Services Agreement.",
-      bgHex: "#F1F5F9",
-      accentDraftHex: "#1E6091",
-      accentCanonHex: "#0D3B66",
-      fgDraftHex: "#7A869A",
-      fgDefaultFixedHex: "#475569",
-      kfsBadge: "SOC2 · ISO27001",
+        "color: #767676 on #FFFFFF (4.54:1 PASS) · Verified against acme-corp v1.0.",
+      bgHex: "#FFFFFF",
+      accentDraftHex: "#2B6CB0",
+      accentCanonHex: "#1A73E8",
+      fgDraftHex: "#777777",
+      fgDefaultFixedHex: "#767676",
+      kfsBadge: "Acme Brand v1.0",
     },
-    hashes: {
-      canonHash: "5be7400ed3c8470e",
-      draftHash: "6a10f92c8b41d307",
-      repairedHash: "01c86e8aabc61c79",
-      merkleRoot: "82c3e4c252a40a7c065b39e07eb91bce",
-      ed25519Sig: "ed25519:7f02a19b...4c8e1130",
-    },
-    findings: [
+    swatches: [
       {
-        id: "e-term",
-        pinLabel: "C1",
-        modality: "COPY",
-        severity: "blocker",
-        tier: "Tier 1 · Aho-Corasick + UTS #39",
-        checkId: "check.banned_terms",
-        ruleRef: "term.unhackable_absolutist",
-        riskScore: 0.98,
-        title: "Prohibited Absolutist Security Claim ('100% unhackable')",
-        flaggedSpan: "100% unhackable zero-downtime infrastructure",
-        repairedSpan:
-          "SOC 2 Type II certified infrastructure with 99.99% uptime SLA",
-        explanation:
-          "Acme Brand Canon §3.1 bans unverifiable security superlatives ('unhackable', 'zero-downtime') and mandates citing the verified 99.99% SLA.",
-        slotDiff: [
-          {
-            slot: "security_posture",
-            draft: "100% unhackable",
-            canon: "SOC 2 Type II certified",
-            status: "CONTRADICTED",
-          },
-          {
-            slot: "availability_metric",
-            draft: "zero-downtime",
-            canon: "99.99% uptime SLA",
-            status: "CONTRADICTED",
-          },
-          {
-            slot: "eligible_tier",
-            draft: "every tier",
-            canon: "Enterprise Plan customers",
-            status: "CONTRADICTED",
-          },
-        ],
+        label: "Hue-Preserving WCAG AA",
+        hex: "#767676",
+        bgHex: "#FFFFFF",
+        ratio: "4.54:1",
+        deltaE: "ΔE₀₀ 0.4",
+        badge: "AA PASS",
       },
       {
-        id: "e-palette",
-        pinLabel: "V1",
-        modality: "VISION",
-        severity: "warning",
-        tier: "Tier 1 · K-Means + CIEDE2000 ΔE₀₀",
-        checkId: "check.visual_palette",
-        ruleRef: "palette.acme_primary_navy (#0D3B66)",
-        riskScore: 0.81,
-        title: "Off-Brand Primary Header Swatch (ΔE₀₀ = 6.42 > 3.0)",
-        flaggedSpan: "Sampled #1E6091 vs Canon #0D3B66 (ΔE₀₀ = 6.42)",
-        repairedSpan: "Snapped to Canon Token #0D3B66 (ΔE₀₀ = 0.00)",
-        explanation:
-          "K-Means dominant colour extraction in CIE L*a*b* space detected #1E6091 on the hero banner header, exceeding the perceptual tolerance threshold ΔE₀₀ ≤ 3.0.",
-        swatches: [
-          {
-            label: "Canon Primary Navy",
-            hex: "#0D3B66",
-            bgHex: "#F1F5F9",
-            ratio: "10.61:1",
-            deltaE: "ΔE₀₀ 0.0",
-            badge: "EXACT TOKEN",
-          },
-          {
-            label: "Canon Slate Ink",
-            hex: "#1E293B",
-            bgHex: "#F1F5F9",
-            ratio: "12.84:1",
-            deltaE: "ΔE₀₀ 0.0",
-            badge: "SECONDARY TOKEN",
-          },
-          {
-            label: "WCAG AA Slate",
-            hex: "#475569",
-            bgHex: "#F1F5F9",
-            ratio: "6.72:1",
-            deltaE: "ΔE₀₀ 1.2",
-            badge: "AA PASS",
-          },
-        ],
-        bbox: { x: 6, y: 12, w: 88, h: 28 },
+        label: "High-Contrast WCAG AAA",
+        hex: "#595959",
+        bgHex: "#FFFFFF",
+        ratio: "7.00:1",
+        deltaE: "ΔE₀₀ 11.4",
+        badge: "AAA PASS",
+      },
+      {
+        label: "Canon Dark Gray Token",
+        hex: "#202124",
+        bgHex: "#FFFFFF",
+        ratio: "16.10:1",
+        deltaE: "ΔE₀₀ 0.0",
+        badge: "BRAND + AAA",
       },
     ],
   },
 ];
 
 /* ──────────────────────────────────────────────────────────────────────────
- * Compiled YAML Playbook & Developer Integration Snippets
+ * Authentic Repository Canon YAML Files (`canons/*.yaml`)
  * ────────────────────────────────────────────────────────────────────────── */
 
 const PLAYBOOK_YAML_SAMPLES: Record<
@@ -549,104 +225,193 @@ const PLAYBOOK_YAML_SAMPLES: Record<
     title: string;
     authority: string;
     rulesCount: number;
+    hashPrefix: string;
     yaml: string;
   }
 > = {
   "indian-digital-lending.yaml": {
-    title: "Indian Digital Lending & KFS Pack",
-    authority: "RBI/2024-25/18 · CCPA 2022 · ASCI",
-    rulesCount: 18,
-    yaml: `id: indian-digital-lending
-version: "1.4.0"
-name: "RBI 2025 Digital Lending & Key Fact Statement Canon"
-
-palette:
-  primary:
-    - name: "Canon Trust Navy"
-      hex: "#0D3B66"
-      tolerance_delta_e: 3.0
+    title: "Indian Digital Lending (RBI 2025 KFS & ASCI BFSI Norms)",
+    authority: "RBI Digital Lending Directions (May 2025) & KFS Mandate",
+    rulesCount: 11,
+    hashPrefix: "1cd1ac13e83f1b00",
+    yaml: `# CanonGate Starter Canon — Indian Digital Lending (RBI 2025 KFS & ASCI BFSI Norms)
+id: indian-digital-lending
+version: "1.0"
+require_image_alt: true
 
 terminology:
-  banned:
-    - pattern: "guaranteed instant approval"
-      replacement: "instant eligibility assessment subject to credit verification"
-      severity: blocker
-      rationale: "RBI Digital Lending Directions prohibit unconditional approval promises."
+  - id: term-guaranteed-approval
+    pattern_text: guaranteed approval
+    preferred: subject to credit assessment
+    severity: 85
+    note: "RBI Digital Lending Directions: never promise guaranteed loan approval without underwriting."
+
+  - id: term-no-credit-check
+    pattern_text: no credit check
+    preferred: streamlined credit verification
+    severity: 80
+    note: "RBI KYC / Bureau mandate: all regulated NBFC loans require bureau reporting."
+
+  - id: term-free-money
+    pattern_text: free money
+    preferred: credit facility
+    severity: 75
+    note: "ASCI BFSI code: do not portray credit or loans as free money."
+
+  - id: term-cheap
+    pattern_text: cheap
+    preferred: competitive-rate
+    severity: 40
+    note: "Brand voice: use 'competitive-rate' rather than 'cheap'."
+
+palette:
+  - id: color-rbi-trust-navy
+    hex: "#0D3B66"
+    name: "Trust Navy"
+    max_delta_e: 3.0
+  - id: color-upi-emerald
+    hex: "#1B8A5A"
+    name: "Verified Emerald"
+    max_delta_e: 3.0
 
 facts:
-  - id: "fact.zero_interest_promo"
-    claim: "0% interest promotional rate applies only to personal loans under ₹50,000 for first-time borrowers; a 2.5% processing fee applies."
-    required_qualifiers:
-      - "under ₹50,000"
-      - "first-time borrowers"
-    severity: blocker
+  - id: fact-kfs-processing-fee
+    text: "0% processing fee on loans"
+    conditions: ["under Rs 50,000", "for first-time borrowers only"]
+    valid_until: "2026-09-30"
+    subject_product: "processing fee"
+    metric_value: "0%"
+    comparison_operator: "<="
+    kfs_acceptance_validity_days: 3
 
-triggers:
-  - id: "trigger.rbi_kfs_apr"
-    keywords: ["APR", "interest", "loan", "EMI"]
-    required_disclaimer: "Subject to credit verification. Refer to the Key Fact Statement (KFS) for all-inclusive Annual Percentage Rate (APR)."
-    severity: blocker`,
+  - id: fact-kfs-apr-ceiling
+    text: "Annual Percentage Rate (APR) is 18%"
+    conditions: ["up to Rs 2,00,000"]
+    valid_until: "2026-12-31"
+    subject_product: "Annual Percentage Rate (APR)"
+    metric_value: "18%"
+    comparison_operator: "<="
+
+trigger_obligations:
+  - id: trig-kfs-schedule
+    trigger_pattern: "0%\\\\s+processing\\\\s+fee"
+    required_disclaimer_id: rbi-kfs-mandatory
+    required_disclaimer_text: "Subject to RBI Key Fact Statement (KFS) schedule"
+    same_language: true
+    severity: 75`,
   },
   "indian-d2c-nutra.yaml": {
-    title: "Indian D2C Nutraceutical & Health Claims Pack",
-    authority: "ASCI FY25-26 Chapter I · FSSAI Health Supplements",
-    rulesCount: 14,
-    yaml: `id: indian-d2c-nutra
-version: "1.2.0"
-name: "ASCI & FSSAI D2C Health & Personal Care Canon"
+    title: "Indian D2C Nutraceuticals (ASCI Health & CCPA 2022)",
+    authority: "ASCI F&B/Health Guidelines & CCPA 2022 Clause 11",
+    rulesCount: 7,
+    hashPrefix: "eb05d1784ad09bab",
+    yaml: `# CanonGate Starter Canon — Indian D2C Nutraceuticals (ASCI Health & CCPA 2022 Guidelines)
+id: indian-d2c-nutra
+version: "1.0"
+require_image_alt: true
 
 terminology:
-  banned:
-    - pattern: "permanently cure"
-      replacement: "clinically formulated to support"
-      severity: blocker
-    - pattern: "zero side effects"
-      replacement: "well-tolerated in consumer trials"
-      severity: blocker
+  - id: term-miracle-cure
+    pattern_text: miracle cure
+    preferred: nutritional support
+    severity: 90
+    note: "Drugs and Magic Remedies Act / ASCI: never claim a miracle cure."
 
-facts:
-  - id: "fact.collagen_study_2025"
-    claim: "VitalGlow Marine Peptides improved skin elasticity by 18% after 8 weeks in a consumer study (n=64)."
-    required_qualifiers:
-      - "8 weeks"
-      - "n=64"
-    severity: blocker
+  - id: term-cures-diabetes
+    pattern_text: cures diabetes
+    preferred: supports healthy glycemic metabolism
+    severity: 95
+    note: "ASCI Health Guidelines: nutraceuticals cannot claim to cure chronic disease."
 
-triggers:
-  - id: "trigger.fssai_medicinal_disclaimer"
-    keywords: ["clinically", "collagen", "peptides", "supplement"]
-    required_disclaimer: "Nutraceutical. Not for medicinal use. Not intended to diagnose, treat, cure, or prevent any disease."
-    severity: blocker`,
-  },
-  "acme-corp.yaml": {
-    title: "Acme Corp Enterprise Brand & Visual Governance",
-    authority: "Brand Design System v2.1 · WCAG 2.1 Level AA",
-    rulesCount: 16,
-    yaml: `id: acme-corp
-version: "2.1.0"
-name: "Acme Enterprise Brand Identity & Accessibility Canon"
+  - id: term-100pct-fat-burn
+    pattern_text: 100% fat burn
+    preferred: supports active weight management
+    severity: 80
+    note: "CCPA 2022: absolute 100% physiological efficacy claims require clinical trial proof."
 
 palette:
-  primary:
-    - name: "Acme Brand Navy"
-      hex: "#0D3B66"
-      tolerance_delta_e: 3.0
-  secondary:
-    - name: "Acme Emerald"
-      hex: "#059669"
-      tolerance_delta_e: 3.5
+  - id: color-botanical-sage
+    hex: "#2E6F40"
+    name: "Botanical Sage"
+    max_delta_e: 3.0
+  - id: color-turmeric-gold
+    hex: "#D99B26"
+    name: "Turmeric Gold"
+    max_delta_e: 3.5
 
-logo:
-  reference_path: "fixtures/golden_bundle/acme_logo.png"
-  min_clear_space_ratio: 0.50
-  min_aspect_similarity: 0.92
+facts:
+  - id: fact-curcumin-absorption
+    text: "2x faster absorption"
+    conditions:
+      - "in-vitro ingredient study only"
+      - "when taken with piperine for 8 weeks"
+    valid_until: "2026-12-31"
+    substantiation_level: "ingredient_in_vitro"
 
-voice:
-  max_sentence_words: 28
-  max_flesch_kincaid_grade: 11.0
-  prohibited_superlatives: ["100% unhackable", "zero-downtime", "unlimited SLA"]`,
+  - id: fact-protein-per-serving
+    text: "24g plant protein per scoop"
+    conditions: ["per 35g serving size"]
+    valid_until: "2026-12-31"
+    substantiation_level: "finished_product_clinical"`,
+  },
+  "acme-corp.yaml": {
+    title: "Acme Corp Enterprise Brand Rules",
+    authority: "Brand Voice, Palette ΔE₀₀ & Fact Substantiation",
+    rulesCount: 9,
+    hashPrefix: "5be7400ed3c8470e",
+    yaml: `# CanonGate Demo Canon — "Acme Corp" brand rules
+id: acme-corp
+version: "1.0"
+
+terminology:
+  - id: term-cheap
+    pattern_text: cheap
+    preferred: affordable
+    severity: 60
+    note: "Brand voice: never use 'cheap' — it implies low quality."
+  - id: term-buy
+    pattern_text: buy
+    preferred: purchase
+    severity: 40
+    note: "Formal tone: use 'purchase' instead of 'buy'."
+  - id: term-users
+    pattern_text: users
+    preferred: customers
+    severity: 50
+    note: "We serve customers, not users."
+  - id: term-cutting-edge
+    pattern_text: cutting-edge
+    preferred: innovative
+    severity: 30
+    note: "Avoid cliché buzzwords."
+
+palette:
+  - id: color-primary
+    hex: "#1A73E8"
+    name: Primary Blue
+    max_delta_e: 3.0
+  - id: color-accent
+    hex: "#EA4335"
+    name: Accent Red
+    max_delta_e: 5.0
+  - id: color-dark
+    hex: "#202124"
+    name: Dark Gray
+    max_delta_e: 2.0
+
+facts:
+  - id: fact-founding
+    text: "Acme Corp was founded in 2020."
+    conditions: []
+  - id: fact-employees
+    text: "Acme Corp has over 500 employees."
+    conditions: ["as of Q3 2025"]`,
   },
 };
+
+/* ──────────────────────────────────────────────────────────────────────────
+ * Authentic CLI, MCP (2026-07-28), and Webhook Gate Snippets
+ * ────────────────────────────────────────────────────────────────────────── */
 
 const DEV_INTEGRATION_TABS: Record<
   string,
@@ -659,81 +424,67 @@ const DEV_INTEGRATION_TABS: Record<
   cli: {
     label: "CLI Pre-Publish Gate",
     subtitle:
-      "Run deterministic + conformal pre-publish checks locally or in pre-commit hooks with non-zero exit codes on blockers.",
-    code: `# Audit a multi-modal campaign bundle with Conformal Risk Control (alpha = 0.10)
+      "Run `canongate gate` locally or in CI with split-conformal calibration (`canongate/cli.py`).",
+    code: `# Audit fixtures/golden_bundle/acme_launch.yaml against acme-corp (alpha = 0.10 -> lambda = 0.34)
 $ uv run canongate gate \\
-    --canon indian-digital-lending \\
+    --canon acme-corp \\
     --paths fixtures/golden_bundle/acme_launch.yaml \\
     --alpha 0.10
 
-[BLOCK] CanonGate Pre-Publish Gate — Canon 'indian-digital-lending' v1.4.0 (alpha=0.10, lambda=0.75)
-  • Assets Audited : acme_launch.yaml, acme_banner_bad.png
-  • Findings       : 4 total (3 Blockers, 1 Warning)
-  • [BLOCKER] check.factual_claim (fact.zero_interest_promo) — score=0.94
-  • [BLOCKER] check.numeric_consistency (rbi.kfs.apr_reconciliation) — score=0.99
-  • [BLOCKER] check.visual_contrast (wcag.aa.normal_text) — score=0.91
+[BLOCK] CanonGate Pre-Publish Gate — Canon 'acme-corp' v1.0 (alpha=0.10, lambda=0.34)
+  • Assets Audited : acme_launch.yaml
+  • Findings       : 5 total (3 Blockers, 2 Warnings)
+    - [BLOCKER · S=60] terminology.banned (term-cheap): Use "affordable" instead of "cheap"
+    - [WARNING · S=30] terminology.banned (term-cutting-edge): Use "innovative" instead of "cutting-edge"
+    - [WARNING · S=40] terminology.banned (term-buy): Use "purchase" instead of "Buy"
+    - [BLOCKER · S=50] terminology.banned (term-users): Use "customers" instead of "users"
+    - [BLOCKER · S=80] claim.slot_nli (fact-founding): Factual contradiction ('2018' vs '2020')
 
-# Verify an Ed25519 + RFC 9162 Merkle compliance certificate offline
-$ uv run canongate verify release_cert_sub_01.json`,
-  },
-  github: {
-    label: "GitHub Actions CI/CD",
-    subtitle:
-      "Drop the composite action into .github/workflows to block non-compliant campaign PRs before merge.",
-    code: `name: CanonGate Pre-Publication Gate
-on:
-  pull_request:
-    paths: ["campaigns/**", "canons/**"]
-
-jobs:
-  governance-gate:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - name: Run CanonGate Multi-Modal Audit
-        uses: ./
-        with:
-          canon: "indian-digital-lending"
-          paths: "fixtures/golden_bundle/acme_launch.yaml"
-          alpha: "0.10"
-          fail-on-warning: "false"`,
+# Verify an exported Ed25519 + RFC 9162 Merkle governance certificate offline
+$ uv run canongate verify canongate_certificate_sub_1.json`,
   },
   mcp: {
-    label: "FastMCP 3.0 Agent Server",
+    label: "MCP Server (2026-07-28)",
     subtitle:
-      "Expose CanonGate to Claude Desktop, Cursor, or autonomous marketing agents via Streamable HTTP or stdio.",
-    code: `// JSON-RPC 2.0 Call -> POST /api/mcp (or stdio via \`uv run canongate-mcp\`)
+      "Exposes 6 read-only tools (`list_canons`, `submit_batch`, `job_status`, `get_findings`, `explain_finding`, `propose_fix`) over stdio or POST /api/mcp.",
+    code: `// JSON-RPC 2.0 -> POST /api/mcp (or stdio via \`uv run canongate-mcp\`)
+// Note: approve / override / publish are intentionally omitted (OWASP LLM06 human-in-the-loop gate)
 {
   "jsonrpc": "2.0",
-  "id": "req-42",
+  "id": "req-1",
   "method": "tools/call",
   "params": {
-    "name": "surgical_rewrite_and_reverify",
+    "name": "submit_batch",
     "arguments": {
       "canon_id": "indian-digital-lending",
-      "draft_text": "Get 0% interest on all loans with guaranteed instant approval!",
-      "max_edit_ratio": 0.35
+      "paths": ["fixtures/golden_bundle/acme_launch.yaml"],
+      "alpha": 0.10,
+      "wait_ms": 1500
     }
   }
-}`,
+}
+
+// Follow-up surgical fix preview for a specific finding row_id:
+// { "method": "tools/call", "params": { "name": "propose_fix", "arguments": { "submission_id": 1, "row_id": 1 } } }`,
   },
   webhook: {
     label: "Shopify & Webflow Gate",
     subtitle:
-      "Synchronous HTTP 200 (allow) / HTTP 422 (block) webhook gate with SSRF-hardened asset fetching.",
+      "Synchronous `POST /api/gate/check` endpoint with built-in generic, Shopify, and Webflow payload adapters.",
     code: `POST /api/gate/check HTTP/1.1
 Content-Type: application/json
 
 {
-  "provider": "webflow",
+  "adapter": "webflow",
   "canon_id": "indian-digital-lending",
   "alpha": 0.10,
+  "persist": false,
   "title": "Diwali Instant Loan Landing Page",
-  "text": "0% interest for first-time borrowers on loans under ₹50,000. Refer to KFS for APR."
+  "raw_content": "Get 0% processing fee on loans under Rs 50,000 for first-time borrowers only. Subject to RBI Key Fact Statement (KFS) schedule."
 }
 
 // Response: HTTP 200 OK
-// { "decision": "allow", "blocker_count": 0, "conformal_alpha": 0.10, "latency_ms": 38.4 }`,
+// { "decision": "allow", "conformal_threshold": 0.34, "blocker_count": 0, "warning_count": 0 }`,
   },
 };
 
@@ -744,44 +495,29 @@ const WORKFLOW_STAGE_SPECS = [
     username: "creative_lead",
     roleLabel: "Creator (@creative_lead)",
     statusTag: "draft → in_review",
-    title: "Multi-Modal Pre-Flight & Surgical Repair",
+    title: "Pre-Flight Triage & Surgical Remediation",
     summary:
-      "Ingests Markdown, HTML, DOCX, PDF, YAML bundles, and 1080p banners into a unified ContentAST. Creators resolve deterministic & semantic blockers via 1-click surgical rewrites (≤35% edit ratio) or WCAG swatch snapping before submitting for review.",
-    gates: [
-      "Tier 1 AST + OpenCV Vision (CIEDE2000 ΔE₀₀, WCAG 2.1, ORB 0.5H clear-space)",
-      "Tier 1.5 SymPy + Z3 QF_NRA algebraic KFS APR reconciliation",
-      "DPDP Act 2023 local PII vault masks Aadhaar, PAN, GSTIN, UPI before Tier 3",
-    ],
+      "Uploads campaign copy, documents, and banners, runs Tier 1–2 checks, applies ≤35% surgical rewrites or WCAG contrast swatches, and documents context on Warning overrides.",
   },
   {
     stage: "STAGE 02",
     roleKey: "reviewer",
     username: "brand_manager",
     roleLabel: "Brand Manager (@brand_manager)",
-    statusTag: "in_review → changes_requested | brand_approved",
-    title: "Brand Identity & Conformal Calibration Review",
+    statusTag: "in_review → approved | changes_requested",
+    title: "Brand Review & Playbook Calibration",
     summary:
-      "Brand Managers inspect bidirectional ProseMirror spans and banner bounding boxes, adjudicate creator override rationales, and monitor rule friction via vectorized Krippendorff's α inter-reviewer agreement.",
-    gates: [
-      "Every Blocker must be Accepted or carry a ≥15-character documented override rationale",
-      "Live Conformal Risk Control slider (α ∈ [0.01, 0.25]) calibrates recall guarantees",
-      "Auto-generates Canon v1.1 YAML pull requests when rule override rate > 30%",
-    ],
+      "Reviews inline ProseMirror diffs and warning overrides, monitors Krippendorff's α rule friction, and calibrates rule thresholds or generates Canon v1.1 PRs.",
   },
   {
     stage: "STAGE 03",
     roleKey: "admin",
     username: "legal_counsel",
-    roleLabel: "Legal Counsel (@legal_counsel)",
-    statusTag: "in_review → approved → published",
-    title: "Statutory Sign-Off & Cryptographic Release Seal",
+    roleLabel: "Legal Reviewer (@legal_counsel)",
+    statusTag: "approved → published",
+    title: "Statutory Sign-Off & Cryptographic Certificate",
     summary:
-      "Legal Counsel performs final statutory verification against CCPA 2022, RBI 2025 KFS, and ASCI mandates. Publishing seals the transition in an RFC 9162 SHA-256 Merkle ledger and issues an Ed25519 + C2PA 2.2 manifest.",
-    gates: [
-      "Strict RBAC transition matrix prevents creators from self-approving campaigns",
-      "RFC 9162 Certificate Transparency Merkle tree with inclusion & consistency proofs",
-      "Offline-verifiable Ed25519 signature (`uv run canongate verify cert.json`)",
-    ],
+      "Audits high-risk SlotDiff and SMT algebraic claims in a dedicated Claim-Only view, executes final release sign-off, and seals the RFC 9162 Merkle + Ed25519 certificate.",
   },
 ];
 
@@ -789,63 +525,119 @@ export function HomePage() {
   const { isAuthenticated, username, role, login } = useAuth();
   const navigate = useNavigate();
 
-  // Workbench interactive state
-  const [scenarioId, setScenarioId] = useState<string>("fintech");
-  const [selectedFindingIdx, setSelectedFindingIdx] = useState<number>(0);
+  // Live Canon & Gate Check state
+  const [canons, setCanons] = useState<CanonSummary[]>([]);
+  const [presetId, setPresetId] = useState<string>("fintech");
+  const [selectedCanonId, setSelectedCanonId] = useState<string>(
+    "indian-digital-lending",
+  );
+  const [draftTitle, setDraftTitle] = useState<string>(
+    TRIAL_PRESETS[0].title,
+  );
+  const [draftText, setDraftText] = useState<string>(
+    TRIAL_PRESETS[0].draftCopy,
+  );
   const [isRepaired, setIsRepaired] = useState<boolean>(false);
   const [conformalAlpha, setConformalAlpha] = useState<number>(0.1);
   const [selectedSwatchHex, setSelectedSwatchHex] = useState<string | null>(
     null,
   );
-  const [scanPulseKey, setScanPulseKey] = useState<number>(1);
-  const [tracePulseKey, setTracePulseKey] = useState<number>(1);
 
-  // Interactive Bento specimen states
-  const [bentoSnappedPalette, setBentoSnappedPalette] =
-    useState<boolean>(false);
-  const [bentoZ3Reconciled, setBentoZ3Reconciled] = useState<boolean>(false);
+  // Live API response from POST /api/gate/check
+  const [gateResult, setGateResult] =
+    useState<GateCheckResponsePayload | null>(null);
+  const [selectedFindingIdx, setSelectedFindingIdx] = useState<number>(0);
+  const [checkingGate, setCheckingGate] = useState<boolean>(false);
+  const [launchingTrial, setLaunchingTrial] = useState<boolean>(false);
+  const [launchingRole, setLaunchingRole] = useState<string | null>(null);
 
-  // Architecture & Developer section interactive tabs
-  const [activeStageIdx, setActiveStageIdx] = useState<number>(0);
+  // Code explorer tabs
   const [activePlaybookKey, setActivePlaybookKey] = useState<string>(
     "indian-digital-lending.yaml",
   );
   const [activeDevTab, setActiveDevTab] = useState<string>("cli");
   const [copiedId, setCopiedId] = useState<string | null>(null);
-  const [launchingRole, setLaunchingRole] = useState<string | null>(null);
 
-  const currentScenario =
-    WORKBENCH_SCENARIOS.find((s) => s.id === scenarioId) ??
-    WORKBENCH_SCENARIOS[0];
+  const currentPreset =
+    TRIAL_PRESETS.find((p) => p.id === presetId) ?? TRIAL_PRESETS[0];
 
-  const activeFinding =
-    currentScenario.findings[
-      Math.min(selectedFindingIdx, currentScenario.findings.length - 1)
-    ] ?? currentScenario.findings[0];
+  // Fetch real canons on mount
+  useEffect(() => {
+    let active = true;
+    listCanons()
+      .then((list) => {
+        if (active && list.length > 0) {
+          setCanons(list);
+        }
+      })
+      .catch(() => {});
+    return () => {
+      active = false;
+    };
+  }, []);
 
-  // Conformal threshold math
-  const conformalLambda =
-    conformalAlpha <= 0.05 ? 0.68 : conformalAlpha <= 0.1 ? 0.75 : 0.85;
-  const calibratedFindings = currentScenario.findings.filter(
-    (f) => f.riskScore >= conformalLambda,
+  // Run real `POST /api/gate/check` (persist: false) whenever copy, canon, or alpha changes
+  const executeLiveGateCheck = useCallback(
+    async (contentToAudit: string, canonToUse: string, alphaToUse: number) => {
+      if (!contentToAudit.trim()) return;
+      setCheckingGate(true);
+      try {
+        const res = await runGateCheck({
+          canon_id: canonToUse,
+          title: draftTitle || "Interactive Pre-Publish Check",
+          raw_content: contentToAudit,
+          alpha: alphaToUse,
+          persist: false,
+        });
+        setGateResult(res);
+        setSelectedFindingIdx(0);
+      } catch {
+        // Fallback handled inside client.ts
+      } finally {
+        setCheckingGate(false);
+      }
+    },
+    [draftTitle],
   );
-  const blockerCount = isRepaired
-    ? 0
-    : calibratedFindings.filter((f) => f.severity === "blocker").length;
 
-  const activeBannerFgHex =
-    selectedSwatchHex ??
-    (isRepaired
-      ? currentScenario.banner.fgDefaultFixedHex
-      : currentScenario.banner.fgDraftHex);
+  useEffect(() => {
+    const timer = window.setTimeout(() => {
+      void executeLiveGateCheck(draftText, selectedCanonId, conformalAlpha);
+    }, 180);
+    return () => window.clearTimeout(timer);
+  }, [draftText, selectedCanonId, conformalAlpha, executeLiveGateCheck]);
 
-  const activeBannerAccentHex = isRepaired
-    ? currentScenario.banner.accentCanonHex
-    : currentScenario.banner.accentDraftHex;
+  function handleSelectPreset(nextPreset: TrialPreset) {
+    setPresetId(nextPreset.id);
+    setSelectedCanonId(nextPreset.canonId);
+    setDraftTitle(nextPreset.title);
+    setDraftText(nextPreset.draftCopy);
+    setIsRepaired(false);
+    setSelectedSwatchHex(null);
+    setSelectedFindingIdx(0);
+    const matchingYamlKey = `${nextPreset.canonId}.yaml`;
+    if (PLAYBOOK_YAML_SAMPLES[matchingYamlKey]) {
+      setActivePlaybookKey(matchingYamlKey);
+    }
+  }
 
-  function triggerScanSweep() {
-    setScanPulseKey((prev) => prev + 1);
-    setTracePulseKey((prev) => prev + 1);
+  function handleToggleSurgicalRepair() {
+    if (!isRepaired) {
+      setDraftText(currentPreset.repairedCopy);
+      setIsRepaired(true);
+      setSelectedSwatchHex("#767676");
+    } else {
+      setDraftText(currentPreset.draftCopy);
+      setIsRepaired(false);
+      setSelectedSwatchHex(null);
+    }
+  }
+
+  function handleApplySwatchToCopy(hex: string) {
+    setSelectedSwatchHex(hex);
+    setDraftText((prev) =>
+      prev.replace(/color:\s*#[0-9a-fA-F]{6}/i, `color: ${hex}`),
+    );
   }
 
   function handleCopyText(id: string, text: string) {
@@ -868,9 +660,72 @@ export function HomePage() {
     }
   }
 
+  // Launch a real Guided Trial Run inside the Review Studio (`/submissions/:id`),
+  // tagged in localStorage so the user can test all 4 stages and then 1-click reset to an empty workspace.
+  async function handleStartGuidedTrialRun() {
+    setLaunchingTrial(true);
+    try {
+      if (!isAuthenticated) {
+        await login("creative_lead", "demoPassword123!");
+      }
+      const trialTitle = `[Trial Run] ${draftTitle.replace(/^\[Trial Run\]\s*/i, "")}`;
+      const contentForTrial = isRepaired
+        ? currentPreset.draftCopy
+        : draftText.trim() || currentPreset.draftCopy;
+      const sub = await createSubmission(
+        trialTitle,
+        contentForTrial,
+        selectedCanonId,
+        [],
+        [],
+      );
+      const apiBase = getApiBase();
+      await fetch(`${apiBase}/submissions/${sub.id}/scan?alpha=${conformalAlpha}`, {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${localStorage.getItem("cg_token") ?? ""}`,
+        },
+      }).catch(() => {});
+
+      const existingIds: number[] = JSON.parse(
+        localStorage.getItem("cg_trial_submission_ids") || "[]",
+      );
+      if (!existingIds.includes(sub.id)) {
+        existingIds.push(sub.id);
+      }
+      localStorage.setItem(
+        "cg_trial_submission_ids",
+        JSON.stringify(existingIds),
+      );
+      localStorage.setItem("cg_trial_active", "true");
+      navigate(`/submissions/${sub.id}`);
+    } catch {
+      navigate("/login");
+    } finally {
+      setLaunchingTrial(false);
+    }
+  }
+
+  const findings = gateResult?.findings ?? [];
+  const activeFinding =
+    findings[Math.min(selectedFindingIdx, Math.max(0, findings.length - 1))] ??
+    null;
+  const blockerCount = gateResult?.blocker_count ?? 0;
+  const warningCount = gateResult?.warning_count ?? 0;
+  const conformalLambda =
+    gateResult?.conformal_threshold ??
+    (conformalAlpha <= 0.05 ? 0.42 : conformalAlpha <= 0.1 ? 0.34 : 0.22);
+
+  const matchedCanonMeta = canons.find((c) => c.id === selectedCanonId);
+  const activeBannerFgHex =
+    selectedSwatchHex ??
+    (isRepaired || draftText.includes("#767676")
+      ? currentPreset.banner.fgDefaultFixedHex
+      : currentPreset.banner.fgDraftHex);
+
   return (
     <div className="cg-home">
-      {/* ── Architectural Top Command Bar ── */}
+      {/* ── Top Product Navigation Bar ── */}
       <header className="cg-topbar">
         <div className="cg-topbar-inner">
           <div className="cg-topbar-left">
@@ -879,14 +734,13 @@ export function HomePage() {
                 <ShieldCheck size={17} strokeWidth={2.2} />
               </span>
               <span className="cg-brand-name">CanonGate</span>
-              <span className="cg-brand-version">v2.4 · MCP</span>
+              <span className="cg-brand-version">v1.0 · Live Engine</span>
             </Link>
 
             <nav className="cg-topnav" aria-label="Product sections">
-              <a href="#workbench">Live Workbench</a>
-              <a href="#architecture">Verification Stack</a>
-              <a href="#workflow">4-Stage RBAC</a>
-              <a href="#developers">Playbooks &amp; CLI</a>
+              <a href="#workbench">Live Pre-Publish Gate</a>
+              <a href="#workflow">3-Role Workflow</a>
+              <a href="#developers">Canons, CLI &amp; MCP</a>
             </nav>
           </div>
 
@@ -906,10 +760,10 @@ export function HomePage() {
               <>
                 <div
                   className="cg-persona-quickbar"
-                  aria-label="Instant Demo Workspace Access"
+                  aria-label="Instant Workspace Role Access"
                 >
                   <span className="cg-persona-quickbar-label">
-                    Instant Studio:
+                    Enter Studio as:
                   </span>
                   <button
                     type="button"
@@ -918,7 +772,7 @@ export function HomePage() {
                     onClick={() =>
                       void handleQuickPersonaLaunch("creative_lead")
                     }
-                    title="Sign in immediately as @creative_lead (Stage 1 Creator)"
+                    title="Sign in as @creative_lead (Stage 1 Creator)"
                   >
                     {launchingRole === "creative_lead"
                       ? "Opening…"
@@ -931,7 +785,7 @@ export function HomePage() {
                     onClick={() =>
                       void handleQuickPersonaLaunch("brand_manager")
                     }
-                    title="Sign in immediately as @brand_manager (Stage 2 Brand Manager)"
+                    title="Sign in as @brand_manager (Stage 2 Brand Manager)"
                   >
                     {launchingRole === "brand_manager"
                       ? "Opening…"
@@ -944,7 +798,7 @@ export function HomePage() {
                     onClick={() =>
                       void handleQuickPersonaLaunch("legal_counsel")
                     }
-                    title="Sign in immediately as @legal_counsel (Stage 3 Legal Counsel)"
+                    title="Sign in as @legal_counsel (Stage 3 Legal Reviewer)"
                   >
                     {launchingRole === "legal_counsel" ? "Opening…" : "Legal"}
                   </button>
@@ -963,91 +817,69 @@ export function HomePage() {
         </div>
       </header>
 
-      {/* ── Architectural Hero + Asymmetric Telemetry Split ── */}
+      {/* ── Streamlined Product Entry + Live Pre-Flight Workbench ── */}
       <section className="cg-hero-section">
         <div className="cg-container">
           <div className="cg-hero-grid">
-            {/* Left Column: Editorial Headline + CTAs + Role Launchers */}
+            {/* Left Column: Focused Product Value Proposition & Guided Trial Launcher */}
             <div className="cg-hero-copy">
               <div className="cg-eyebrow-pill">
                 <span className="cg-status-dot cg-dot-live" />
-                <span>
-                  PRE-PUBLICATION BRAND, CLAIM &amp; VISUAL GOVERNANCE
-                </span>
+                <span>LIVE PRE-PUBLICATION GOVERNANCE GATE</span>
                 <span className="cg-eyebrow-sep">·</span>
-                <code>RFC 9162 + C2PA 2.2</code>
+                <code>POST /api/gate/check</code>
               </div>
 
               <h1 className="cg-hero-title">
-                Compile brand playbooks and statutory mandates into{" "}
-                <span className="cg-serif-italic">deterministic</span>{" "}
-                pre-publish gates.
+                Pre-Publish Brand &amp; Regulatory Governance: Audit claims, disclaimers &amp; contrast against{" "}
+                <span className="cg-serif-italic">signed</span> brand canons.
               </h1>
 
               <p className="cg-hero-lead">
-                CanonGate audits campaign copy, HTML, PDFs, and 1080p banners
-                before release—combining CIEDE2000 colorimetry, WCAG 2.1
-                luminance math, Z3 algebraic KFS verification, and QASem{" "}
-                <code>SlotDiff</code> alignment with surgical{" "}
-                <code>≤35%</code> copy repair.
+                Test any campaign draft in the live pre-flight sandbox below, or
+                launch a guided <strong>Trial Run</strong> inside the 4-stage
+                Review Studio. Once you finish or clear the trial run, your
+                workspace resets to a clean slate ready for your own brand
+                playbooks and campaign bundles.
               </p>
 
               <div className="cg-hero-cta-row">
+                <button
+                  type="button"
+                  className="cg-btn cg-btn-primary cg-btn-lg"
+                  disabled={launchingTrial}
+                  onClick={() => void handleStartGuidedTrialRun()}
+                >
+                  <Sparkles size={16} />
+                  <span>
+                    {launchingTrial
+                      ? "Starting Guided Trial Run…"
+                      : "Start Guided Trial Run in Studio"}
+                  </span>
+                  <ArrowRight size={16} className="cg-arrow-shift" />
+                </button>
+
                 <Link
                   to={isAuthenticated ? "/dashboard" : "/login"}
-                  className="cg-btn cg-btn-primary cg-btn-lg"
+                  className="cg-btn cg-btn-secondary cg-btn-lg"
                 >
                   <span>
                     {isAuthenticated
-                      ? "Launch Governance Queue"
-                      : "Enter Review Studio"}
+                      ? "Open Clean Campaign Queue"
+                      : "Sign In to Clean Workspace"}
                   </span>
-                  <ArrowRight size={16} className="cg-arrow-shift" />
                 </Link>
-
-                <button
-                  type="button"
-                  className={`cg-cli-pill ${
-                    copiedId === "hero-cli" ? "cg-cli-copied" : ""
-                  }`}
-                  onClick={() =>
-                    handleCopyText(
-                      "hero-cli",
-                      "uv run canongate gate --canon indian-digital-lending --paths fixtures/golden_bundle/acme_launch.yaml",
-                    )
-                  }
-                  title="Copy CLI pre-publish gate command"
-                >
-                  <Terminal size={14} className="cg-cli-icon" />
-                  <code>
-                    uv run canongate gate --canon indian-digital-lending
-                  </code>
-                  <span
-                    key={copiedId === "hero-cli" ? "copied" : "copy"}
-                    className="cg-cli-copy-badge cg-icon-pop"
-                  >
-                    {copiedId === "hero-cli" ? (
-                      <>
-                        <Check size={12} /> Copied
-                      </>
-                    ) : (
-                      <>
-                        <Copy size={12} /> Copy
-                      </>
-                    )}
-                  </span>
-                </button>
               </div>
 
-              {/* Direct 1-Click Role Sandbox Launch Strip */}
+              {/* Direct 1-Click Role Workspace Strip */}
               <div className="cg-role-launch-strip">
                 <div className="cg-role-launch-header">
                   <span className="cg-mono-label">
-                    1-CLICK ROLE WORKSPACE LAUNCH
+                    Workspace Role Gateway (Direct Role Access)
                   </span>
                   <span className="cg-role-launch-hint">
-                    Jump straight into the live multi-modal studio with seeded
-                    RBAC personas:
+                    Enter the governance console directly under any RBAC role,
+                    or switch roles in-session from the top bar:
                   </span>
                 </div>
                 <div className="cg-role-launch-buttons">
@@ -1063,7 +895,7 @@ export function HomePage() {
                       <code>@creative_lead</code>
                     </div>
                     <div className="cg-role-card-name">
-                      <span>Creator Pre-Flight Studio</span>
+                      <span>Creator Pre-Flight</span>
                       <ArrowRight size={13} className="cg-arrow-shift" />
                     </div>
                   </button>
@@ -1080,7 +912,7 @@ export function HomePage() {
                       <code>@brand_manager</code>
                     </div>
                     <div className="cg-role-card-name">
-                      <span>Brand &amp; Friction Review</span>
+                      <span>Brand &amp; Playbook Studio</span>
                       <ArrowRight size={13} className="cg-arrow-shift" />
                     </div>
                   </button>
@@ -1097,7 +929,7 @@ export function HomePage() {
                       <code>@legal_counsel</code>
                     </div>
                     <div className="cg-role-card-name">
-                      <span>Legal Sign-Off &amp; Seal</span>
+                      <span>Legal Sign-Off &amp; Cert</span>
                       <ArrowRight size={13} className="cg-arrow-shift" />
                     </div>
                   </button>
@@ -1105,130 +937,147 @@ export function HomePage() {
               </div>
             </div>
 
-            {/* Right Column: Live Engine Execution Trace & Conformal Spec Card */}
+            {/* Right Column: Live Engine Response Summary Card (Bound to Real /api/gate/check) */}
             <aside
               className="cg-hero-telemetry-card"
-              aria-label="Live Verification Engine Telemetry"
+              aria-label="Live Gate Check Verdict"
             >
               <div className="cg-telemetry-header">
                 <div className="cg-telemetry-title-group">
                   <Cpu size={15} />
-                  <span>VERIFICATION PIPELINE TRACE</span>
+                  <span>LIVE GATE VERDICT (`POST /api/gate/check`)</span>
                   <button
                     type="button"
                     className="cg-trace-replay-btn"
-                    onClick={triggerScanSweep}
-                    title="Re-run 4-tier verification trace"
+                    disabled={checkingGate}
+                    onClick={() =>
+                      void executeLiveGateCheck(
+                        draftText,
+                        selectedCanonId,
+                        conformalAlpha,
+                      )
+                    }
+                    title="Execute live POST /api/gate/check against the engine"
                   >
-                    <Play size={10} />
-                    <span>Re-Run</span>
+                    <RefreshCw size={10} />
+                    <span>{checkingGate ? "Auditing…" : "Run Check"}</span>
                   </button>
                 </div>
                 <span
-                  key={blockerCount === 0 ? "allow" : "block"}
-                  className={`cg-gate-verdict-pill cg-icon-pop ${
+                  className={`cg-gate-verdict-pill ${
                     blockerCount === 0 ? "verdict-allow" : "verdict-block"
                   }`}
                 >
-                  {blockerCount === 0
-                    ? "HTTP 200 · ALLOW"
-                    : `HTTP 422 · BLOCK (${blockerCount})`}
+                  {blockerCount === 0 && warningCount === 0
+                    ? "DECISION: ALLOW (0 FLAGS)"
+                    : blockerCount === 0
+                      ? `NEEDS REVIEW (${warningCount} WARN)`
+                      : `DECISION: BLOCK (${blockerCount} BLOCKER${blockerCount === 1 ? "" : "S"})`}
                 </span>
               </div>
 
-              <div key={tracePulseKey} className="cg-telemetry-rows">
-                <div className="cg-telemetry-row cg-stagger-1">
+              <div className="cg-telemetry-rows">
+                <div className="cg-telemetry-row">
                   <div className="cg-telemetry-tier">
                     <span className="cg-tier-dot tier-1" />
                     <div>
                       <div className="cg-tier-name">
-                        Tier 1 · Deterministic AST &amp; OpenCV Vision
+                        Tier 1 · Deterministic Terminology, Triggers &amp; WCAG
                       </div>
                       <div className="cg-tier-sub">
-                        Aho-Corasick · UTS #39 · CIEDE2000 ΔE₀₀ · WCAG 2.1 · ORB
-                        0.5H
+                        <code>terminology.banned</code> ·{" "}
+                        <code>trigger.disclaimer</code> ·{" "}
+                        <code>accessibility.contrast</code>
                       </div>
                     </div>
                   </div>
-                  <code className="cg-tier-latency">14.2 ms</code>
+                  <code className="cg-tier-latency">
+                    {
+                      findings.filter((f) => f.tier === "deterministic")
+                        .length
+                    }{" "}
+                    flagged
+                  </code>
                 </div>
 
-                <div className="cg-telemetry-row cg-stagger-2">
+                <div className="cg-telemetry-row">
                   <div className="cg-telemetry-tier">
                     <span className="cg-tier-dot tier-15" />
                     <div>
                       <div className="cg-tier-name">
-                        Tier 1.5 · SymPy + Z3 SMT Algebraic Solver
+                        Tier 1.5 · SMT / Algebraic Constraint Solver
                       </div>
                       <div className="cg-tier-sub">
-                        Nonlinear real arithmetic (QF_NRA) KFS APR &amp; fee
-                        reconciliation
+                        <code>claim.algebra</code> (Z3 / SymPy + SciPy HiGHS
+                        caps &amp; drip pricing)
                       </div>
                     </div>
                   </div>
-                  <code className="cg-tier-latency">9.8 ms</code>
+                  <code className="cg-tier-latency">
+                    {findings.filter((f) => f.tier === "smt").length} flagged
+                  </code>
                 </div>
 
-                <div className="cg-telemetry-row cg-stagger-3">
+                <div className="cg-telemetry-row">
                   <div className="cg-telemetry-tier">
                     <span className="cg-tier-dot tier-2" />
                     <div>
                       <div className="cg-tier-name">
-                        Tier 2 · Hybrid Retriever + QASem SlotDiff
+                        Tier 2 · Claim Slot NLI &amp; Substantiation
                       </div>
                       <div className="cg-tier-sub">
-                        BM25 + Dense Cosine RRF · ONNX INT8 NLI · Conformal α ={" "}
-                        {conformalAlpha.toFixed(2)}
+                        <code>claim.slot_nli</code> (qualifier stripping &amp;
+                        factual contradictions)
                       </div>
                     </div>
                   </div>
-                  <code className="cg-tier-latency">31.6 ms</code>
+                  <code className="cg-tier-latency">
+                    {findings.filter((f) => f.tier === "nli").length} flagged
+                  </code>
                 </div>
 
-                <div className="cg-telemetry-row cg-stagger-4">
+                <div className="cg-telemetry-row">
                   <div className="cg-telemetry-tier">
                     <span className="cg-tier-dot tier-3" />
                     <div>
                       <div className="cg-tier-name">
-                        Tier 3 · DPDP PII Vault + Surgical Rewriter
+                        Engine Execution Latency &amp; Mode
                       </div>
                       <div className="cg-tier-sub">
-                        Local Presidio/regex masking (
-                        {currentScenario.piiMaskedCount} tokens) · edit_ratio{" "}
-                        {currentScenario.editRatio}
+                        Canon{" "}
+                        <code>
+                          {gateResult?.canon_id ?? selectedCanonId}@v
+                          {gateResult?.canon_version ?? "1.0"}
+                        </code>{" "}
+                        · {findings.length} total finding(s)
                       </div>
                     </div>
                   </div>
-                  <code
-                    className={`cg-tier-latency ${
-                      isRepaired ? "cg-latency-repaired" : ""
-                    }`}
-                  >
-                    {isRepaired ? "APPLIED" : "READY"}
+                  <code className="cg-tier-latency">
+                    {gateResult ? `${gateResult.latency_ms} ms` : "…"}
                   </code>
                 </div>
               </div>
 
-              {/* Animated Conformal Risk Threshold Meter */}
+              {/* Real Split-Conformal Risk Threshold Meter */}
               <div className="cg-conformal-meter-wrap">
                 <div className="cg-conformal-meter-labels">
                   <span>
-                    Conformal Quantile Threshold{" "}
+                    Split-Conformal Threshold{" "}
                     <code>
                       λ̂(α={conformalAlpha.toFixed(2)}) ={" "}
                       {conformalLambda.toFixed(2)}
                     </code>
                   </span>
                   <span>
-                    {calibratedFindings.length} /{" "}
-                    {currentScenario.findings.length} checks active
+                    {blockerCount} Blockers · {warningCount} Warnings
                   </span>
                 </div>
                 <div className="cg-conformal-meter-track">
                   <div
                     className="cg-conformal-meter-fill"
                     style={{
-                      transform: `scaleX(${conformalLambda})`,
+                      transform: `scaleX(${Math.min(1, conformalLambda)})`,
                     }}
                   />
                 </div>
@@ -1237,15 +1086,20 @@ export function HomePage() {
               <div className="cg-telemetry-footer">
                 <div className="cg-telemetry-hash-col">
                   <span className="cg-mono-label">CANON SHA-256</span>
-                  <code>{currentScenario.hashes.canonHash}…</code>
+                  <code>
+                    {(
+                      gateResult?.canon_hash ??
+                      matchedCanonMeta?.hash ??
+                      "1cd1ac13e83f1b00"
+                    ).slice(0, 16)}
+                    …
+                  </code>
                 </div>
                 <div className="cg-telemetry-hash-col">
-                  <span className="cg-mono-label">BUNDLE SHA-256</span>
+                  <span className="cg-mono-label">CONTENT SHA-256</span>
                   <code>
-                    {isRepaired
-                      ? currentScenario.hashes.repairedHash
-                      : currentScenario.hashes.draftHash}
-                    …
+                    {(gateResult?.content_hash ?? "—").slice(0, 16)}
+                    {gateResult?.content_hash ? "…" : ""}
                   </code>
                 </div>
                 <div className="cg-telemetry-hash-col">
@@ -1256,42 +1110,35 @@ export function HomePage() {
             </aside>
           </div>
 
-          {/* ── Interactive Multi-Modal Pre-Publish Workbench ── */}
+          {/* ── Interactive Live Pre-Publish Gate Workbench ── */}
           <div id="workbench" className="cg-workbench-shell">
-            {/* Workbench Top Chrome */}
+            {/* Workbench Top Bar: Preset Selector + Conformal Alpha + Surgical Repair */}
             <div className="cg-workbench-bar">
               <div className="cg-workbench-tabs" role="tablist">
-                {WORKBENCH_SCENARIOS.map((scen) => (
+                {TRIAL_PRESETS.map((preset) => (
                   <button
-                    key={scen.id}
+                    key={preset.id}
                     type="button"
                     role="tab"
-                    aria-selected={scenarioId === scen.id}
+                    aria-selected={presetId === preset.id}
                     className={`cg-workbench-tab ${
-                      scenarioId === scen.id ? "active" : ""
+                      presetId === preset.id ? "active" : ""
                     }`}
-                    onClick={() => {
-                      setScenarioId(scen.id);
-                      setSelectedFindingIdx(0);
-                      setIsRepaired(false);
-                      setSelectedSwatchHex(null);
-                      triggerScanSweep();
-                    }}
+                    onClick={() => handleSelectPreset(preset)}
                   >
-                    <span className="cg-tab-canon">{scen.canonId}.yaml</span>
-                    <span className="cg-tab-sector">{scen.sectorTag}</span>
+                    <span className="cg-tab-canon">{preset.canonId}.yaml</span>
+                    <span className="cg-tab-sector">{preset.sectorTag}</span>
                   </button>
                 ))}
               </div>
 
               <div className="cg-workbench-controls">
-                {/* Conformal Alpha Selector */}
                 <div
                   className="cg-alpha-control"
-                  title="Distribution-free Conformal Risk Control (Angelopoulos et al., 2024)"
+                  title="Split-Conformal miscoverage alpha in [0.05, 0.20] (engine/conformal.py)"
                 >
                   <Sliders size={13} />
-                  <span>Conformal Risk α:</span>
+                  <span>Conformal α:</span>
                   {[0.05, 0.1, 0.2].map((val) => (
                     <button
                       key={val}
@@ -1299,438 +1146,339 @@ export function HomePage() {
                       className={`cg-alpha-btn ${
                         Math.abs(conformalAlpha - val) < 0.001 ? "active" : ""
                       }`}
-                      onClick={() => {
-                        setConformalAlpha(val);
-                        setTracePulseKey((prev) => prev + 1);
-                      }}
+                      onClick={() => setConformalAlpha(val)}
                     >
                       {val.toFixed(2)}
                     </button>
                   ))}
                 </div>
 
-                {/* Live Surgical Rewrite Toggle */}
                 <button
                   type="button"
                   className={`cg-surgical-toggle-btn ${
                     isRepaired ? "repaired" : ""
                   }`}
-                  onClick={() => {
-                    setIsRepaired((prev) => !prev);
-                    if (isRepaired) {
-                      setSelectedSwatchHex(null);
-                    }
-                    triggerScanSweep();
-                  }}
+                  onClick={handleToggleSurgicalRepair}
                 >
                   <Wand2 size={14} />
                   <span>
                     {isRepaired
-                      ? "Showing Repaired Bundle (Revert to Draft)"
-                      : "Apply Surgical Fix (≤35% Edit)"}
+                      ? "Showing Compliant Copy (Revert to Draft)"
+                      : "Apply Compliant Fix & Re-Verify"}
                   </span>
                 </button>
               </div>
             </div>
 
-            {/* Workbench 3-Pane Studio Body */}
+            {/* Workbench 3-Pane Body */}
             <div className="cg-workbench-grid">
-              {/* Pane 1: Multi-Modal Asset Canvas (Copy + Visual Ad Banner) */}
-              <div
-                key={`${currentScenario.id}-${isRepaired ? "rep" : "raw"}`}
-                className="cg-workbench-pane cg-pane-canvas cg-animate-swap"
-              >
-                {/* GPU-composited verification scanline sweep */}
-                <div
-                  key={scanPulseKey}
-                  className="cg-scanline-sweep"
-                  aria-hidden="true"
-                />
-
+              {/* Pane 1: Editable Campaign Copy + Visual Contrast Preview */}
+              <div className="cg-workbench-pane cg-pane-canvas">
                 <div className="cg-pane-header">
                   <div>
                     <span className="cg-mono-label">
-                      MULTI-MODAL ASSET CANVAS · {currentScenario.assetName}
+                      LIVE INPUT CANVAS · EDIT OR PASTE YOUR OWN COPY
                     </span>
-                    <h3 className="cg-pane-title">{currentScenario.title}</h3>
+                    <h3 className="cg-pane-title">{draftTitle}</h3>
                   </div>
                   <span
                     className={`cg-status-chip ${
-                      isRepaired ? "chip-pass" : "chip-fail"
+                      blockerCount === 0 ? "chip-pass" : "chip-fail"
                     }`}
                   >
-                    {isRepaired
-                      ? `0 Blockers · Edit Ratio ${currentScenario.editRatio}`
-                      : `${blockerCount} Blockers Flagged`}
+                    {checkingGate
+                      ? "Auditing…"
+                      : blockerCount === 0
+                        ? `0 Blockers (${warningCount} Warning${warningCount === 1 ? "" : "s"})`
+                        : `${blockerCount} Blocker${blockerCount === 1 ? "" : "s"} Flagged`}
                   </span>
                 </div>
 
-                {/* ProseMirror Copy Surface */}
                 <div className="cg-prosemirror-surface">
                   <div className="cg-surface-subbar">
-                    <span>TEXT AST NODE · paragraph[0]</span>
                     <span>
-                      DPDP PII Vault: {currentScenario.piiMaskedCount} tokens
-                      scrubbed locally
+                      ACTIVE CANON: <code>{selectedCanonId}</code> (v1.0)
                     </span>
+                    <span>Edits auto-run `POST /api/gate/check`</span>
                   </div>
 
-                  {!isRepaired ? (
-                    <p className="cg-copy-paragraph">
-                      {currentScenario.draftCopyParts.prefix}
-                      <button
-                        type="button"
-                        className={`cg-inline-finding-span span-blocker ${
-                          selectedFindingIdx === 0 ? "selected" : ""
-                        }`}
-                        onClick={() => setSelectedFindingIdx(0)}
-                      >
-                        <span className="cg-pin-tag">C1</span>
-                        {currentScenario.draftCopyParts.span1}
-                      </button>
-                      {currentScenario.draftCopyParts.mid}
-                      <button
-                        type="button"
-                        className={`cg-inline-finding-span span-blocker ${
-                          selectedFindingIdx === 1 ? "selected" : ""
-                        }`}
-                        onClick={() => setSelectedFindingIdx(1)}
-                      >
-                        <span className="cg-pin-tag">
-                          {currentScenario.findings[1]?.pinLabel ?? "C2"}
-                        </span>
-                        {currentScenario.draftCopyParts.span2}
-                      </button>
-                      {currentScenario.draftCopyParts.suffix}
-                    </p>
-                  ) : (
-                    <p className="cg-copy-paragraph">
-                      {currentScenario.repairedCopyParts.prefix}
-                      <span className="cg-inline-finding-span span-repaired">
-                        <Check size={12} />
-                        {currentScenario.repairedCopyParts.span1}
-                      </span>
-                      {currentScenario.repairedCopyParts.mid}
-                      <span className="cg-inline-finding-span span-repaired">
-                        <Check size={12} />
-                        {currentScenario.repairedCopyParts.span2}
-                      </span>
-                      {currentScenario.repairedCopyParts.suffix}
-                    </p>
-                  )}
+                  <textarea
+                    aria-label="Interactive campaign copy input"
+                    value={draftText}
+                    onChange={(e) => {
+                      setDraftText(e.target.value);
+                      setIsRepaired(false);
+                    }}
+                    rows={6}
+                    style={{
+                      width: "100%",
+                      fontFamily: "var(--font-sans, inherit)",
+                      fontSize: "0.92rem",
+                      lineHeight: 1.55,
+                      padding: "0.75rem",
+                      borderRadius: "6px",
+                      border: "1px solid rgba(148, 163, 184, 0.35)",
+                      background: "rgba(255, 255, 255, 0.9)",
+                      color: "#0f172a",
+                      resize: "vertical",
+                    }}
+                  />
                 </div>
 
-                {/* Simulated 1080p Campaign Banner Canvas with Interactive Bounding Boxes */}
+                {/* Visual Contrast & Banner Preview */}
                 <div className="cg-banner-stage-wrap">
                   <div className="cg-surface-subbar">
                     <span>
-                      IMAGE AST NODE · 1920×1080 BANNER (OpenCV + Sobel/Otsu
-                      ROI)
+                      WCAG 2.1 CONTRAST &amp; BANNER PREVIEW (
+                      <code>accessibility.contrast</code>)
                     </span>
-                    <span>Click pin [V1] or swatches to test contrast</span>
+                    <span>Click swatches in Inspector to test #767676</span>
                   </div>
 
                   <div
                     className="cg-simulated-banner"
-                    style={{ backgroundColor: currentScenario.banner.bgHex }}
+                    style={{ backgroundColor: currentPreset.banner.bgHex }}
                   >
-                    {/* Header Bar of Simulated Banner */}
                     <div
                       className="cg-sim-banner-header"
-                      style={{ backgroundColor: activeBannerAccentHex }}
+                      style={{
+                        backgroundColor: isRepaired
+                          ? currentPreset.banner.accentCanonHex
+                          : currentPreset.banner.accentDraftHex,
+                      }}
                     >
                       <div className="cg-sim-logo-box">
-                        <span>⛨ ACME</span>
+                        <span>⛨ {selectedCanonId.toUpperCase()}</span>
                         <span className="cg-sim-collar-tag">
                           ORB Collar ≥ 0.50H
                         </span>
                       </div>
                       <span className="cg-sim-kfs-pill">
-                        {currentScenario.banner.kfsBadge}
+                        {currentPreset.banner.kfsBadge}
                       </span>
                     </div>
 
-                    {/* Main Headline of Simulated Banner */}
                     <div className="cg-sim-banner-body">
                       <div className="cg-sim-banner-headline">
-                        {currentScenario.banner.headline}
+                        {currentPreset.banner.headline}
                       </div>
                       <div className="cg-sim-banner-subline">
-                        {currentScenario.banner.subline}
+                        {currentPreset.banner.subline}
                       </div>
                     </div>
 
-                    {/* Disclaimer Region with Interactive BBox Overlay */}
                     <div
-                      role="button"
-                      tabIndex={0}
-                      onClick={() =>
-                        setSelectedFindingIdx(
-                          currentScenario.findings.length - 1,
-                        )
-                      }
-                      onKeyDown={(e) => {
-                        if (e.key === "Enter" || e.key === " ") {
-                          setSelectedFindingIdx(
-                            currentScenario.findings.length - 1,
-                          );
-                        }
-                      }}
                       className={`cg-sim-banner-disclaimer ${
-                        !isRepaired && !selectedSwatchHex
+                        activeBannerFgHex.toUpperCase() === "#777777"
                           ? "bbox-flagged"
                           : "bbox-repaired"
-                      } ${
-                        selectedFindingIdx ===
-                        currentScenario.findings.length - 1
-                          ? "bbox-selected"
-                          : ""
                       }`}
                       style={{ color: activeBannerFgHex }}
                     >
                       <span className="cg-bbox-pin-badge">
-                        {!isRepaired && !selectedSwatchHex
-                          ? "V1 · WCAG FAIL"
-                          : `V1 · ${activeBannerFgHex} PASS`}
+                        {activeBannerFgHex.toUpperCase() === "#777777"
+                          ? "WCAG 4.48:1 FAIL (#777777)"
+                          : `WCAG PASS (${activeBannerFgHex})`}
                       </span>
                       <span>
-                        {isRepaired || selectedSwatchHex
-                          ? currentScenario.banner.disclaimerFixed
-                          : currentScenario.banner.disclaimerDraft}
+                        {activeBannerFgHex.toUpperCase() === "#777777"
+                          ? currentPreset.banner.disclaimerDraft
+                          : currentPreset.banner.disclaimerFixed}
                       </span>
                     </div>
                   </div>
                 </div>
               </div>
 
-              {/* Pane 2: Active Finding Inspector (SlotDiff, Z3 Proof & WCAG Swatches) */}
+              {/* Pane 2: Live Engine Findings Inspector */}
               <div className="cg-workbench-pane cg-pane-inspector">
                 <div className="cg-pane-header">
                   <div>
                     <span className="cg-mono-label">
-                      EVIDENCE INSPECTOR · CLICK ANY FINDING
+                      REAL ENGINE FINDINGS ({findings.length} RETURNED)
                     </span>
                     <h3 className="cg-pane-title">
-                      Mathematical &amp; Semantic Grounding
+                      Check Evidence &amp; Suggested Replacements
                     </h3>
                   </div>
                 </div>
 
-                {/* Finding Selector Pills */}
-                <div className="cg-finding-selector-row">
-                  {currentScenario.findings.map((f, idx) => (
-                    <button
-                      key={f.id}
-                      type="button"
-                      className={`cg-finding-tab-pill ${
-                        selectedFindingIdx === idx ? "active" : ""
-                      } ${isRepaired ? "resolved" : f.severity}`}
-                      onClick={() => setSelectedFindingIdx(idx)}
-                    >
-                      <span className="cg-pin-circle">{f.pinLabel}</span>
-                      <span>{f.checkId.replace("check.", "")}</span>
-                      <code>{f.riskScore.toFixed(2)}</code>
-                    </button>
-                  ))}
-                </div>
-
-                {/* Active Finding Detail Card (Keyed for snappy 180ms transition) */}
-                <div
-                  key={`${activeFinding.id}-${isRepaired ? "rep" : "raw"}`}
-                  className="cg-inspector-card cg-animate-swap"
-                >
-                  <div className="cg-inspector-top">
-                    <span
-                      className={`cg-sev-badge ${
-                        isRepaired
-                          ? "sev-pass"
-                          : `sev-${activeFinding.severity}`
-                      }`}
-                    >
-                      {isRepaired
-                        ? "RESOLVED"
-                        : activeFinding.severity.toUpperCase()}
-                    </span>
-                    <code className="cg-rule-code">
-                      {activeFinding.ruleRef}
-                    </code>
-                    <span className="cg-tier-tag">{activeFinding.tier}</span>
+                {findings.length === 0 ? (
+                  <div className="cg-inspector-card">
+                    <div className="cg-inspector-top">
+                      <span className="cg-sev-badge sev-pass">
+                        ALL CHECKS PASSED
+                      </span>
+                      <code className="cg-rule-code">
+                        decision = &quot;allow&quot;
+                      </code>
+                    </div>
+                    <h4 className="cg-inspector-title">
+                      Zero Blockers or Warnings Flagged
+                    </h4>
+                    <p className="cg-inspector-desc">
+                      The current draft satisfies all active rules in{" "}
+                      <code>{selectedCanonId}@v1.0</code> at Conformal Risk
+                      threshold{" "}
+                      <code>λ̂ = {conformalLambda.toFixed(2)}</code>. Click{" "}
+                      <strong>Revert to Draft</strong> above or edit the text to
+                      test violations.
+                    </p>
                   </div>
-
-                  <h4 className="cg-inspector-title">{activeFinding.title}</h4>
-                  <p className="cg-inspector-desc">
-                    {activeFinding.explanation}
-                  </p>
-
-                  {/* Conditional Evidence 1: QASem 4-Column SlotDiff Matrix */}
-                  {activeFinding.slotDiff && (
-                    <div className="cg-evidence-block">
-                      <div className="cg-evidence-header">
-                        <span>
-                          QASem Predicate-Argument <code>SlotDiff</code> Matrix
-                        </span>
-                        <code>Tang et al. / Klein et al.</code>
-                      </div>
-                      <table className="cg-slotdiff-table">
-                        <thead>
-                          <tr>
-                            <th>Semantic Slot</th>
-                            <th>Draft Span</th>
-                            <th>Canon Fact</th>
-                            <th>Alignment</th>
-                          </tr>
-                        </thead>
-                        <tbody>
-                          {activeFinding.slotDiff.map((row) => (
-                            <tr key={row.slot}>
-                              <td>
-                                <code>{row.slot}</code>
-                              </td>
-                              <td>{isRepaired ? row.canon : row.draft}</td>
-                              <td>{row.canon}</td>
-                              <td>
-                                <span
-                                  className={`cg-slot-badge slot-${
-                                    isRepaired
-                                      ? "match"
-                                      : row.status.toLowerCase()
-                                  }`}
-                                >
-                                  {isRepaired ? "MATCH" : row.status}
-                                </span>
-                              </td>
-                            </tr>
-                          ))}
-                        </tbody>
-                      </table>
+                ) : (
+                  <>
+                    <div className="cg-finding-selector-row">
+                      {findings.map((f, idx) => (
+                        <button
+                          key={`${f.finding_id}-${idx}`}
+                          type="button"
+                          className={`cg-finding-tab-pill ${
+                            selectedFindingIdx === idx ? "active" : ""
+                          } ${f.verdict === "BLOCKER" ? "blocker" : "warning"}`}
+                          onClick={() => setSelectedFindingIdx(idx)}
+                        >
+                          <span className="cg-pin-circle">F{idx + 1}</span>
+                          <span>{f.check_id}</span>
+                          <code>S={f.severity}</code>
+                        </button>
+                      ))}
                     </div>
-                  )}
 
-                  {/* Conditional Evidence 2: Z3 SMT Algebraic Proof */}
-                  {activeFinding.z3Proof && (
-                    <div className="cg-evidence-block cg-z3-block">
-                      <div className="cg-evidence-header">
-                        <span>SymPy + Z3 SMT Algebraic Counterexample</span>
-                        <code>QF_NRA Solver</code>
-                      </div>
-                      <div className="cg-z3-grid">
-                        <div>
-                          <span className="cg-mono-label">STATED IN DRAFT</span>
-                          <strong className="cg-z3-bad">
-                            {activeFinding.z3Proof.statedValue}
-                          </strong>
-                        </div>
-                        <div>
-                          <span className="cg-mono-label">
-                            Z3 SOLVED GROUND TRUTH
-                          </span>
-                          <strong className="cg-z3-good">
-                            {activeFinding.z3Proof.solvedValue}
-                          </strong>
-                        </div>
-                      </div>
-                      <pre className="cg-z3-code">
-                        {activeFinding.z3Proof.counterexample}
-                      </pre>
-                    </div>
-                  )}
-
-                  {/* Conditional Evidence 3: 3-Candidate DesignAlternativeProvider Swatches */}
-                  {activeFinding.swatches && (
-                    <div className="cg-evidence-block">
-                      <div className="cg-evidence-header">
-                        <span>
-                          DesignAlternativeProvider · Click Swatch to Preview
-                        </span>
-                        <code>Bisection L* Solver</code>
-                      </div>
-                      <div className="cg-swatch-grid">
-                        {activeFinding.swatches.map((sw) => (
-                          <button
-                            key={sw.hex}
-                            type="button"
-                            className={`cg-swatch-card ${
-                              activeBannerFgHex === sw.hex ? "active" : ""
+                    {activeFinding && (
+                      <div
+                        key={activeFinding.finding_id}
+                        className="cg-inspector-card cg-animate-swap"
+                      >
+                        <div className="cg-inspector-top">
+                          <span
+                            className={`cg-sev-badge ${
+                              activeFinding.verdict === "BLOCKER"
+                                ? "sev-blocker"
+                                : "sev-warning"
                             }`}
-                            onClick={() => {
-                              setSelectedSwatchHex(sw.hex);
-                              triggerScanSweep();
-                            }}
                           >
-                            <div className="cg-swatch-top">
-                              <span
-                                className="cg-swatch-chip"
-                                style={{ backgroundColor: sw.hex }}
-                              />
-                              <code>{sw.hex}</code>
-                              <span className="cg-swatch-pass">{sw.badge}</span>
-                            </div>
-                            <div className="cg-swatch-label">{sw.label}</div>
-                            <div className="cg-swatch-meta">
-                              <span>Contrast {sw.ratio}</span>
-                              <span>{sw.deltaE}</span>
-                            </div>
-                          </button>
-                        ))}
-                      </div>
-                    </div>
-                  )}
+                            {activeFinding.verdict} · S={activeFinding.severity}
+                          </span>
+                          <code className="cg-rule-code">
+                            {activeFinding.rule_id}
+                          </code>
+                          <span className="cg-tier-tag">
+                            tier: {activeFinding.tier}
+                          </span>
+                        </div>
 
-                  {/* Before / After Surgical Diff Box */}
-                  <div className="cg-diff-preview-box">
-                    <div className="cg-diff-line diff-removed">
-                      <span className="cg-diff-sign">−</span>
-                      <span>{activeFinding.flaggedSpan}</span>
-                    </div>
-                    <div className="cg-diff-line diff-added">
-                      <span className="cg-diff-sign">+</span>
-                      <span>{activeFinding.repairedSpan}</span>
-                    </div>
-                  </div>
-                </div>
+                        <h4 className="cg-inspector-title">
+                          {activeFinding.check_id}
+                        </h4>
+                        <p className="cg-inspector-desc">
+                          {activeFinding.message}
+                        </p>
+
+                        {activeFinding.replacement_preview && (
+                          <div className="cg-diff-preview-box">
+                            <div className="cg-diff-line diff-removed">
+                              <span className="cg-diff-sign">Rule</span>
+                              <span>
+                                {activeFinding.rule_id} (
+                                {activeFinding.suggestion_label ||
+                                  "Suggested remediation"}
+                                )
+                              </span>
+                            </div>
+                            <div className="cg-diff-line diff-added">
+                              <span className="cg-diff-sign">+ Fix</span>
+                              <span>{activeFinding.replacement_preview}</span>
+                            </div>
+                          </div>
+                        )}
+
+                        {activeFinding.check_id ===
+                          "accessibility.contrast" && (
+                          <div className="cg-evidence-block">
+                            <div className="cg-evidence-header">
+                              <span>
+                                DesignAlternativeProvider · Click Swatch to
+                                Apply to Copy
+                              </span>
+                              <code>checks/accessibility_contrast.py</code>
+                            </div>
+                            <div className="cg-swatch-grid">
+                              {currentPreset.swatches.map((sw) => (
+                                <button
+                                  key={sw.hex}
+                                  type="button"
+                                  className={`cg-swatch-card ${
+                                    activeBannerFgHex.toUpperCase() ===
+                                    sw.hex.toUpperCase()
+                                      ? "active"
+                                      : ""
+                                  }`}
+                                  onClick={() =>
+                                    handleApplySwatchToCopy(sw.hex)
+                                  }
+                                >
+                                  <div className="cg-swatch-top">
+                                    <span
+                                      className="cg-swatch-chip"
+                                      style={{ backgroundColor: sw.hex }}
+                                    />
+                                    <code>{sw.hex}</code>
+                                    <span className="cg-swatch-pass">
+                                      {sw.badge}
+                                    </span>
+                                  </div>
+                                  <div className="cg-swatch-label">
+                                    {sw.label}
+                                  </div>
+                                  <div className="cg-swatch-meta">
+                                    <span>Contrast {sw.ratio}</span>
+                                    <span>{sw.deltaE}</span>
+                                  </div>
+                                </button>
+                              ))}
+                            </div>
+                          </div>
+                        )}
+                      </div>
+                    )}
+                  </>
+                )}
               </div>
 
-              {/* Pane 3: Cryptographic Release Ledger & Merkle Certificate */}
+              {/* Pane 3: Guided Trial Run & Cryptographic Release Handoff */}
               <div className="cg-workbench-pane cg-pane-ledger">
                 <div className="cg-pane-header">
                   <div>
                     <span className="cg-mono-label">
-                      RELEASE LEDGER · RFC 9162 MERKLE
+                      GUIDED TRIAL RUN · END-TO-END STUDIO HANDOFF
                     </span>
                     <h3 className="cg-pane-title">
-                      Cryptographic Provenance
+                      Try the Full 4-Stage Workflow
                     </h3>
                   </div>
                 </div>
 
                 <div
-                  key={blockerCount === 0 ? "seal-ready" : "seal-blocked"}
-                  className={`cg-release-seal-card cg-animate-swap ${
+                  className={`cg-release-seal-card ${
                     blockerCount === 0 ? "seal-ready" : "seal-blocked"
                   }`}
                 >
                   <div className="cg-seal-status-row">
                     {blockerCount === 0 ? (
-                      <CheckCircle2
-                        size={20}
-                        className="cg-seal-icon-pass cg-icon-pop"
-                      />
+                      <CheckCircle2 size={20} className="cg-seal-icon-pass" />
                     ) : (
-                      <ShieldAlert
-                        size={20}
-                        className="cg-seal-icon-block cg-icon-pop"
-                      />
+                      <ShieldAlert size={20} className="cg-seal-icon-block" />
                     )}
                     <div>
                       <div className="cg-seal-title">
                         {blockerCount === 0
-                          ? "Release Certificate Verified"
-                          : "Publication Gate Locked"}
+                          ? "Pre-Flight Gate Passed (ALLOW)"
+                          : `Publication Gate Locked (${blockerCount} Blocker${blockerCount === 1 ? "" : "s"})`}
                       </div>
                       <div className="cg-seal-sub">
                         {blockerCount === 0
-                          ? "All Blockers resolved · Ed25519 + C2PA 2.2 signed"
-                          : `Resolve ${blockerCount} active Blocker(s) or toggle Surgical Fix`}
+                          ? "Ready for Brand Manager & Legal Sign-Off"
+                          : "Open in Review Studio to accept fixes, override warnings, and sign off"}
                       </div>
                     </div>
                   </div>
@@ -1739,105 +1487,88 @@ export function HomePage() {
                     <div className="cg-ledger-kv">
                       <span>Playbook Canon</span>
                       <code>
-                        {currentScenario.canonId}@{currentScenario.canonVersion}
+                        {selectedCanonId}@v
+                        {gateResult?.canon_version ?? "1.0"}
                       </code>
                     </div>
                     <div className="cg-ledger-kv">
                       <span>Canon SHA-256</span>
-                      <code>{currentScenario.hashes.canonHash}…</code>
-                    </div>
-                    <div className="cg-ledger-kv">
-                      <span>Content AST SHA-256</span>
                       <code>
-                        {isRepaired
-                          ? currentScenario.hashes.repairedHash
-                          : currentScenario.hashes.draftHash}
+                        {(
+                          gateResult?.canon_hash ??
+                          matchedCanonMeta?.hash ??
+                          "1cd1ac13e83f1b00"
+                        ).slice(0, 16)}
                         …
                       </code>
                     </div>
                     <div className="cg-ledger-kv">
-                      <span>RFC 9162 Merkle Root</span>
+                      <span>Content SHA-256</span>
                       <code>
-                        {currentScenario.hashes.merkleRoot.slice(0, 16)}…
+                        {(gateResult?.content_hash ?? "—").slice(0, 16)}
+                        {gateResult?.content_hash ? "…" : ""}
                       </code>
                     </div>
                     <div className="cg-ledger-kv">
-                      <span>Ed25519 Signature</span>
+                      <span>Conformal Threshold</span>
                       <code>
-                        {blockerCount === 0
-                          ? currentScenario.hashes.ed25519Sig
-                          : "PENDING_STAGE_3_SIGNOFF"}
+                        α={conformalAlpha.toFixed(2)} → λ̂=
+                        {conformalLambda.toFixed(2)}
                       </code>
                     </div>
                   </div>
 
                   <div className="cg-ledger-actions">
-                    {!isRepaired ? (
-                      <button
-                        type="button"
-                        className="cg-btn cg-btn-primary cg-btn-full"
-                        onClick={() => {
-                          setIsRepaired(true);
-                          triggerScanSweep();
-                        }}
-                      >
-                        <Wand2 size={14} />
-                        <span>Apply Surgical Repair &amp; Re-Verify</span>
-                      </button>
-                    ) : (
-                      <button
-                        type="button"
-                        className="cg-btn cg-btn-emerald cg-btn-full"
-                        onClick={() =>
-                          void handleQuickPersonaLaunch("creative_lead")
-                        }
-                      >
-                        <FileCheck2 size={14} />
-                        <span>Inspect Full Bundle in Review Studio →</span>
-                      </button>
-                    )}
+                    <button
+                      type="button"
+                      className="cg-btn cg-btn-primary cg-btn-full"
+                      disabled={launchingTrial}
+                      onClick={() => void handleStartGuidedTrialRun()}
+                    >
+                      <FileCheck2 size={14} />
+                      <span>
+                        {launchingTrial
+                          ? "Creating Trial Bundle…"
+                          : "Open as Guided Trial Run in Studio →"}
+                      </span>
+                    </button>
                   </div>
                 </div>
 
-                {/* Mini Audit Trail Timeline */}
                 <div className="cg-mini-audit-log">
                   <div className="cg-mono-label">
-                    HASH-CHAINED LEDGER EVENTS
+                    HOW THE GUIDED TRIAL RUN WORKS
                   </div>
                   <div className="cg-mini-audit-item">
                     <span className="cg-audit-step">01</span>
                     <div>
-                      <strong>ContentAST Parsed &amp; Hashed</strong>
+                      <strong>Inspect &amp; Remediate in Review Studio</strong>
                       <p>
-                        Normalized NFC text + 1080p banner Sobel/Otsu regions
+                        Opens this draft in `/submissions/:id` with real inline
+                        ProseMirror highlights, SlotDiff tables, and 1-click
+                        fixes.
                       </p>
                     </div>
                   </div>
                   <div className="cg-mini-audit-item">
                     <span className="cg-audit-step">02</span>
                     <div>
-                      <strong>
-                        Conformal Risk Calibration (α ={" "}
-                        {conformalAlpha.toFixed(2)})
-                      </strong>
+                      <strong>Test Role Switching &amp; Sign-Off</strong>
                       <p>
-                        Empirical quantile threshold λ̂ ={" "}
-                        {conformalLambda.toFixed(2)} applied
+                        Switch roles in the top bar (`Creator → Brand Manager →
+                        Legal Reviewer`) to approve and export the signed
+                        Merkle certificate.
                       </p>
                     </div>
                   </div>
                   <div className="cg-mini-audit-item">
                     <span className="cg-audit-step">03</span>
                     <div>
-                      <strong>
-                        {isRepaired
-                          ? "Tier 3 Surgical Rewrite Verified"
-                          : "Awaiting Creator Resolution"}
-                      </strong>
+                      <strong>1-Click Reset to Clean Slate</strong>
                       <p>
-                        {isRepaired
-                          ? `Levenshtein edit_ratio ${currentScenario.editRatio} · 0 new violations`
-                          : "Click 'Apply Surgical Fix' to preview automated repair"}
+                        Click <em>&quot;Finish Trial &amp; Clear Sample&quot;</em>{" "}
+                        in the banner at any time so your queue is 100% empty
+                        and ready for your own data.
                       </p>
                     </div>
                   </div>
@@ -1848,376 +1579,82 @@ export function HomePage() {
         </div>
       </section>
 
-      {/* ── Asymmetric 12-Column Architectural Bento Grid (#architecture) ── */}
-      <section id="architecture" className="cg-section cg-section-bordered">
-        <div className="cg-container">
-          <div className="cg-section-header-split">
-            <div>
-              <span className="cg-mono-eyebrow">
-                01 / THREE-TIER VERIFICATION ARCHITECTURE
-              </span>
-              <h2 className="cg-section-heading">
-                Built on deterministic math, formal SMT proofs, and{" "}
-                <span className="cg-serif-italic">calibrated</span> NLI.
-              </h2>
-            </div>
-            <p className="cg-section-lead">
-              Generic LLM wrappers hallucinate compliance verdicts and miss
-              pixel-level visual violations. CanonGate executes an asynchronous
-              DAG of 9 specialized verifiers where every finding is backed by a
-              reproducible mathematical witness.
-            </p>
-          </div>
-
-          <div className="cg-bento-grid">
-            {/* Bento Cell 1 (7 Cols): Tier 1 Computer Vision & Colorimetry */}
-            <article className="cg-bento-cell cg-bento-span-7">
-              <div className="cg-bento-top">
-                <span className="cg-bento-tier-pill">
-                  <Eye size={13} /> TIER 1 · COMPUTER VISION &amp; COLORIMETRY
-                </span>
-                <code>checks/visual_*.py</code>
-              </div>
-              <h3 className="cg-bento-title">
-                Perceptual CIEDE2000 (ΔE₀₀), W3C Relative Luminance &amp; ORB
-                Homography
-              </h3>
-              <p className="cg-bento-desc">
-                Audits 1080p campaign banners without sending images to cloud
-                VLM APIs. Extracts dominant K-Means swatches in CIE{" "}
-                <code>L*a*b*</code> space, segments text bounding boxes via
-                Sobel gradients + Otsu thresholding, and verifies{" "}
-                <code>0.5H</code> logo clear-space collars using OpenCV ORB
-                keypoint RANSAC homography.
-              </p>
-
-              {/* Interactive Visual Specimen inside Cell 1 */}
-              <div className="cg-bento-specimen">
-                <div className="cg-specimen-row">
-                  <div className="cg-colorimeter-pair">
-                    <div className="cg-color-chip-box">
-                      <span
-                        className="cg-color-circle"
-                        style={{
-                          backgroundColor: bentoSnappedPalette
-                            ? "#0D3B66"
-                            : "#1E6091",
-                        }}
-                      />
-                      <div>
-                        <code>
-                          {bentoSnappedPalette ? "#0D3B66" : "#1E6091"}
-                        </code>
-                        <span>Sampled Banner ROI</span>
-                      </div>
-                    </div>
-
-                    <button
-                      type="button"
-                      className={`cg-delta-arrow ${
-                        bentoSnappedPalette ? "delta-pass" : ""
-                      }`}
-                      onClick={() => setBentoSnappedPalette((prev) => !prev)}
-                      title="Click to test snapping off-brand swatch to Canon token"
-                    >
-                      {bentoSnappedPalette
-                        ? "ΔE₀₀ = 0.00 ≤ 3.0 (PASS · Click to Reset)"
-                        : "ΔE₀₀ = 6.42 > 3.0 (Click to Snap Token)"}
-                    </button>
-
-                    <div className="cg-color-chip-box">
-                      <span
-                        className="cg-color-circle"
-                        style={{ backgroundColor: "#0D3B66" }}
-                      />
-                      <div>
-                        <code>#0D3B66</code>
-                        <span>Canon Brand Token</span>
-                      </div>
-                    </div>
-                  </div>
-                  <div className="cg-luminance-formula">
-                    <span className="cg-mono-label">WCAG 2.1 LUMINANCE</span>
-                    <code>L = 0.2126·R + 0.7152·G + 0.0722·B</code>
-                  </div>
-                </div>
-              </div>
-            </article>
-
-            {/* Bento Cell 2 (5 Cols): Tier 1.5 SymPy + Z3 Algebraic Verifier */}
-            <article className="cg-bento-cell cg-bento-span-5">
-              <div className="cg-bento-top">
-                <span className="cg-bento-tier-pill">
-                  <Scale size={13} /> TIER 1.5 · FORMAL SMT SOLVER
-                </span>
-                <code>checks/numeric_consistency.py</code>
-              </div>
-              <h3 className="cg-bento-title">
-                SymPy + Z3 Algebraic KFS &amp; APR Verification
-              </h3>
-              <p className="cg-bento-desc">
-                Translates financial tables, percentage claims, and RBI 2025 Key
-                Fact Statements into quantifier-free nonlinear real arithmetic (
-                <code>QF_NRA</code>) constraints—proving when stated APRs or fee
-                totals are mathematically impossible.
-              </p>
-
-              <div className="cg-bento-specimen cg-specimen-dark">
-                <div className="cg-specimen-code-header">
-                  <span>Z3 SMT-LIBv2 Proof Trace</span>
-                  <button
-                    type="button"
-                    className={`cg-badge-unsat ${
-                      bentoZ3Reconciled ? "z3-sat" : ""
-                    }`}
-                    onClick={() => setBentoZ3Reconciled((prev) => !prev)}
-                    title="Click to toggle between Contradicted and Reconciled KFS APR"
-                  >
-                    {bentoZ3Reconciled
-                      ? "SAT · KFS RECONCILED (Click to Toggle)"
-                      : "CONTRADICTION PROVED (Click to Fix APR)"}
-                  </button>
-                </div>
-                <pre className="cg-specimen-pre">
-                  {bentoZ3Reconciled
-                    ? `(declare-const APR Real)
-(assert (= Principal 50000.0))
-(assert (= UpfrontFee 1500.0))
-(assert (= Interest 3500.0))
-(assert (= StatedAPR 0.2818))
-; Solved Effective APR = 0.2818 == 0.2818 (VALID)`
-                    : `(declare-const APR Real)
-(assert (= Principal 50000.0))
-(assert (= UpfrontFee 1500.0))
-(assert (= Interest 3500.0))
-(assert (= StatedAPR 0.1400))
-; Solved Effective APR = 0.2818 != 0.1400`}
-                  <span className="cg-terminal-cursor" aria-hidden="true" />
-                </pre>
-              </div>
-            </article>
-
-            {/* Bento Cell 3 (5 Cols): Tier 2 Hybrid Retrieval + QASem SlotDiff */}
-            <article className="cg-bento-cell cg-bento-span-5">
-              <div className="cg-bento-top">
-                <span className="cg-bento-tier-pill">
-                  <Layers size={13} /> TIER 2 · SEMANTIC SLOT ALIGNMENT
-                </span>
-                <code>engine/nlp.py · conformal.py</code>
-              </div>
-              <h3 className="cg-bento-title">
-                Hybrid BM25 + Dense RRF &amp; QASem <code>SlotDiff</code>
-              </h3>
-              <p className="cg-bento-desc">
-                Standard cosine similarity passes misleading claims that drop
-                eligibility caps. CanonGate decomposes claims into{" "}
-                <code>(metric, ceiling, cohort, condition)</code> slots and
-                wraps ONNX INT8 NLI scores in distribution-free Conformal Risk
-                Control (<var>α</var> = 0.10).
-              </p>
-
-              <div className="cg-bento-specimen">
-                <div className="cg-mini-slot-list">
-                  <div className="cg-mini-slot-item">
-                    <code>slot:metric</code>
-                    <span>&quot;0% interest&quot;</span>
-                    <span className="cg-slot-badge slot-match">MATCH</span>
-                  </div>
-                  <div className="cg-mini-slot-item">
-                    <code>slot:ceiling</code>
-                    <span>&quot;under ₹50,000&quot;</span>
-                    <span className="cg-slot-badge slot-dropped">DROPPED</span>
-                  </div>
-                  <div className="cg-mini-slot-item">
-                    <code>slot:cohort</code>
-                    <span>&quot;first-time borrowers&quot;</span>
-                    <span className="cg-slot-badge slot-dropped">DROPPED</span>
-                  </div>
-                </div>
-              </div>
-            </article>
-
-            {/* Bento Cell 4 (7 Cols): Tier 3 DPDP PII Vault + Constrained Surgical Rewriter */}
-            <article className="cg-bento-cell cg-bento-span-7">
-              <div className="cg-bento-top">
-                <span className="cg-bento-tier-pill">
-                  <Lock size={13} /> TIER 3 · DPDP PII VAULT &amp; SURGICAL
-                  REWRITER
-                </span>
-                <code>domain/pii.py · engine/rewriter.py</code>
-              </div>
-              <h3 className="cg-bento-title">
-                Zero-Trust PII Tokenization &amp; Bounded Levenshtein Repair (
-                <code>≤35%</code>)
-              </h3>
-              <p className="cg-bento-desc">
-                Before any optional cloud LLM call, <code>PiiVault</code>{" "}
-                scrubs Indian statutory identifiers (Aadhaar, PAN, GSTIN, UPI
-                VPA, phone, email) into local reversible placeholders. Every
-                proposed fix must pass a strict{" "}
-                <code>edit_ratio ≤ 0.35</code> bound and re-run Tier 1 + Tier 2
-                checks to guarantee zero new violations.
-              </p>
-
-              <div className="cg-bento-specimen">
-                <div className="cg-pii-pipeline-strip">
-                  <div className="cg-pii-step">
-                    <span className="cg-mono-label">1. LOCAL SCRUB</span>
-                    <code>PAN: ABCDE1234F → &lt;PAN_ID_1&gt;</code>
-                  </div>
-                  <ArrowRight
-                    size={14}
-                    className="cg-pii-arrow cg-flow-pulse"
-                  />
-                  <div className="cg-pii-step">
-                    <span className="cg-mono-label">2. BOUNDED DIFF</span>
-                    <code>edit_ratio = 0.21 ≤ 0.35</code>
-                  </div>
-                  <ArrowRight
-                    size={14}
-                    className="cg-pii-arrow cg-flow-pulse"
-                  />
-                  <div className="cg-pii-step">
-                    <span className="cg-mono-label">3. RE-VERIFY</span>
-                    <code className="cg-text-emerald">
-                      0 Blockers · Restored
-                    </code>
-                  </div>
-                </div>
-              </div>
-            </article>
-          </div>
-        </div>
-      </section>
-
-      {/* ── Interactive 4-Stage Role-Gated Governance Pipeline (#workflow) ── */}
+      {/* ── Compact 3-Role Governance Workflow Section (#workflow) ── */}
       <section id="workflow" className="cg-section cg-section-subtle">
         <div className="cg-container">
           <div className="cg-section-header-split">
             <div>
               <span className="cg-mono-eyebrow">
-                02 / HUMAN-IN-THE-LOOP RBAC &amp; FEEDBACK LOOP
+                ROLE-GATED WORKFLOW &amp; AUDIT TRAIL
               </span>
               <h2 className="cg-section-heading">
-                Role-separated state machine with{" "}
-                <span className="cg-serif-italic">cryptographic</span>{" "}
-                accountability.
+                Three-role separation of duties with{" "}
+                <span className="cg-serif-italic">hash-chained</span> sign-off.
               </h2>
             </div>
             <p className="cg-section-lead">
-              Governance fails when creators can silently dismiss compliance
-              flags or when brittle rules bottleneck legal teams. CanonGate
-              enforces strict separation of duties across three roles while
-              automatically turning high-friction rules into Canon v1.1 pull
-              requests.
+              Creators can resolve Blockers or deliberately override Warnings
+              with a recorded reason, Brand Managers calibrate playbooks and
+              review diffs, and Legal Reviewers issue the final Ed25519 + RFC
+              9162 Merkle release certificate.
             </p>
           </div>
 
-          <div className="cg-workflow-explorer">
-            {/* Stage Selector Tabs */}
-            <div className="cg-stage-tabs">
-              {WORKFLOW_STAGE_SPECS.map((item, idx) => (
-                <button
-                  key={item.stage}
-                  type="button"
-                  className={`cg-stage-tab-card ${
-                    activeStageIdx === idx ? "active" : ""
-                  }`}
-                  onClick={() => setActiveStageIdx(idx)}
+          <div className="cg-stage-tabs">
+            {WORKFLOW_STAGE_SPECS.map((item) => (
+              <div key={item.stage} className="cg-stage-tab-card active">
+                <div className="cg-stage-tab-top">
+                  <span className="cg-stage-num">{item.stage}</span>
+                  <code className="cg-stage-status">{item.statusTag}</code>
+                </div>
+                <div className="cg-stage-tab-title">{item.title}</div>
+                <p
+                  style={{
+                    fontSize: "0.86rem",
+                    color: "#475569",
+                    margin: "0.5rem 0 0.9rem",
+                    lineHeight: 1.5,
+                  }}
                 >
-                  <div className="cg-stage-tab-top">
-                    <span className="cg-stage-num">{item.stage}</span>
-                    <code className="cg-stage-status">{item.statusTag}</code>
-                  </div>
-                  <div className="cg-stage-tab-title">{item.title}</div>
-                  <div className="cg-stage-tab-role">{item.roleLabel}</div>
+                  {item.summary}
+                </p>
+                <button
+                  type="button"
+                  className="cg-btn cg-btn-secondary cg-btn-sm"
+                  onClick={() => void handleQuickPersonaLaunch(item.username)}
+                >
+                  <Play size={12} />
+                  <span>Enter as @{item.username}</span>
                 </button>
-              ))}
-            </div>
-
-            {/* Active Stage Detail Panel (Keyed for snappy 180ms transition) */}
-            <div
-              key={activeStageIdx}
-              className="cg-stage-detail-card cg-animate-swap"
-            >
-              <div className="cg-stage-detail-main">
-                <div className="cg-stage-detail-eyebrow">
-                  <span>{WORKFLOW_STAGE_SPECS[activeStageIdx].stage}</span>
-                  <span>·</span>
-                  <code>{WORKFLOW_STAGE_SPECS[activeStageIdx].roleLabel}</code>
-                </div>
-                <h3>{WORKFLOW_STAGE_SPECS[activeStageIdx].title}</h3>
-                <p>{WORKFLOW_STAGE_SPECS[activeStageIdx].summary}</p>
-
-                <ul className="cg-stage-gate-list">
-                  {WORKFLOW_STAGE_SPECS[activeStageIdx].gates.map((g) => (
-                    <li key={g}>
-                      <CheckCircle2 size={15} className="cg-check-icon" />
-                      <span>{g}</span>
-                    </li>
-                  ))}
-                </ul>
               </div>
-
-              <div className="cg-stage-detail-aside">
-                <div className="cg-friction-preview-box">
-                  <div className="cg-friction-header">
-                    <GitPullRequest size={15} />
-                    <span>Closed-Loop Rule Calibration</span>
-                  </div>
-                  <p>
-                    When reviewers repeatedly override a brittle rule (override
-                    rate &gt; 30%), CanonGate computes vectorized{" "}
-                    <strong>Krippendorff&apos;s α</strong> inter-reviewer
-                    reliability and drafts a 1-click{" "}
-                    <code>Canon v1.1 YAML PR</code> with historical blast-radius
-                    simulation.
-                  </p>
-                  <button
-                    type="button"
-                    className="cg-btn cg-btn-primary cg-btn-full"
-                    onClick={() =>
-                      void handleQuickPersonaLaunch(
-                        WORKFLOW_STAGE_SPECS[activeStageIdx].username,
-                      )
-                    }
-                  >
-                    <span>
-                      Launch Workspace as @
-                      {WORKFLOW_STAGE_SPECS[activeStageIdx].username}
-                    </span>
-                    <ArrowRight size={15} className="cg-arrow-shift" />
-                  </button>
-                </div>
-              </div>
-            </div>
+            ))}
           </div>
         </div>
       </section>
 
-      {/* ── Interactive Statutory Playbooks & Developer CLI / MCP Hub (#developers) ── */}
+      {/* ── Authentic Repository Canons, CLI & MCP Integration (#developers) ── */}
       <section id="developers" className="cg-section cg-section-bordered">
         <div className="cg-container">
           <div className="cg-section-header-split">
             <div>
               <span className="cg-mono-eyebrow">
-                03 / STATUTORY PLAYBOOKS, CLI &amp; FASTMCP 3.0
+                CANON PLAYBOOKS (`canons/*.yaml`), CLI &amp; MCP (`2026-07-28`)
               </span>
               <h2 className="cg-section-heading">
-                Version-controlled YAML canons and{" "}
+                Exact YAML schemas and{" "}
                 <span className="cg-serif-italic">headless</span> CI/CD gates.
               </h2>
             </div>
             <p className="cg-section-lead">
-              Ingest raw PDF/DOCX brand guidelines via Pipeline A or use
-              pre-built Indian statutory packs. Enforce the exact same canon in
-              the web studio, GitHub Actions, Shopify/Webflow webhooks, or
-              autonomous MCP agents.
+              Inspect the exact starter Canons shipped in `canons/*.yaml` or
+              onboard your own company guidelines via Pipeline A (`POST
+              /api/canons/compile`). Enforce the same Canon via the CLI, MCP
+              server, or CMS webhooks.
             </p>
           </div>
 
           <div className="cg-dev-split-grid">
-            {/* Left Column: Compiled Canon YAML Explorer */}
+            {/* Left Column: Real Canon YAML Files */}
             <div className="cg-code-window">
               <div className="cg-code-window-bar">
                 <div className="cg-code-tabs">
@@ -2244,42 +1681,31 @@ export function HomePage() {
                     )
                   }
                 >
-                  <span
-                    key={copiedId === "yaml-copy" ? "copied" : "copy"}
-                    className="cg-icon-pop"
-                    style={{
-                      display: "inline-flex",
-                      alignItems: "center",
-                      gap: "0.3rem",
-                    }}
-                  >
-                    {copiedId === "yaml-copy" ? (
-                      <>
-                        <Check size={12} /> Copied
-                      </>
-                    ) : (
-                      <>
-                        <Copy size={12} /> Copy YAML
-                      </>
-                    )}
-                  </span>
+                  {copiedId === "yaml-copy" ? (
+                    <>
+                      <Check size={12} /> Copied
+                    </>
+                  ) : (
+                    <>
+                      <Copy size={12} /> Copy YAML
+                    </>
+                  )}
                 </button>
               </div>
 
-              <div
-                key={activePlaybookKey}
-                className="cg-code-body-wrap cg-animate-swap"
-              >
+              <div key={activePlaybookKey} className="cg-code-body-wrap">
                 <div className="cg-code-meta-strip">
                   <span>
                     <strong>
                       {PLAYBOOK_YAML_SAMPLES[activePlaybookKey].title}
                     </strong>{" "}
-                    · {PLAYBOOK_YAML_SAMPLES[activePlaybookKey].authority}
+                    · sha256:{" "}
+                    <code>
+                      {PLAYBOOK_YAML_SAMPLES[activePlaybookKey].hashPrefix}…
+                    </code>
                   </span>
                   <code>
-                    {PLAYBOOK_YAML_SAMPLES[activePlaybookKey].rulesCount}{" "}
-                    compiled rules
+                    {PLAYBOOK_YAML_SAMPLES[activePlaybookKey].rulesCount} rules
                   </code>
                 </div>
 
@@ -2289,7 +1715,7 @@ export function HomePage() {
               </div>
             </div>
 
-            {/* Right Column: CLI, GitHub Actions, FastMCP & Webhook Terminal */}
+            {/* Right Column: Authentic CLI, MCP & Webhook Snippets */}
             <div className="cg-code-window">
               <div className="cg-code-window-bar">
                 <div className="cg-code-tabs">
@@ -2316,32 +1742,19 @@ export function HomePage() {
                     )
                   }
                 >
-                  <span
-                    key={copiedId === "dev-copy" ? "copied" : "copy"}
-                    className="cg-icon-pop"
-                    style={{
-                      display: "inline-flex",
-                      alignItems: "center",
-                      gap: "0.3rem",
-                    }}
-                  >
-                    {copiedId === "dev-copy" ? (
-                      <>
-                        <Check size={12} /> Copied
-                      </>
-                    ) : (
-                      <>
-                        <Copy size={12} /> Copy Snippet
-                      </>
-                    )}
-                  </span>
+                  {copiedId === "dev-copy" ? (
+                    <>
+                      <Check size={12} /> Copied
+                    </>
+                  ) : (
+                    <>
+                      <Copy size={12} /> Copy Snippet
+                    </>
+                  )}
                 </button>
               </div>
 
-              <div
-                key={activeDevTab}
-                className="cg-code-body-wrap cg-animate-swap"
-              >
+              <div key={activeDevTab} className="cg-code-body-wrap">
                 <div className="cg-code-meta-strip">
                   <span>{DEV_INTEGRATION_TABS[activeDevTab].subtitle}</span>
                 </div>
@@ -2355,7 +1768,7 @@ export function HomePage() {
         </div>
       </section>
 
-      {/* ── Architectural Footer ── */}
+      {/* ── Footer ── */}
       <footer className="cg-footer">
         <div className="cg-container cg-footer-inner">
           <div className="cg-footer-left">
@@ -2365,25 +1778,25 @@ export function HomePage() {
               </span>
               <span className="cg-brand-name">CanonGate</span>
               <span className="cg-brand-version">
-                Pre-Publication Governance Platform
+                Pre-Publication Brand &amp; Claim Governance
               </span>
             </div>
             <p className="cg-footer-note">
-              Deterministic AST &amp; OpenCV Vision · SymPy + Z3 Algebraic KFS ·
-              QASem SlotDiff · Conformal Risk Control · RFC 9162 Merkle + C2PA
-              2.2 Provenance.
+              Tier 1 Deterministic &amp; WCAG · Tier 1.5 SMT Claim Algebra ·
+              Tier 2 Claim Slot NLI · Tier 3 Surgical Rewriter · RFC 9162 Merkle
+              Certificates.
             </p>
           </div>
 
           <div className="cg-footer-actions">
             <a href="#workbench" className="cg-footer-link">
-              Workbench
-            </a>
-            <a href="#architecture" className="cg-footer-link">
-              Architecture
+              Live Gate
             </a>
             <a href="#workflow" className="cg-footer-link">
-              RBAC Workflow
+              Workflow
+            </a>
+            <a href="#developers" className="cg-footer-link">
+              Canons &amp; CLI
             </a>
             <Link
               to={isAuthenticated ? "/dashboard" : "/login"}

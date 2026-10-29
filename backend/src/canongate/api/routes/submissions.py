@@ -457,6 +457,8 @@ async def update_submission_raw_content(
     raw_findings = await run_checks_collect(ast, canon)
     calibrated = default_calibrator.filter_and_calibrate_findings(raw_findings, alpha=req.alpha)
     await repos.save_findings(session, submission_id, calibrated)
+    if hasattr(session, "refresh"):
+        await session.refresh(sub)
 
     return _to_response(sub)
 

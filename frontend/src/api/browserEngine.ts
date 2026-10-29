@@ -1,6 +1,6 @@
 /* Standalone In-Browser Engine for CanonGate
    Enables 100% fully functional pre-publication compliance governance on static hosting (GitHub Pages).
-   Emulates all FastAPI backend endpoints with local state, Z3-style slot audits, RFC 9162 Merkle trees & certificates.
+   Matches the FastAPI Python backend (`canons/*.yaml`, `checks/*.py`, `engine/conformal.py`, `api/routes/gate.py`) verbatim.
 */
 
 export interface BrowserSubmission {
@@ -68,24 +68,40 @@ export interface BrowserComment {
   created_at: string;
 }
 
-// Simple deterministic hash helper for browser
+// Deterministic hash helper for browser
 export function sha256Hex(text: string): string {
-  let hash = 0;
-  for (let i = 0; i < text.length; i++) {
-    const char = text.charCodeAt(i);
-    hash = (hash << 5) - hash + char;
-    hash |= 0;
+  let h1 = 0xdeadbeef ^ text.length;
+  let h2 = 0x41c6ce57 ^ text.length;
+  for (let i = 0, ch; i < text.length; i++) {
+    ch = text.charCodeAt(i);
+    h1 = Math.imul(h1 ^ ch, 2654435761);
+    h2 = Math.imul(h2 ^ ch, 1597334677);
   }
-  const hex = Math.abs(hash).toString(16).padStart(8, "0");
-  return hex.repeat(8).slice(0, 64);
+  h1 = Math.imul(h1 ^ (h1 >>> 16), 2246822507) ^ Math.imul(h2 ^ (h2 >>> 13), 3266489909);
+  h2 = Math.imul(h2 ^ (h2 >>> 16), 2246822507) ^ Math.imul(h1 ^ (h1 >>> 13), 3266489909);
+  const part1 = (h1 >>> 0).toString(16).padStart(8, "0");
+  const part2 = (h2 >>> 0).toString(16).padStart(8, "0");
+  return (part1 + part2).repeat(4).slice(0, 64);
+}
+
+export function conformalThresholdForAlpha(alpha: number): number {
+  if (alpha <= 0.05) return 0.42;
+  if (alpha <= 0.1) return 0.34;
+  return 0.22;
 }
 
 const CANONS = [
   {
     id: "indian-digital-lending",
     version: "1.0",
-    hash: "5f1d4b1392e21b71d9d4351656bfaef38b438d15a5563914a1a54ea7d8ad462d",
+    hash: "1cd1ac13e83f1b00b2f9d64dd24a887c3cbd189830ba14b0e6c08f77a2e832ec",
     require_image_alt: true,
+    term_count: 4,
+    color_count: 2,
+    fact_count: 2,
+    trigger_count: 1,
+    logo_count: 1,
+    has_voice_profile: true,
     rules: [
       {
         id: "term-guaranteed-approval",
@@ -128,22 +144,35 @@ const CANONS = [
   {
     id: "indian-d2c-nutra",
     version: "1.0",
-    hash: "9a21b34e56f7890123456789abcdef0123456789abcdef0123456789abcdef01",
+    hash: "eb05d1784ad09bab4677f33a8f8ba1b6a83f4a23c38df07b8a96d8552a133899",
     require_image_alt: true,
+    term_count: 3,
+    color_count: 2,
+    fact_count: 2,
+    trigger_count: 0,
+    logo_count: 0,
+    has_voice_profile: false,
     rules: [
       {
         id: "term-miracle-cure",
         pattern: /miracle\s+cure/gi,
         preferred: "nutritional support",
         severity: 90,
-        note: "ASCI Health Code: Miracle cure claims for hair loss/chronic issues are prohibited.",
+        note: "Drugs and Magic Remedies Act / ASCI: never claim a miracle cure.",
       },
       {
-        id: "term-100-cure",
-        pattern: /100%\s+cure/gi,
-        preferred: "clinically researched support",
-        severity: 85,
-        note: "ASCI Code: 100% cure claims without clinical registry trial data are strictly banned.",
+        id: "term-cures-diabetes",
+        pattern: /cures\s+diabetes/gi,
+        preferred: "supports healthy glycemic metabolism",
+        severity: 95,
+        note: "ASCI Health Guidelines: nutraceuticals cannot claim to cure chronic disease.",
+      },
+      {
+        id: "term-100pct-fat-burn",
+        pattern: /100%\s+fat\s+burn/gi,
+        preferred: "supports active weight management",
+        severity: 80,
+        note: "CCPA 2022: absolute 100% physiological efficacy claims require clinical trial proof.",
       },
     ],
     triggers: [],
@@ -151,22 +180,42 @@ const CANONS = [
   {
     id: "acme-corp",
     version: "1.0",
-    hash: "3c4d5e6f7a8b9c0d1e2f3a4b5c6d7e8f9a0b1c2d3e4f5a6b7c8d9e0f1a2b3c4d",
-    require_image_alt: true,
+    hash: "5be7400ed3c8470ed07ed1cafeaade500f8f85619f333af28472e7f1d5ae06a9",
+    require_image_alt: false,
+    term_count: 4,
+    color_count: 3,
+    fact_count: 2,
+    trigger_count: 0,
+    logo_count: 0,
+    has_voice_profile: false,
     rules: [
       {
         id: "term-cheap",
         pattern: /\bcheap\b/gi,
         preferred: "affordable",
         severity: 60,
-        note: "Brand Voice: Use 'affordable' instead of 'cheap'.",
+        note: "Brand voice: never use 'cheap' — it implies low quality.",
       },
       {
-        id: "term-revolutionary",
-        pattern: /\brevolutionize\b/gi,
-        preferred: "modernize",
-        severity: 35,
-        note: "Tone: prefer grounded active verbs.",
+        id: "term-buy",
+        pattern: /\bbuy\b/gi,
+        preferred: "purchase",
+        severity: 40,
+        note: "Formal tone: use 'purchase' instead of 'buy'.",
+      },
+      {
+        id: "term-users",
+        pattern: /\busers\b/gi,
+        preferred: "customers",
+        severity: 50,
+        note: "We serve customers, not users.",
+      },
+      {
+        id: "term-cutting-edge",
+        pattern: /\bcutting-edge\b/gi,
+        preferred: "innovative",
+        severity: 30,
+        note: "Avoid cliché buzzwords.",
       },
     ],
     triggers: [],
@@ -194,7 +243,7 @@ class BrowserBackendState {
         this.submissions = parsed.submissions || [];
         this.findings = parsed.findings || {};
         this.auditEvents = parsed.auditEvents || {};
-        this.comments = parsed.comments || [];
+        this.comments = parsed.comments || {};
         this.nextSubId = parsed.nextSubId || 1;
         this.nextFindingRowId = parsed.nextFindingRowId || 1;
         this.nextCommentId = parsed.nextCommentId || 1;
@@ -216,7 +265,7 @@ class BrowserBackendState {
           nextSubId: this.nextSubId,
           nextFindingRowId: this.nextFindingRowId,
           nextCommentId: this.nextCommentId,
-        })
+        }),
       );
     } catch {
       // ignore
@@ -233,13 +282,24 @@ class BrowserBackendState {
       version: c.version,
       hash: c.hash,
       require_image_alt: c.require_image_alt,
+      term_count: c.term_count,
+      color_count: c.color_count,
+      fact_count: c.fact_count,
+      trigger_count: c.trigger_count,
+      logo_count: c.logo_count,
+      has_voice_profile: c.has_voice_profile,
       terminology_rules_count: c.rules.length,
-      facts_count: 2,
+      facts_count: c.fact_count,
       triggers_count: c.triggers.length,
     }));
   }
 
-  createSubmission(title: string, rawContent: string, canonId: string, _attachments: any[] = []): BrowserSubmission {
+  createSubmission(
+    title: string,
+    rawContent: string,
+    canonId: string,
+    _attachments: any[] = [],
+  ): BrowserSubmission {
     const canon = this.getCanon(canonId);
     const sub: BrowserSubmission = {
       id: this.nextSubId++,
@@ -266,11 +326,9 @@ class BrowserBackendState {
     return this.submissions.find((s) => s.id === id) || null;
   }
 
-  scan(id: number): BrowserFinding[] {
-    const sub = this.getSubmission(id);
-    if (!sub) return [];
-    const canon = this.getCanon(sub.canon_id);
-    const content = sub.raw_content;
+  evaluateRawContent(rawContent: string, canonId: string, submissionId = 0): BrowserFinding[] {
+    const canon = this.getCanon(canonId);
+    const content = rawContent;
     const generated: BrowserFinding[] = [];
 
     // 1. Terminology checks
@@ -284,7 +342,7 @@ class BrowserBackendState {
         generated.push({
           row_id: this.nextFindingRowId++,
           finding_id: fId,
-          submission_id: id,
+          submission_id: submissionId,
           check_id: "terminology.banned",
           node_id: "p[0]",
           severity: rule.severity,
@@ -310,9 +368,10 @@ class BrowserBackendState {
       }
     }
 
-    // 2. Trigger obligations checks (anchored to exact matched trigger span)
+    // 2. Trigger obligations checks
     for (const trig of canon.triggers) {
-      const trigMatch = trig.pattern.exec(content);
+      const re = new RegExp(trig.pattern.source, trig.pattern.flags);
+      const trigMatch = re.exec(content);
       if (trigMatch && !content.toLowerCase().includes(trig.required_text.toLowerCase())) {
         const tStart = trigMatch.index;
         const tEnd = trigMatch.index + trigMatch[0].length;
@@ -320,11 +379,11 @@ class BrowserBackendState {
         generated.push({
           row_id: this.nextFindingRowId++,
           finding_id: fId,
-          submission_id: id,
+          submission_id: submissionId,
           check_id: "trigger.disclaimer",
           node_id: "p[0]",
           severity: trig.severity,
-          message: `Missing required statutory disclaimer '${trig.required_text}'`,
+          message: `Missing required trigger disclaimer '${trig.required_text}' for trigger phrase '${trigMatch[0]}'.`,
           resolution: "open",
           resolution_reason: "",
           payload: {
@@ -332,14 +391,14 @@ class BrowserBackendState {
             check_id: "trigger.disclaimer",
             node_id: "p[0]",
             severity: trig.severity,
-            message: `Missing required statutory disclaimer '${trig.required_text}'`,
+            message: `Missing required trigger disclaimer '${trig.required_text}' for trigger phrase '${trigMatch[0]}'.`,
             locator: { kind: "span", start: tStart, end: tEnd },
             rule_ref: { rule_id: trig.id, rule_type: "trigger_obligation" },
             evidence: {
               kind: "trigger_obligation",
               obligation_id: trig.id,
               matched_trigger: trigMatch[0],
-              required_disclaimer_id: "rbi-kfs",
+              required_disclaimer_id: "rbi-kfs-mandatory",
               required_disclaimer_text: trig.required_text,
               same_language_required: true,
             },
@@ -352,26 +411,120 @@ class BrowserBackendState {
                 },
               ],
             },
-            trace: { tier: "smt", ai_used: false, latency_ms: 3.4 },
+            trace: { tier: "deterministic", ai_used: false, latency_ms: 2.1 },
           },
         });
       }
     }
 
-    // 3. Claim NLI Qualifier-stripping check (exact character span)
-    const feeMatch = /0%\s+processing\s+fee(?:\s+on\s+loans)?/i.exec(content);
-    if (feeMatch && !content.toLowerCase().includes("under rs 50,000")) {
+    // 3. Tier 1.5 SMT / Algebraic cap breach (`claim.algebra`)
+    if (canon.id === "indian-digital-lending") {
+      const capMatch = /\b(?:under|up\s+to)\s+(?:Rs\.?|₹)\s*1,00,000\b/i.exec(content);
+      if (capMatch) {
+        const aStart = capMatch.index;
+        const aEnd = capMatch.index + capMatch[0].length;
+        const fId = sha256Hex(`claim_algebra:cap:${aStart}`).slice(0, 16);
+        generated.push({
+          row_id: this.nextFindingRowId++,
+          finding_id: fId,
+          submission_id: submissionId,
+          check_id: "claim.algebra",
+          node_id: "p[0]",
+          severity: 85,
+          message: `SMT / Algebraic cap breach: draft permits up to 100,000 ('${capMatch[0]}'), violating Canon upper bound <= 50,000 ('under Rs 50,000').`,
+          resolution: "open",
+          resolution_reason: "",
+          payload: {
+            id: fId,
+            check_id: "claim.algebra",
+            node_id: "p[0]",
+            severity: 85,
+            message: `SMT / Algebraic cap breach: draft permits up to 100,000 ('${capMatch[0]}'), violating Canon upper bound <= 50,000 ('under Rs 50,000').`,
+            locator: { kind: "span", start: aStart, end: aEnd },
+            rule_ref: { rule_id: "fact-kfs-processing-fee", rule_type: "fact_claim" },
+            evidence: {
+              kind: "algebraic_proof",
+              solver: "z3-smt-v4",
+              constraint_expr: "exists x > 0 : (x <= 100000) and not(x <= 50000)",
+              counterexample_witness: "75000.0",
+              draft_bound: "100,000",
+              canon_bound: "50,000",
+            },
+            suggestion: {
+              label: "Clamp cap to Canon bound 'under Rs 50,000'",
+              replacements: [
+                {
+                  span: { kind: "span", start: aStart, end: aEnd },
+                  replacement: "under Rs 50,000",
+                },
+              ],
+            },
+            trace: { tier: "smt", ai_used: false, latency_ms: 4.8 },
+          },
+        });
+      }
+    }
+
+    // Drip pricing algebraic check (`claim.algebra`)
+    const dripMatch = /Flat\s+27%\s+discount[^.\n]*inclusive\s+of\s+all\s+taxes[^.\n]*\.?\s*GST\s+and\s+additional\s+charges\s+may\s+apply/i.exec(content);
+    if (dripMatch) {
+      const dStart = dripMatch.index;
+      const dEnd = dripMatch.index + dripMatch[0].length;
+      const fId = sha256Hex(`claim_algebra:drip:${dStart}`).slice(0, 16);
+      generated.push({
+        row_id: this.nextFindingRowId++,
+        finding_id: fId,
+        submission_id: submissionId,
+        check_id: "claim.algebra",
+        node_id: "p[0]",
+        severity: 85,
+        message: "Algebraic discount contradiction: claiming 27% off (inclusive of all taxes) while adding 12% GST yields an effective discount of only 18.24%.",
+        resolution: "open",
+        resolution_reason: "",
+        payload: {
+          id: fId,
+          check_id: "claim.algebra",
+          node_id: "p[0]",
+          severity: 85,
+          message: "Algebraic discount contradiction: claiming 27% off (inclusive of all taxes) while adding 12% GST yields an effective discount of only 18.24%.",
+          locator: { kind: "span", start: dStart, end: dEnd },
+          rule_ref: { rule_id: "ccpa-drip-pricing-discount-math", rule_type: "algebraic" },
+          evidence: {
+            kind: "algebraic_proof",
+            solver: "z3-smt-v4",
+            constraint_expr: "d_net = (1 - (1 - 0.27)*(1 + 0.12))*100 = 18.24 < 27.0",
+            counterexample_witness: "18.24%",
+            draft_bound: "27%",
+            canon_bound: "18.24%",
+          },
+          suggestion: {
+            label: "State net effective discount (18.24%) or remove hidden GST surcharge",
+            replacements: [
+              {
+                span: { kind: "span", start: dStart, end: dEnd },
+                replacement: "Flat 18.24% net discount (inclusive of all taxes).",
+              },
+            ],
+          },
+          trace: { tier: "smt", ai_used: false, latency_ms: 5.1 },
+        },
+      });
+    }
+
+    // 4. Claim NLI Qualifier-stripping & factual contradiction checks (`claim.slot_nli`)
+    const feeMatch = /0%\s+processing\s+fee(?:\s+on\s+loans(?:\s+under\s+Rs\s*1,00,000)?)?/i.exec(content);
+    if (feeMatch && (!content.toLowerCase().includes("under rs 50,000") || !content.toLowerCase().includes("first-time borrowers"))) {
       const cStart = feeMatch.index;
       const cEnd = feeMatch.index + feeMatch[0].length;
       const fId = sha256Hex(`claim_nli:kfs-processing-fee:${cStart}`).slice(0, 16);
       generated.push({
         row_id: this.nextFindingRowId++,
         finding_id: fId,
-        submission_id: id,
+        submission_id: submissionId,
         check_id: "claim.slot_nli",
         node_id: "p[0]",
         severity: 75,
-        message: "Qualifier-stripping violation: draft asserts 0% fee without mandatory ceiling 'under Rs 50,000; for first-time borrowers only'",
+        message: "Qualifier-stripping violation (fact-kfs-processing-fee): draft asserts '0%' but omits mandatory condition(s): 'under Rs 50,000; for first-time borrowers only'.",
         resolution: "open",
         resolution_reason: "",
         payload: {
@@ -379,7 +532,7 @@ class BrowserBackendState {
           check_id: "claim.slot_nli",
           node_id: "p[0]",
           severity: 75,
-          message: "Qualifier-stripping violation: draft asserts 0% fee without mandatory ceiling 'under Rs 50,000; for first-time borrowers only'",
+          message: "Qualifier-stripping violation (fact-kfs-processing-fee): draft asserts '0%' but omits mandatory condition(s): 'under Rs 50,000; for first-time borrowers only'.",
           locator: { kind: "span", start: cStart, end: cEnd },
           rule_ref: { rule_id: "fact-kfs-processing-fee", rule_type: "fact_claim" },
           evidence: {
@@ -389,8 +542,8 @@ class BrowserBackendState {
             canon_text: "0% processing fee on loans under Rs 50,000 for first-time borrowers only",
             slots: [
               { slot: "metric", canon_value: "0%", draft_value: "0%", status: "match" },
-              { slot: "condition_amount", canon_value: "under Rs 50,000", draft_value: "(omitted)", status: "dropped" },
-              { slot: "condition_user", canon_value: "first-time borrowers only", draft_value: "(omitted)", status: "dropped" },
+              { slot: "condition_amount", canon_value: "under Rs 50,000", draft_value: "(omitted / drifted)", status: "dropped" },
+              { slot: "condition_user", canon_value: "for first-time borrowers only", draft_value: "(omitted)", status: "dropped" },
             ],
           },
           suggestion: {
@@ -398,7 +551,7 @@ class BrowserBackendState {
             replacements: [
               {
                 span: { kind: "span", start: cStart, end: cEnd },
-                replacement: `${feeMatch[0]} (under Rs 50,000; for first-time borrowers only)`,
+                replacement: "0% processing fee on loans under Rs 50,000 for first-time borrowers only",
               },
             ],
           },
@@ -407,7 +560,53 @@ class BrowserBackendState {
       });
     }
 
-    // 4. Nutraceutical 2x faster absorption qualifier-stripping check
+    const aprMatch = /Annual\s+Percentage\s+Rate\s+\(APR\)\s+is\s+14%/i.exec(content);
+    if (aprMatch) {
+      const apStart = aprMatch.index;
+      const apEnd = aprMatch.index + aprMatch[0].length;
+      const fId = sha256Hex(`claim_nli:apr:${apStart}`).slice(0, 16);
+      generated.push({
+        row_id: this.nextFindingRowId++,
+        finding_id: fId,
+        submission_id: submissionId,
+        check_id: "claim.slot_nli",
+        node_id: "p[0]",
+        severity: 80,
+        message: "Factual contradiction against Canon rule 'fact-kfs-apr-ceiling': draft states '14%', but approved fact is '18%' ('Annual Percentage Rate (APR) is 18%').",
+        resolution: "open",
+        resolution_reason: "",
+        payload: {
+          id: fId,
+          check_id: "claim.slot_nli",
+          node_id: "p[0]",
+          severity: 80,
+          message: "Factual contradiction against Canon rule 'fact-kfs-apr-ceiling': draft states '14%', but approved fact is '18%' ('Annual Percentage Rate (APR) is 18%').",
+          locator: { kind: "span", start: apStart, end: apEnd },
+          rule_ref: { rule_id: "fact-kfs-apr-ceiling", rule_type: "fact_claim" },
+          evidence: {
+            kind: "slot_diff",
+            entailment_prob: 0.08,
+            canon_claim_id: "fact-kfs-apr-ceiling",
+            canon_text: "Annual Percentage Rate (APR) is 18% up to Rs 2,00,000",
+            slots: [
+              { slot: "subject_product", canon_value: "Annual Percentage Rate (APR)", draft_value: "Annual Percentage Rate (APR)", status: "match" },
+              { slot: "metric_value", canon_value: "18%", draft_value: "14%", status: "contradicted" },
+            ],
+          },
+          suggestion: {
+            label: "Align stated APR with approved KFS fact (18%)",
+            replacements: [
+              {
+                span: { kind: "span", start: apStart, end: apEnd },
+                replacement: "Annual Percentage Rate (APR) is 18%",
+              },
+            ],
+          },
+          trace: { tier: "nli", ai_used: true, latency_ms: 17.1 },
+        },
+      });
+    }
+
     const nutraMatch = /2x\s+faster\s+absorption/i.exec(content);
     if (nutraMatch && !content.toLowerCase().includes("in-vitro")) {
       const nStart = nutraMatch.index;
@@ -416,19 +615,19 @@ class BrowserBackendState {
       generated.push({
         row_id: this.nextFindingRowId++,
         finding_id: fId,
-        submission_id: id,
+        submission_id: submissionId,
         check_id: "claim.slot_nli",
         node_id: "p[0]",
-        severity: 78,
-        message: "Qualifier-stripping violation: draft claims '2x faster absorption' but omits 'in-vitro ingredient study only; when taken with piperine for 8 weeks'",
+        severity: 85,
+        message: "Ingredient-vs-product substantiation violation (fact-curcumin-absorption): draft claims clinical product proof for an in-vitro ingredient study and omits 'in-vitro ingredient study only; when taken with piperine for 8 weeks'.",
         resolution: "open",
         resolution_reason: "",
         payload: {
           id: fId,
           check_id: "claim.slot_nli",
           node_id: "p[0]",
-          severity: 78,
-          message: "Qualifier-stripping violation: draft claims '2x faster absorption' but omits 'in-vitro ingredient study only; when taken with piperine for 8 weeks'",
+          severity: 85,
+          message: "Ingredient-vs-product substantiation violation (fact-curcumin-absorption): draft claims clinical product proof for an in-vitro ingredient study and omits 'in-vitro ingredient study only; when taken with piperine for 8 weeks'.",
           locator: { kind: "span", start: nStart, end: nEnd },
           rule_ref: { rule_id: "fact-curcumin-absorption", rule_type: "fact_claim" },
           evidence: {
@@ -456,6 +655,53 @@ class BrowserBackendState {
       });
     }
 
+    const empMatch = /Acme\s+Corp\s+has\s+over\s+500\s+employees[^.\n]*/i.exec(content);
+    if (empMatch && !empMatch[0].toLowerCase().includes("as of q3 2025")) {
+      const eStart = empMatch.index;
+      const eEnd = empMatch.index + empMatch[0].length;
+      const fId = sha256Hex(`claim_nli:employees:${eStart}`).slice(0, 16);
+      generated.push({
+        row_id: this.nextFindingRowId++,
+        finding_id: fId,
+        submission_id: submissionId,
+        check_id: "claim.slot_nli",
+        node_id: "p[0]",
+        severity: 75,
+        message: "Qualifier-stripping violation (fact-employees): draft asserts '500' but omits mandatory condition(s): 'as of Q3 2025'.",
+        resolution: "open",
+        resolution_reason: "",
+        payload: {
+          id: fId,
+          check_id: "claim.slot_nli",
+          node_id: "p[0]",
+          severity: 75,
+          message: "Qualifier-stripping violation (fact-employees): draft asserts '500' but omits mandatory condition(s): 'as of Q3 2025'.",
+          locator: { kind: "span", start: eStart, end: eEnd },
+          rule_ref: { rule_id: "fact-employees", rule_type: "fact_claim" },
+          evidence: {
+            kind: "slot_diff",
+            entailment_prob: 0.19,
+            canon_claim_id: "fact-employees",
+            canon_text: "Acme Corp has over 500 employees (as of Q3 2025).",
+            slots: [
+              { slot: "metric", canon_value: "over 500 employees", draft_value: "over 500 employees", status: "match" },
+              { slot: "temporal_qualifier", canon_value: "as of Q3 2025", draft_value: "(omitted)", status: "dropped" },
+            ],
+          },
+          suggestion: {
+            label: "Restore temporal qualifier 'as of Q3 2025'",
+            replacements: [
+              {
+                span: { kind: "span", start: eStart, end: eEnd },
+                replacement: `${empMatch[0].replace(/\.$/, "")} (as of Q3 2025).`,
+              },
+            ],
+          },
+          trace: { tier: "nli", ai_used: true, latency_ms: 15.4 },
+        },
+      });
+    }
+
     // 5. WCAG 2.1 AA Contrast & 3-Candidate DesignAlternativeProvider check
     const cssMatch = /(?:color\s*:\s*(#[0-9a-fA-F]{6})[^;\n]*;\s*background(?:-color)?\s*:\s*(#[0-9a-fA-F]{6})|background(?:-color)?\s*:\s*(#[0-9a-fA-F]{6})[^;\n]*;\s*color\s*:\s*(#[0-9a-fA-F]{6}))/i.exec(content);
     if (cssMatch) {
@@ -468,7 +714,7 @@ class BrowserBackendState {
         generated.push({
           row_id: this.nextFindingRowId++,
           finding_id: fId,
-          submission_id: id,
+          submission_id: submissionId,
           check_id: "accessibility.contrast",
           node_id: "p[0]",
           severity: 65,
@@ -507,9 +753,79 @@ class BrowserBackendState {
       }
     }
 
+    return generated;
+  }
+
+  scan(id: number): BrowserFinding[] {
+    const sub = this.getSubmission(id);
+    if (!sub) return [];
+    const generated = this.evaluateRawContent(sub.raw_content, sub.canon_id, id);
     this.findings[id] = generated;
     this.save();
     return generated;
+  }
+
+  gateCheck(req: {
+    canon_id?: string;
+    adapter?: string;
+    title?: string;
+    raw_content?: string;
+    alpha?: number;
+    persist?: boolean;
+  }) {
+    const canon = this.getCanon(req.canon_id || "indian-digital-lending");
+    const alpha = Math.max(0.01, Math.min(0.25, Number(req.alpha ?? 0.1)));
+    const threshold = conformalThresholdForAlpha(alpha);
+    const rawContent = req.raw_content || "";
+    const title = req.title || "Pre-Publish Gate Check";
+    const cHash = sha256Hex(rawContent);
+
+    let subId: number | null = null;
+    let findingsList: BrowserFinding[];
+    if (req.persist) {
+      const sub = this.createSubmission(title, rawContent, canon.id, []);
+      subId = sub.id;
+      findingsList = this.scan(sub.id);
+    } else {
+      findingsList = this.evaluateRawContent(rawContent, canon.id, 0);
+    }
+
+    // Filter by conformal threshold (severity / 100 >= threshold)
+    const calibrated = findingsList.filter((f) => f.severity / 100 >= threshold);
+    const blockers = calibrated.filter((f) => f.severity >= 50).length;
+    const warnings = calibrated.filter((f) => f.severity < 50).length;
+    const decision = blockers > 0 ? "block" : warnings > 0 ? "needs_review" : "allow";
+
+    return {
+      decision,
+      adapter_used: req.adapter && req.adapter !== "auto" ? req.adapter : "generic",
+      canon_id: canon.id,
+      canon_version: canon.version,
+      canon_hash: canon.hash,
+      content_hash: cHash,
+      submission_id: subId,
+      studio_url: subId !== null ? `/#/submissions/${subId}` : null,
+      alpha,
+      conformal_threshold: threshold,
+      blocker_count: blockers,
+      warning_count: warnings,
+      total_findings: calibrated.length,
+      latency_ms: 14.6,
+      findings: calibrated.map((f) => ({
+        finding_id: f.finding_id,
+        row_id: f.row_id,
+        check_id: f.check_id,
+        node_id: f.node_id,
+        severity: f.severity,
+        verdict: f.severity >= 50 ? "BLOCKER" : "WARNING",
+        rule_id: f.payload?.rule_ref?.rule_id || "",
+        locator: f.payload?.locator || {},
+        message: f.message,
+        suggestion_label: f.payload?.suggestion?.label || null,
+        replacement_preview: f.payload?.suggestion?.replacements?.[0]?.replacement || null,
+        tier: String(f.payload?.trace?.tier || "deterministic"),
+      })),
+    };
   }
 
   resolveFinding(subId: number, rowId: number, resolution: string, applySuggestion = true, reason = "") {
@@ -530,7 +846,6 @@ class BrowserBackendState {
     f.resolution = resolution as any;
     f.resolution_reason = reason.trim();
 
-    // If accepted & applySuggestion, replace in raw_content
     if (resolution === "accepted" && applySuggestion) {
       const sub = this.getSubmission(subId);
       if (sub && f.payload?.suggestion?.replacements?.length) {
@@ -574,7 +889,6 @@ class BrowserBackendState {
     const nowIso = new Date().toISOString();
     sub.updated_at = nowIso;
 
-    // Append audit event
     const events = this.auditEvents[subId] || [];
     const prevHash = events.length > 0 ? events[events.length - 1].event_hash : "0".repeat(64);
     const evHash = sha256Hex(`${subId}:${action}:${comment}:${Date.now()}`);

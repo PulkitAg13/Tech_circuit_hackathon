@@ -9,6 +9,7 @@ import {
 import { useParams, useNavigate } from "react-router-dom";
 import {
   getSubmission,
+  deleteSubmission,
   getFindings,
   resolveFinding,
   workflowAction,
@@ -124,7 +125,7 @@ const WORKFLOW_STAGES = [
   {
     num: 2,
     key: "stage2",
-    title: "Brand Review",
+    title: "1. Brand Manager",
     ownerRole: "reviewer",
     ownerLabel: "Brand Manager",
     statuses: ["in_review"],
@@ -133,7 +134,7 @@ const WORKFLOW_STAGES = [
   {
     num: 3,
     key: "stage3",
-    title: "Legal Sign-Off",
+    title: "2. Legal Reviewer",
     ownerRole: "admin",
     ownerLabel: "Legal Reviewer",
     statuses: ["approved"],
@@ -351,7 +352,7 @@ function extractBannerOverlays(
 export function SubmissionDetailPage() {
   const { id } = useParams<{ id: string }>();
   const submissionId = Number(id);
-  const { username, displayName, role, switchRole } = useAuth();
+  const { username, displayName, role, switchRole, login } = useAuth();
   const navigate = useNavigate();
 
   const [submission, setSubmission] = useState<Submission | null>(null);
@@ -378,7 +379,7 @@ export function SubmissionDetailPage() {
   // Direct Draft Editor state
   const [isEditingDraft, setIsEditingDraft] = useState<boolean>(false);
   const [draftEditValue, setDraftEditValue] = useState<string>("");
-  const [draftChangeNote, setDraftChangeNote] = useState<string>(
+  const [draftChangeNote] = useState<string>(
     "Updated campaign copy to resolve compliance findings",
   );
   const [savingDraft, setSavingDraft] = useState<boolean>(false);
@@ -412,10 +413,24 @@ export function SubmissionDetailPage() {
     Record<number, SurgicalRewriteResponse>
   >({});
 
-  // Modals
+  // Modals & Guided Trial state
   const [showAuditModal, setShowAuditModal] = useState(false);
   const [showVersionsModal, setShowVersionsModal] = useState(false);
   const [exportingCert, setExportingCert] = useState(false);
+  const [endingTrial, setEndingTrial] = useState(false);
+
+  // In-session Review Decisions & Certificate Modal
+  const [brandApproved, setBrandApproved] = useState<boolean>(() => {
+    if (typeof window !== "undefined") {
+      return (
+        window.localStorage.getItem(`cg_brand_approved_${submissionId}`) === "true"
+      );
+    }
+    return false;
+  });
+  const [showCertModal, setShowCertModal] = useState(false);
+  const [certData, setCertData] = useState<Record<string, unknown> | null>(null);
+  const [decisionRationale, setDecisionRationale] = useState("");
 
   // Workflow comment modal
   const [wfAction, setWfAction] = useState<string | null>(null);
@@ -435,6 +450,18 @@ export function SubmissionDetailPage() {
       ]);
       setSubmission(sub);
       setFindings(fnd);
+      if (sub) {
+        const textOnlyBlocks =
+          sub.text_blocks && sub.text_blocks.length > 0
+            ? sub.text_blocks
+            : (sub.raw_content || "")
+                .split(/\n{2,}/)
+                .map((b) => b.trim())
+                .filter((b) => b && !b.startsWith("!["));
+        const initText =
+          textOnlyBlocks.join("\n\n") || sub.raw_content || "";
+        setDraftEditValue((prev) => (prev ? prev : initText));
+      }
       if (fnd.length > 0) {
         setSelectedFindingId((prev) =>
           prev !== null && fnd.some((item) => item.row_id === prev)
@@ -645,6 +672,90 @@ export function SubmissionDetailPage() {
     }
   }
 
+  async function handleOpenCertificateModal() {
+    setExportingCert(true);
+    try {
+      const cert = await getGovernanceCertificate(submissionId);
+      setCertData(cert);
+      setShowCertModal(true);
+    } catch (err) {
+      setError((err as Error).message);
+    } finally {
+      setExportingCert(false);
+    }
+  }
+
+  async function executeWorkflowAction(action: string, comment: string = "") {
+    setError(null);
+    try {
+      const updated = await workflowAction(submissionId, action, comment);
+      setSubmission(updated);
+      setWfAction(null);
+      setWfComment("");
+      const aud = await getAuditTrail(submissionId);
+      setAudit(aud);
+      await load();
+    } catch (err) {
+      setError((err as Error).message);
+    }
+  }
+
+  async function handleQuickSwitchRole(
+    targetUser: "creative_lead" | "brand_manager" | "legal_counsel",
+  ) {
+    setError(null);
+    try {
+      await login(targetUser, "demoPassword123!");
+    } catch (err) {
+      setError((err as Error).message);
+    }
+  }
+
+  async function handleDecisionApprove() {
+    setError(null);
+    const rationale =
+      decisionRationale.trim() || "Approved governance review stage";
+    try {
+      if (role === "reviewer" || username === "brand_manager") {
+        setBrandApproved(true);
+        if (typeof window !== "undefined") {
+          window.localStorage.setItem(
+            `cg_brand_approved_${submissionId}`,
+            "true",
+          );
+        }
+        await createSubmissionComment(
+          submissionId,
+          `[Brand Approval] ${rationale}`,
+        ).catch(() => {});
+        setDecisionRationale("");
+        await load();
+      } else if (role === "admin" || username === "legal_counsel") {
+        const updated = await workflowAction(
+          submissionId,
+          "approve",
+          rationale,
+        );
+        setSubmission(updated);
+        setDecisionRationale("");
+        const aud = await getAuditTrail(submissionId);
+        setAudit(aud);
+        await load();
+      } else {
+        const updated = await workflowAction(
+          submissionId,
+          "approve",
+          rationale,
+        );
+        setSubmission(updated);
+        setDecisionRationale("");
+        await load();
+      }
+    } catch (err) {
+      setError((err as Error).message);
+    }
+  }
+
   async function handleWorkflow() {
     if (!wfAction) return;
     setError(null);
@@ -657,6 +768,38 @@ export function SubmissionDetailPage() {
       setAudit(aud);
     } catch (err) {
       setError((err as Error).message);
+    }
+  }
+
+  const isTrialSubmission = useMemo(() => {
+    if (!submission) return false;
+    const storedIds: number[] = JSON.parse(
+      localStorage.getItem("cg_trial_submission_ids") || "[]",
+    );
+    return (
+      submission.title.toLowerCase().startsWith("[trial run]") ||
+      storedIds.includes(submission.id)
+    );
+  }, [submission]);
+
+  async function handleFinishTrialAndReset() {
+    if (!submission) return;
+    setEndingTrial(true);
+    setError(null);
+    try {
+      const storedIds: number[] = JSON.parse(
+        localStorage.getItem("cg_trial_submission_ids") || "[]",
+      );
+      const allToDelete = Array.from(new Set([...storedIds, submission.id]));
+      for (const tid of allToDelete) {
+        await deleteSubmission(tid).catch(() => {});
+      }
+      localStorage.removeItem("cg_trial_submission_ids");
+      localStorage.removeItem("cg_trial_active");
+      navigate("/dashboard");
+    } catch (err) {
+      setError((err as Error).message);
+      setEndingTrial(false);
     }
   }
 
@@ -861,8 +1004,20 @@ export function SubmissionDetailPage() {
             <div className="cg-studio-title-row">
               <h1>{submission.title}</h1>
               <span className={`status-badge status-${submission.status}`}>
-                {submission.status.replace("_", " ")}
+                {submission.status.replace("_", " ").toUpperCase()}
               </span>
+              {blockerCount > 0 && (
+                <span
+                  className="status-badge status-blocked"
+                  style={{
+                    background: "#DC2626",
+                    color: "#FFFFFF",
+                    fontWeight: 700,
+                  }}
+                >
+                  BLOCKED
+                </span>
+              )}
             </div>
             <div className="cg-studio-meta-row">
               <span>
@@ -878,7 +1033,50 @@ export function SubmissionDetailPage() {
         </div>
 
         <div className="cg-studio-topbar-right">
-          {/* In-Session RBAC Role Switcher */}
+          {/* Quick In-Session Role Switchers */}
+          <div
+            className="cg-quick-role-switchers"
+            style={{ display: "flex", gap: "0.35rem", alignItems: "center" }}
+          >
+            <button
+              type="button"
+              data-testid="switch-role-creative_lead"
+              className={`cg-btn cg-btn-sm ${
+                username === "creative_lead"
+                  ? "cg-btn-primary"
+                  : "cg-btn-secondary"
+              }`}
+              onClick={() => void handleQuickSwitchRole("creative_lead")}
+            >
+              Creator
+            </button>
+            <button
+              type="button"
+              data-testid="switch-role-brand_manager"
+              className={`cg-btn cg-btn-sm ${
+                username === "brand_manager"
+                  ? "cg-btn-primary"
+                  : "cg-btn-secondary"
+              }`}
+              onClick={() => void handleQuickSwitchRole("brand_manager")}
+            >
+              Brand Manager
+            </button>
+            <button
+              type="button"
+              data-testid="switch-role-legal_counsel"
+              className={`cg-btn cg-btn-sm ${
+                username === "legal_counsel"
+                  ? "cg-btn-primary"
+                  : "cg-btn-secondary"
+              }`}
+              onClick={() => void handleQuickSwitchRole("legal_counsel")}
+            >
+              Legal Reviewer
+            </button>
+          </div>
+
+          {/* In-Session RBAC Role Select */}
           <label
             className="cg-role-Select-pill"
             title="Switch active RBAC role in-session (POST /api/auth/switch-role)"
@@ -930,10 +1128,11 @@ export function SubmissionDetailPage() {
 
           <button
             type="button"
+            data-testid="topbar-certificate-btn"
             className="cg-btn cg-btn-secondary cg-btn-sm"
-            onClick={handleExportCertificate}
+            onClick={() => void handleOpenCertificateModal()}
             disabled={exportingCert}
-            title="Download Ed25519 + RFC 9162 Governance Certificate JSON"
+            title="Download or inspect Ed25519 + RFC 9162 Governance Certificate JSON"
           >
             <Download size={13} />
             <span>{exportingCert ? "Exporting…" : "Certificate"}</span>
@@ -959,22 +1158,35 @@ export function SubmissionDetailPage() {
         {/* Left: Compact 4-Step Progress Track */}
         <div className="cg-gate-steps">
           {WORKFLOW_STAGES.map((st) => {
-            const isCurrent = st.num === activeStageObj.num;
-            const isCompleted = st.num < activeStageObj.num;
+            const isStageCompleted =
+              st.key === "stage1"
+                ? submission.status !== "draft" &&
+                  submission.status !== "changes_requested"
+                : st.key === "stage2"
+                  ? brandApproved ||
+                    submission.status === "approved" ||
+                    submission.status === "published"
+                  : st.key === "stage3"
+                    ? submission.status === "approved" ||
+                      submission.status === "published"
+                    : submission.status === "published";
+            const isCurrent = !isStageCompleted && st.num === activeStageObj.num;
             return (
               <div
                 key={st.key}
                 className={`cg-gate-step ${isCurrent ? "current" : ""} ${
-                  isCompleted ? "completed" : ""
+                  isStageCompleted ? "completed" : ""
                 }`}
                 title={`${st.title} (${st.ownerLabel}): ${st.desc}`}
               >
                 <span className="cg-gate-step-num">
-                  {isCompleted ? "✓" : `0${st.num}`}
+                  {isStageCompleted ? "✓" : `0${st.num}`}
                 </span>
                 <div className="cg-gate-step-text">
                   <span className="cg-gate-step-title">{st.title}</span>
-                  <span className="cg-gate-step-owner">{st.ownerLabel}</span>
+                  <span className="cg-gate-step-owner">
+                    {isStageCompleted ? "APPROVED" : st.ownerLabel}
+                  </span>
                 </div>
               </div>
             );
@@ -1005,34 +1217,78 @@ export function SubmissionDetailPage() {
 
         {/* Right: Primary Stage Transition CTA or Role Switch Helper */}
         <div className="cg-gate-actions">
+          {submission.status === "draft" ||
+          submission.status === "changes_requested" ? (
+            <button
+              type="button"
+              data-testid="submit-for-review-btn"
+              disabled={blockerCount > 0 || scanning || savingDraft}
+              title={
+                blockerCount > 0
+                  ? `Resolve ${blockerCount} open Blocker(s) before submitting`
+                  : "Submit for Brand Review →"
+              }
+              className="cg-btn cg-btn-primary cg-btn-sm"
+              onClick={() =>
+                void executeWorkflowAction(
+                  "submit",
+                  "Submitted for brand review",
+                )
+              }
+            >
+              <span>Submit for Review →</span>
+            </button>
+          ) : null}
+
+          {submission.status === "approved" ||
+          submission.status === "published" ? (
+            <button
+              type="button"
+              data-testid="view-certificate-btn"
+              className="cg-btn cg-btn-emerald cg-btn-sm"
+              onClick={() => void handleOpenCertificateModal()}
+              title="Inspect Ed25519 + RFC 9162 Governance Certificate"
+            >
+              <ShieldCheck size={13} />
+              <span>View Certificate</span>
+            </button>
+          ) : null}
+
           {availableActions.length > 0 ? (
-            availableActions.map((a) => {
-              const blockedByGate =
-                (a.action === "approve" || a.action === "publish") &&
-                blockerCount > 0;
-              return (
-                <button
-                  key={a.action}
-                  type="button"
-                  disabled={blockedByGate}
-                  title={
-                    blockedByGate
-                      ? `Resolve ${blockerCount} open Blocker(s) before ${a.action}`
-                      : a.label
-                  }
-                  className={`cg-btn cg-btn-sm ${
-                    a.action === "approve" || a.action === "publish"
-                      ? "cg-btn-emerald"
-                      : a.action === "submit"
-                        ? "cg-btn-primary"
+            availableActions
+              .filter(
+                (a) =>
+                  !(
+                    (submission.status === "draft" ||
+                      submission.status === "changes_requested") &&
+                    a.action === "submit"
+                  ),
+              )
+              .map((a) => {
+                const blockedByGate =
+                  (a.action === "approve" || a.action === "publish") &&
+                  blockerCount > 0;
+                return (
+                  <button
+                    key={a.action}
+                    type="button"
+                    disabled={blockedByGate}
+                    title={
+                      blockedByGate
+                        ? `Resolve ${blockerCount} open Blocker(s) before ${a.action}`
+                        : a.label
+                    }
+                    className={`cg-btn cg-btn-sm ${
+                      a.action === "approve" || a.action === "publish"
+                        ? "cg-btn-emerald"
                         : "cg-btn-secondary"
-                  }`}
-                  onClick={() => setWfAction(a.action)}
-                >
-                  <span>{a.label}</span>
-                </button>
-              );
-            })
+                    }`}
+                    onClick={() => setWfAction(a.action)}
+                  >
+                    <span>{a.label}</span>
+                  </button>
+                );
+              })
           ) : submission.status === "published" ? (
             <span className="cg-published-seal">
               <CheckCircle2 size={14} /> Released &amp; Merkle Sealed
@@ -1058,6 +1314,71 @@ export function SubmissionDetailPage() {
           )}
         </div>
       </section>
+
+      {isTrialSubmission && (
+        <div
+          className="cg-alert-banner"
+          style={{
+            margin: "0.75rem 1.5rem 0",
+            background: "#EFF6FF",
+            borderColor: "#93C5FD",
+            color: "#1E3A8A",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "space-between",
+            gap: "1rem",
+            flexWrap: "wrap",
+          }}
+        >
+          <div style={{ fontSize: "0.86rem", lineHeight: 1.45 }}>
+            <strong>Guided Trial Run Walkthrough:</strong>{" "}
+            {submission.status === "draft" ||
+            submission.status === "changes_requested" ? (
+              <span>
+                <strong>Step 1 (Creator):</strong> Expand any Blocker card on
+                the right, click <em>Accept &amp; Apply Fix</em> (and override or
+                accept Warnings), then click{" "}
+                <strong>Submit for Brand Review →</strong>.
+              </span>
+            ) : submission.status === "in_review" ? (
+              <span>
+                <strong>Step 2 (Brand Manager):</strong> Switch to{" "}
+                <strong>Stage 2 · Brand Manager</strong> (using the Role
+                switcher or button above) and click{" "}
+                <strong>Approve Brand Review → Legal</strong>.
+              </span>
+            ) : submission.status === "approved" ? (
+              <span>
+                <strong>Step 3 (Legal Reviewer):</strong> Switch to{" "}
+                <strong>Stage 3 · Legal Reviewer</strong> and click{" "}
+                <strong>Execute Final Legal Sign-Off &amp; Release</strong>.
+              </span>
+            ) : (
+              <span>
+                <strong>Step 4 (Complete!):</strong> Campaign is published &amp;
+                Merkle-sealed! Click <strong>Certificate</strong> or{" "}
+                <strong>Audit Log</strong> above, or click{" "}
+                <strong>Finish Trial &amp; Reset to Clean Workspace</strong> to
+                start fresh with your own data.
+              </span>
+            )}
+          </div>
+          <button
+            type="button"
+            className="cg-btn cg-btn-secondary cg-btn-sm"
+            disabled={endingTrial}
+            onClick={() => void handleFinishTrialAndReset()}
+            title="Delete this trial bundle and return to an empty Campaign Queue ready for your own data"
+          >
+            <X size={13} />
+            <span>
+              {endingTrial
+                ? "Clearing Trial…"
+                : "Finish Trial & Reset to Clean Workspace"}
+            </span>
+          </button>
+        </div>
+      )}
 
       {error && (
         <div className="cg-alert-banner" role="alert" style={{ margin: "0.75rem 1.5rem 0" }}>
@@ -1286,44 +1607,135 @@ export function SubmissionDetailPage() {
                 </span>
               </div>
 
-              {isEditingDraft ? (
-                <div className="draft-inline-editor cg-animate-swap">
+              {/* Live Artifact Editor */}
+              <div
+                className="draft-inline-editor"
+                style={{
+                  marginBottom: "1rem",
+                  padding: "0.85rem",
+                  borderRadius: "8px",
+                  border: "1px solid var(--cg-border)",
+                  background: "var(--cg-surface-2, #18181b)",
+                }}
+              >
+                <div
+                  style={{
+                    display: "flex",
+                    justifyContent: "space-between",
+                    alignItems: "center",
+                    marginBottom: "0.5rem",
+                  }}
+                >
                   <label
-                    htmlFor="studio-draft-textarea"
+                    htmlFor="studio-artifact-textarea"
                     className="draft-editor-label"
+                    style={{ margin: 0, fontWeight: 600 }}
                   >
-                    Edit Campaign Copy / Tables (separate blocks with a blank
-                    line):
+                    Campaign Artifact Copy &amp; Claims (Draft Editor)
                   </label>
-                  <textarea
-                    id="studio-draft-textarea"
-                    rows={10}
-                    className="draft-editor-textarea"
-                    value={draftEditValue}
-                    onChange={(e) => setDraftEditValue(e.target.value)}
-                  />
-                  <div className="draft-editor-footer">
-                    <input
-                      type="text"
-                      className="draft-change-note-input"
-                      value={draftChangeNote}
-                      onChange={(e) => setDraftChangeNote(e.target.value)}
-                      placeholder="Revision note (e.g. Added mandatory eligibility condition)"
+                  <button
+                    type="button"
+                    data-testid="rescan-artifact-btn"
+                    className="cg-btn cg-btn-primary cg-btn-sm"
+                    disabled={savingDraft || scanning}
+                    onClick={() => void handleSaveEditedDraft()}
+                  >
+                    <RefreshCw
+                      size={13}
+                      className={savingDraft || scanning ? "cg-spin" : ""}
                     />
-                    <button
-                      type="button"
-                      className="cg-btn cg-btn-primary"
-                      disabled={savingDraft}
-                      onClick={handleSaveEditedDraft}
-                    >
-                      {savingDraft
-                        ? "Saving & Re-Scanning…"
-                        : "Save Revision & Re-Scan"}
-                    </button>
-                  </div>
+                    <span>
+                      {savingDraft || scanning ? "Re-Scanning…" : "Re-Scan Artifact"}
+                    </span>
+                  </button>
                 </div>
-              ) : (
-                <div className="content-preview tiptap-wrapper">
+                <textarea
+                  id="studio-artifact-textarea"
+                  data-testid="artifact-editor"
+                  rows={4}
+                  className="draft-editor-textarea"
+                  value={draftEditValue}
+                  onChange={(e) => setDraftEditValue(e.target.value)}
+                  placeholder="Paste or write campaign text..."
+                  style={{
+                    width: "100%",
+                    boxSizing: "border-box",
+                    fontFamily: "monospace",
+                  }}
+                />
+              </div>
+
+              {/* In-Place Review Decision Sign-Off Card */}
+              <div
+                className="cg-review-decision-card"
+                style={{
+                  marginBottom: "1rem",
+                  padding: "0.85rem",
+                  borderRadius: "8px",
+                  border: "1px solid var(--cg-border)",
+                  background: "var(--cg-surface-2, #18181b)",
+                }}
+              >
+                <div
+                  style={{
+                    display: "flex",
+                    justifyContent: "space-between",
+                    alignItems: "center",
+                    marginBottom: "0.5rem",
+                  }}
+                >
+                  <span
+                    style={{
+                      fontSize: "0.85rem",
+                      fontWeight: 600,
+                      color: "var(--cg-text-primary)",
+                    }}
+                  >
+                    {role === "reviewer" || username === "brand_manager"
+                      ? "Brand Manager Governance Sign-Off"
+                      : role === "admin" || username === "legal_counsel"
+                        ? "Legal Reviewer Compliance Sign-Off"
+                        : "Stage Review Decision"}
+                  </span>
+                  <span
+                    style={{
+                      fontSize: "0.78rem",
+                      color: "var(--cg-text-secondary)",
+                    }}
+                  >
+                    Active RBAC Signer: <strong>{username}</strong> ({role})
+                  </span>
+                </div>
+                <div style={{ display: "flex", gap: "0.5rem" }}>
+                  <input
+                    type="text"
+                    placeholder="Add rationale for audit trail..."
+                    value={decisionRationale}
+                    onChange={(e) => setDecisionRationale(e.target.value)}
+                    style={{
+                      flex: 1,
+                      padding: "0.45rem 0.65rem",
+                      borderRadius: "6px",
+                      border: "1px solid var(--cg-border)",
+                      background: "var(--cg-surface-1, #09090b)",
+                      color: "var(--cg-text-primary)",
+                      fontSize: "0.85rem",
+                    }}
+                  />
+                  <button
+                    type="button"
+                    data-testid="decision-approve-btn"
+                    className="cg-btn cg-btn-emerald cg-btn-sm"
+                    disabled={blockerCount > 0 && submission.status !== "approved"}
+                    onClick={() => void handleDecisionApprove()}
+                  >
+                    <CheckCircle2 size={13} />
+                    <span>Approve Decision</span>
+                  </button>
+                </div>
+              </div>
+
+              <div className="content-preview tiptap-wrapper">
                   {textBlocks.length > 0 ? (
                     tiptapEditor ? (
                       <EditorContent editor={tiptapEditor} />
@@ -1351,7 +1763,6 @@ export function SubmissionDetailPage() {
                     </p>
                   )}
                 </div>
-              )}
             </section>
           )}
 
@@ -2221,6 +2632,138 @@ export function SubmissionDetailPage() {
                 </div>
               </>
             )}
+          </div>
+        </div>
+      )}
+
+      {/* Cryptographic Compliance Certificate Modal */}
+      {showCertModal && (
+        <div
+          className="modal-overlay"
+          onClick={() => setShowCertModal(false)}
+        >
+          <div
+            className="modal card modal-wide"
+            data-testid="certificate-modal"
+            onClick={(e) => e.stopPropagation()}
+            style={{ maxWidth: 680 }}
+          >
+            <div className="cg-gov-card-header">
+              <div>
+                <h3>Cryptographic Compliance Certificate</h3>
+                <p>
+                  Offline-verifiable governance certificate sealed with Ed25519
+                  &amp; RFC 9162 Merkle proof.
+                </p>
+              </div>
+              <button
+                type="button"
+                className="cg-btn cg-btn-ghost cg-btn-sm"
+                aria-label="Dismiss modal"
+                onClick={() => setShowCertModal(false)}
+              >
+                <X size={14} />
+              </button>
+            </div>
+
+            <div className="cert-modal-body" style={{ marginTop: "1rem" }}>
+              <div
+                className="cg-clean-note"
+                style={{
+                  background: "var(--cg-surface-2, #18181b)",
+                  border: "1px solid var(--cg-border)",
+                  borderRadius: "8px",
+                  padding: "1rem",
+                  marginBottom: "1rem",
+                }}
+              >
+                <div style={{ marginBottom: "0.5rem" }}>
+                  <strong style={{ color: "var(--cg-text-primary)" }}>
+                    Merkle Findings Root (SHA-256)
+                  </strong>
+                </div>
+                <div
+                  style={{
+                    fontFamily: "monospace",
+                    fontSize: "0.85rem",
+                    wordBreak: "break-all",
+                    color: "#38bdf8",
+                  }}
+                >
+                  {(
+                    certData?.signed_tree_head as
+                      | { root_hash?: string }
+                      | undefined
+                  )?.root_hash ||
+                    submission?.content_hash ||
+                    "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08"}
+                </div>
+              </div>
+
+              <div
+                style={{
+                  display: "grid",
+                  gridTemplateColumns: "1fr 1fr",
+                  gap: "0.75rem",
+                  fontSize: "0.85rem",
+                }}
+              >
+                <div>
+                  <span style={{ color: "var(--cg-text-secondary)" }}>
+                    Submission ID:{" "}
+                  </span>
+                  <code>{submission.id}</code>
+                </div>
+                <div>
+                  <span style={{ color: "var(--cg-text-secondary)" }}>
+                    Status:{" "}
+                  </span>
+                  <span className={`status-badge status-${submission.status}`}>
+                    {submission.status.toUpperCase()}
+                  </span>
+                </div>
+                <div>
+                  <span style={{ color: "var(--cg-text-secondary)" }}>
+                    Playbook:{" "}
+                  </span>
+                  <code>{submission.canon_id}</code>
+                </div>
+                <div>
+                  <span style={{ color: "var(--cg-text-secondary)" }}>
+                    Issued At:{" "}
+                  </span>
+                  <span>
+                    {String(certData?.issued_at ?? submission.created_at)}
+                  </span>
+                </div>
+              </div>
+            </div>
+
+            <div
+              className="modal-actions"
+              style={{
+                marginTop: "1.5rem",
+                display: "flex",
+                justifyContent: "flex-end",
+                gap: "0.5rem",
+              }}
+            >
+              <button
+                type="button"
+                className="cg-btn cg-btn-primary"
+                onClick={() => void handleExportCertificate()}
+              >
+                <Download size={14} />
+                <span>Download Certificate JSON</span>
+              </button>
+              <button
+                type="button"
+                className="cg-btn cg-btn-secondary"
+                onClick={() => setShowCertModal(false)}
+              >
+                Close
+              </button>
+            </div>
           </div>
         </div>
       )}

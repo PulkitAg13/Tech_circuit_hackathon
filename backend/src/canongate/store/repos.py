@@ -388,7 +388,11 @@ async def update_submission_content(
             change_note=change_note,
         )
         session.add(ver)
+        now_iso = dt.datetime.now(dt.UTC).isoformat()
+        sub.updated_at = _parse_dt(now_iso)
         await session.flush()
+        if hasattr(session, "refresh"):
+            await session.refresh(sub)
     return sub
 
 

@@ -186,6 +186,8 @@ export function DashboardPage() {
   const [submitting, setSubmitting] = useState(false);
   const [deletingId, setDeletingId] = useState<number | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [startingTrial, setStartingTrial] = useState(false);
+  const [clearingTrial, setClearingTrial] = useState(false);
 
   // Inline Custom Company Guidelines / Documents onboarding inside Campaign Submission Form
   const [inlineCanonId, setInlineCanonId] = useState<string>("");
@@ -629,6 +631,73 @@ export function DashboardPage() {
     }
   }
 
+  const trialSubmissions = submissions.filter((s) => {
+    const storedIds: number[] = JSON.parse(
+      localStorage.getItem("cg_trial_submission_ids") || "[]",
+    );
+    return (
+      s.title.toLowerCase().startsWith("[trial run]") ||
+      storedIds.includes(s.id)
+    );
+  });
+
+  async function handleStartGuidedTrialRun() {
+    setStartingTrial(true);
+    setError(null);
+    try {
+      const preset = QUICK_SAMPLE_PRESETS[0];
+      const sub = await createSubmission(
+        `[Trial Run] ${preset.title}`,
+        preset.content,
+        preset.canonId,
+        [],
+        [],
+      );
+      const apiBase = getApiBase();
+      await fetch(`${apiBase}/submissions/${sub.id}/scan?alpha=0.1`, {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${localStorage.getItem("cg_token") ?? ""}`,
+        },
+      }).catch(() => {});
+
+      const existingIds: number[] = JSON.parse(
+        localStorage.getItem("cg_trial_submission_ids") || "[]",
+      );
+      if (!existingIds.includes(sub.id)) {
+        existingIds.push(sub.id);
+      }
+      localStorage.setItem(
+        "cg_trial_submission_ids",
+        JSON.stringify(existingIds),
+      );
+      localStorage.setItem("cg_trial_active", "true");
+      navigate(`/submissions/${sub.id}`);
+    } catch (err) {
+      setError((err as Error).message);
+    } finally {
+      setStartingTrial(false);
+    }
+  }
+
+  async function handleClearAllTrialRuns() {
+    setClearingTrial(true);
+    setError(null);
+    try {
+      for (const tSub of trialSubmissions) {
+        await deleteSubmission(tSub.id).catch(() => {});
+      }
+      localStorage.removeItem("cg_trial_submission_ids");
+      localStorage.removeItem("cg_trial_active");
+      await refresh();
+      setShowForm(true);
+    } catch (err) {
+      setError((err as Error).message);
+    } finally {
+      setClearingTrial(false);
+    }
+  }
+
   const activeCanonSummary = canons.find((c) => c.id === govCanonId);
   const currentRoleMeta = ROLE_META[role || "creator"] ?? ROLE_META.creator;
   const selectedCalRule = activeCanonSummary?.rules?.find(
@@ -731,24 +800,39 @@ export function DashboardPage() {
 
           <div className="cg-app-topbar-right">
             {/* In-Session RBAC Role Switcher */}
-            <label
-              className="cg-role-Select-pill"
-              title="Switch active RBAC role in-session (POST /api/auth/switch-role)"
+            <div
+              className="cg-quick-role-switchers"
+              style={{ display: "flex", gap: "0.35rem", alignItems: "center" }}
+              title="Active RBAC Role (POST /api/auth/switch-role)"
             >
-              <span className="cg-role-dot" />
-              <span className="cg-role-select-prefix">Role:</span>
-              <select
-                aria-label="Active Governance Role"
-                value={role || "creator"}
-                onChange={(e) => {
-                  void switchRole(e.target.value);
-                }}
+              <button
+                type="button"
+                className={`cg-btn cg-btn-sm ${
+                  role === "creator" ? "cg-btn-primary" : "cg-btn-secondary"
+                }`}
+                onClick={() => void switchRole("creator")}
               >
-                <option value="creator">Stage 1 · Creator</option>
-                <option value="reviewer">Stage 2 · Brand Manager</option>
-                <option value="admin">Stage 3 · Legal Reviewer</option>
-              </select>
-            </label>
+                Creator
+              </button>
+              <button
+                type="button"
+                className={`cg-btn cg-btn-sm ${
+                  role === "reviewer" ? "cg-btn-primary" : "cg-btn-secondary"
+                }`}
+                onClick={() => void switchRole("reviewer")}
+              >
+                Brand
+              </button>
+              <button
+                type="button"
+                className={`cg-btn cg-btn-sm ${
+                  role === "admin" ? "cg-btn-primary" : "cg-btn-secondary"
+                }`}
+                onClick={() => void switchRole("admin")}
+              >
+                Legal
+              </button>
+            </div>
 
             {/* Authenticated Identity Pill */}
             <div
@@ -817,6 +901,35 @@ export function DashboardPage() {
               </div>
 
               <div className="cg-console-hero-actions">
+                {trialSubmissions.length === 0 ? (
+                  <button
+                    type="button"
+                    className="cg-btn cg-btn-secondary"
+                    disabled={startingTrial}
+                    onClick={() => void handleStartGuidedTrialRun()}
+                    title="Launch a guided walkthrough sample that you can clear with 1 click when done"
+                  >
+                    <Sparkles size={14} />
+                    <span>
+                      {startingTrial ? "Starting Trial…" : "Start Guided Trial Run"}
+                    </span>
+                  </button>
+                ) : (
+                  <button
+                    type="button"
+                    className="cg-btn cg-btn-secondary"
+                    disabled={clearingTrial}
+                    onClick={() => void handleClearAllTrialRuns()}
+                    title="Delete all [Trial Run] sample items and reset workspace to a clean slate"
+                  >
+                    <Trash2 size={14} />
+                    <span>
+                      {clearingTrial
+                        ? "Clearing Trial…"
+                        : `Finish Trial & Clear Sample (${trialSubmissions.length})`}
+                    </span>
+                  </button>
+                )}
                 <button
                   type="button"
                   className="cg-btn cg-btn-secondary"
@@ -847,6 +960,56 @@ export function DashboardPage() {
                 </button>
               </div>
             </section>
+
+            {/* ── Guided Trial Run Active Banner (1-Click Clean Reset) ── */}
+            {trialSubmissions.length > 0 && (
+              <div
+                className="cg-alert-banner"
+                style={{
+                  background: "#EFF6FF",
+                  borderColor: "#93C5FD",
+                  color: "#1E3A8A",
+                  marginBottom: "1rem",
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "space-between",
+                  gap: "1rem",
+                  flexWrap: "wrap",
+                }}
+              >
+                <div>
+                  <strong>Guided Trial Run Active:</strong> You have{" "}
+                  {trialSubmissions.length} sample walkthrough bundle(s) in your
+                  queue. Click into it to test the 4-stage review flow, or click{" "}
+                  <strong>Finish Trial &amp; Reset Workspace</strong> when you
+                  are ready for a clean slate.
+                </div>
+                <div style={{ display: "flex", gap: "0.5rem" }}>
+                  <button
+                    type="button"
+                    className="cg-btn cg-btn-primary cg-btn-sm"
+                    onClick={() =>
+                      navigate(`/submissions/${trialSubmissions[0].id}`)
+                    }
+                  >
+                    <span>Resume Trial Run →</span>
+                  </button>
+                  <button
+                    type="button"
+                    className="cg-btn cg-btn-secondary cg-btn-sm"
+                    disabled={clearingTrial}
+                    onClick={() => void handleClearAllTrialRuns()}
+                  >
+                    <Trash2 size={13} />
+                    <span>
+                      {clearingTrial
+                        ? "Resetting…"
+                        : "Finish Trial & Reset Workspace"}
+                    </span>
+                  </button>
+                </div>
+              </div>
+            )}
 
             {/* ── 4-Stage Interactive Pipeline Filter Strip ── */}
             <section
@@ -955,7 +1118,7 @@ export function DashboardPage() {
                         type="text"
                         value={title}
                         onChange={(e) => setTitle(e.target.value)}
-                        placeholder="e.g. Q3 Product Launch Landing Page & Banner"
+                        placeholder="e.g., Q3 Lending Launch"
                         required
                       />
                     </div>
@@ -1342,7 +1505,7 @@ export function DashboardPage() {
                         rows={5}
                         value={rawContent}
                         onChange={(e) => setRawContent(e.target.value)}
-                        placeholder="Write or paste your campaign copy, claims, disclaimers, or Markdown pricing table here..."
+                        placeholder="Paste or write campaign text, claims, disclaimers, or pricing tables here..."
                       />
                     </div>
 
@@ -1412,7 +1575,7 @@ export function DashboardPage() {
                           ? "Running Pre-Publish Checks…"
                           : selectedCanon === CUSTOM_PLAYBOOK_VALUE
                             ? "Compile Playbook & Open Studio"
-                            : "Create & Open in Review Studio"}
+                            : "Create & Run Scan"}
                       </span>
                       <ArrowRight size={15} className="cg-arrow-shift" />
                     </button>

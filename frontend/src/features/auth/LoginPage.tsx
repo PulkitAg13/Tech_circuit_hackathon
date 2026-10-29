@@ -1,4 +1,4 @@
-import { useState, useEffect, type FormEvent } from "react";
+import { useState, type FormEvent } from "react";
 import { useAuth } from "./context";
 import { useNavigate, useSearchParams, Link } from "react-router-dom";
 import {
@@ -73,15 +73,23 @@ export function LoginPage() {
   // Mode: Sign In vs Create Account
   const [authMode, setAuthMode] = useState<"signin" | "signup">("signin");
 
+  const matchedDemo = requestedRole
+    ? DEMO_ACCOUNTS.find((a) => a.role === requestedRole)
+    : undefined;
+
   // Sign In state
-  const [signInUsername, setSignInUsername] = useState("creative_lead");
+  const [signInUsername, setSignInUsername] = useState<string>(
+    () => matchedDemo?.username ?? "creative_lead",
+  );
   const [signInPassword, setSignInPassword] = useState("demoPassword123!");
 
   // Sign Up state
   const [signUpName, setSignUpName] = useState("");
   const [signUpUsername, setSignUpUsername] = useState("");
   const [signUpPassword, setSignUpPassword] = useState("");
-  const [signUpRole, setSignUpRole] = useState<string>("creator");
+  const [signUpRole, setSignUpRole] = useState<string>(
+    () => requestedRole ?? "creator",
+  );
 
   // UI state
   const [error, setError] = useState<string | null>(null);
@@ -90,7 +98,9 @@ export function LoginPage() {
     null,
   );
 
-  useEffect(() => {
+  const [prevRole, setPrevRole] = useState(requestedRole);
+  if (prevRole !== requestedRole) {
+    setPrevRole(requestedRole);
     if (requestedRole) {
       const matched = DEMO_ACCOUNTS.find((a) => a.role === requestedRole);
       if (matched) {
@@ -99,7 +109,7 @@ export function LoginPage() {
       }
       setSignUpRole(requestedRole);
     }
-  }, [requestedRole]);
+  }
 
   async function handleSignIn(e: FormEvent) {
     e.preventDefault();
@@ -180,7 +190,7 @@ export function LoginPage() {
             <div className="cg-auth-quicklaunch">
               <div className="cg-auth-quicklaunch-top">
                 <span className="cg-mono-label">
-                  INSTANT DEMO WORKSPACE ACCESS (1-CLICK LAUNCH)
+                  QUICK ROLE SWITCHER (1-CLICK LAUNCH)
                 </span>
                 <span className="cg-auth-quicklaunch-badge">
                   Zero-Config Seeded Accounts
@@ -199,6 +209,7 @@ export function LoginPage() {
                     <button
                       key={acct.username}
                       type="button"
+                      data-testid={`quick-login-${acct.username}`}
                       disabled={loading || quickLaunchingUser !== null}
                       className={`cg-auth-persona-card ${
                         isSelected ? "active" : ""
