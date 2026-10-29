@@ -3,6 +3,7 @@ import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
 import { AuthProvider } from "./features/auth/AuthContext";
 import { useAuth } from "./features/auth/context";
 import { HomePage } from "./features/home/HomePage";
+import { HackathonPage } from "./features/home/HackathonPage";
 import { LoginPage } from "./features/auth/LoginPage";
 import { DashboardPage } from "./features/submissions/DashboardPage";
 import { SubmissionDetailPage } from "./features/submissions/SubmissionDetailPage";
@@ -27,8 +28,11 @@ function AppRoutes() {
 
   return (
     <Routes>
-      {/* ── Public Product Home Page ── */}
-      <Route path="/" element={<HomePage />} />
+      {/* ── Public Hackathon Pitch Page ── */}
+      <Route path="/" element={<HackathonPage />} />
+
+      {/* ── Public Interactive Pre-Flight Sandbox (former home page) ── */}
+      <Route path="/playground" element={<HomePage />} />
 
       {/* ── Auth / Sign In Page ── */}
       <Route
