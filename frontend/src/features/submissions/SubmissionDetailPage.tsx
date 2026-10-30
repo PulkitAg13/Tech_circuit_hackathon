@@ -16,6 +16,8 @@ import {
   getAuditTrail,
   getSubmissionVersions,
   getGovernanceCertificate,
+  getReplayManifest,
+  getC2paManifests,
   getSubmissionComments,
   createSubmissionComment,
   rewriteFindingSpan,
@@ -371,7 +373,7 @@ export function SubmissionDetailPage() {
   );
   const [selectedAssetIdx, setSelectedAssetIdx] = useState<number>(0);
 
-  // Left Canvas View Mode: Split (Both), Copy Only, Banner Only, or Discussion
+  // Left Canvas View Mode
   const [canvasMode, setCanvasMode] = useState<
     "split" | "copy" | "banner" | "discussion"
   >("split");
@@ -423,13 +425,20 @@ export function SubmissionDetailPage() {
   const [brandApproved, setBrandApproved] = useState<boolean>(() => {
     if (typeof window !== "undefined") {
       return (
-        window.localStorage.getItem(`cg_brand_approved_${submissionId}`) === "true"
+        window.localStorage.getItem(`cg_brand_approved_${submissionId}`) ===
+        "true"
       );
     }
     return false;
   });
   const [showCertModal, setShowCertModal] = useState(false);
-  const [certData, setCertData] = useState<Record<string, unknown> | null>(null);
+  const [certData, setCertData] = useState<Record<string, unknown> | null>(
+    null,
+  );
+  const [replayData, setReplayData] = useState<Record<string, unknown> | null>(
+    null,
+  );
+  const [c2paCount, setC2paCount] = useState<number>(0);
   const [decisionRationale, setDecisionRationale] = useState("");
 
   // Workflow comment modal
@@ -675,8 +684,14 @@ export function SubmissionDetailPage() {
   async function handleOpenCertificateModal() {
     setExportingCert(true);
     try {
-      const cert = await getGovernanceCertificate(submissionId);
+      const [cert, replay, c2pa] = await Promise.all([
+        getGovernanceCertificate(submissionId),
+        getReplayManifest(submissionId, conformalAlpha).catch(() => null),
+        getC2paManifests(submissionId).catch(() => null),
+      ]);
       setCertData(cert);
+      setReplayData(replay);
+      setC2paCount(c2pa?.c2pa_count ?? 0);
       setShowCertModal(true);
     } catch (err) {
       setError((err as Error).message);
@@ -880,21 +895,48 @@ export function SubmissionDetailPage() {
     }
   }, []);
 
-  function stepFindingSelection(delta: number) {
-    if (filteredFindings.length === 0) return;
-    const currIdx = filteredFindings.findIndex(
-      (f) => f.row_id === selectedFindingId,
-    );
-    const nextIdx =
-      currIdx < 0
-        ? 0
-        : (currIdx + delta + filteredFindings.length) %
-          filteredFindings.length;
-    const target = filteredFindings[nextIdx];
-    if (target) {
-      handleSelectFindingFromSpan(target.row_id);
+  const stepFindingSelection = useCallback(
+    (delta: number) => {
+      if (filteredFindings.length === 0) return;
+      const currIdx = filteredFindings.findIndex(
+        (f) => f.row_id === selectedFindingId,
+      );
+      const nextIdx =
+        currIdx < 0
+          ? 0
+          : (currIdx + delta + filteredFindings.length) %
+            filteredFindings.length;
+      const target = filteredFindings[nextIdx];
+      if (target) {
+        handleSelectFindingFromSpan(target.row_id);
+      }
+    },
+    [filteredFindings, selectedFindingId, handleSelectFindingFromSpan],
+  );
+
+  // Keyboard navigation (j / k) for stepping through findings
+  useEffect(() => {
+    function onKeyDown(e: KeyboardEvent) {
+      const tag = (e.target as HTMLElement | null)?.tagName?.toLowerCase();
+      if (
+        tag === "input" ||
+        tag === "textarea" ||
+        tag === "select" ||
+        (e.target as HTMLElement | null)?.isContentEditable
+      ) {
+        return;
+      }
+      if (e.key === "j") {
+        e.preventDefault();
+        stepFindingSelection(1);
+      } else if (e.key === "k") {
+        e.preventDefault();
+        stepFindingSelection(-1);
+      }
     }
-  }
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [stepFindingSelection]);
 
   const tiptapDocContent = useMemo(
     () => ({
@@ -946,7 +988,10 @@ export function SubmissionDetailPage() {
   if (loading) {
     return (
       <div className="cg-studio-shell">
-        <div className="cg-empty-box" style={{ margin: "3rem auto", maxWidth: 520 }}>
+        <div
+          className="cg-empty-box"
+          style={{ margin: "48px auto", maxWidth: 520 }}
+        >
           Opening Multimodal Review Studio…
         </div>
       </div>
@@ -956,14 +1001,17 @@ export function SubmissionDetailPage() {
   if (!submission) {
     return (
       <div className="cg-studio-shell">
-        <div className="cg-alert-banner" style={{ margin: "2rem auto", maxWidth: 680 }}>
+        <div
+          className="cg-alert-banner"
+          style={{ margin: "32px auto", maxWidth: 680 }}
+        >
           <span>Submission not found</span>
           <button
             type="button"
             className="cg-btn cg-btn-secondary cg-btn-sm"
             onClick={() => navigate("/dashboard")}
           >
-            ← Back to Queue
+            Back to Queue
           </button>
         </div>
       </div>
@@ -987,13 +1035,13 @@ export function SubmissionDetailPage() {
 
   return (
     <div className="cg-studio-shell">
-      {/* ── Row 1: Compact Studio Top Command Bar ── */}
+      {/* ── Row 1: Studio Top Command Bar ── */}
       <header className="cg-studio-topbar">
         <div className="cg-studio-topbar-left">
           <button
             type="button"
             onClick={() => navigate("/dashboard")}
-            className="cg-btn cg-btn-ghost cg-btn-sm"
+            className="cg-btn cg-btn-secondary cg-btn-sm"
             title="Return to Campaign Triage Queue"
           >
             <ArrowLeft size={14} />
@@ -1007,16 +1055,7 @@ export function SubmissionDetailPage() {
                 {submission.status.replace("_", " ").toUpperCase()}
               </span>
               {blockerCount > 0 && (
-                <span
-                  className="status-badge status-blocked"
-                  style={{
-                    background: "#DC2626",
-                    color: "#FFFFFF",
-                    fontWeight: 700,
-                  }}
-                >
-                  BLOCKED
-                </span>
+                <span className="status-badge status-blocked">BLOCKED</span>
               )}
             </div>
             <div className="cg-studio-meta-row">
@@ -1036,7 +1075,7 @@ export function SubmissionDetailPage() {
           {/* Quick In-Session Role Switchers */}
           <div
             className="cg-quick-role-switchers"
-            style={{ display: "flex", gap: "0.35rem", alignItems: "center" }}
+            style={{ display: "flex", gap: "4px", alignItems: "center" }}
           >
             <button
               type="button"
@@ -1081,7 +1120,6 @@ export function SubmissionDetailPage() {
             className="cg-role-Select-pill"
             title="Switch active RBAC role in-session (POST /api/auth/switch-role)"
           >
-            <span className="cg-role-dot" />
             <span className="cg-role-select-prefix">Role:</span>
             <select
               aria-label="Active Governance Role"
@@ -1150,12 +1188,11 @@ export function SubmissionDetailPage() {
         </div>
       </header>
 
-      {/* ── Row 2: Slim Horizontal 4-Stage Gate & Action Bar ── */}
+      {/* ── Row 2: 4-Stage Governance Progress & Gate Bar ── */}
       <section
         className="cg-studio-gatebar"
         aria-label="4-Stage Governance Progress & Gate Actions"
       >
-        {/* Left: Compact 4-Step Progress Track */}
         <div className="cg-gate-steps">
           {WORKFLOW_STAGES.map((st) => {
             const isStageCompleted =
@@ -1170,7 +1207,8 @@ export function SubmissionDetailPage() {
                     ? submission.status === "approved" ||
                       submission.status === "published"
                     : submission.status === "published";
-            const isCurrent = !isStageCompleted && st.num === activeStageObj.num;
+            const isCurrent =
+              !isStageCompleted && st.num === activeStageObj.num;
             return (
               <div
                 key={st.key}
@@ -1180,7 +1218,7 @@ export function SubmissionDetailPage() {
                 title={`${st.title} (${st.ownerLabel}): ${st.desc}`}
               >
                 <span className="cg-gate-step-num">
-                  {isStageCompleted ? "✓" : `0${st.num}`}
+                  {isStageCompleted ? <Check size={11} /> : st.num}
                 </span>
                 <div className="cg-gate-step-text">
                   <span className="cg-gate-step-title">{st.title}</span>
@@ -1210,12 +1248,12 @@ export function SubmissionDetailPage() {
           </span>
           {blockerCount > 0 && (
             <span className="cg-gate-lock-hint">
-              <Lock size={12} /> Resolve Blockers to unlock stage sign-off
+              <Lock size={12} /> Resolve Blockers to enable stage sign-off
             </span>
           )}
         </div>
 
-        {/* Right: Primary Stage Transition CTA or Role Switch Helper */}
+        {/* Right: Primary Stage Transition CTA */}
         <div className="cg-gate-actions">
           {submission.status === "draft" ||
           submission.status === "changes_requested" ? (
@@ -1317,49 +1355,35 @@ export function SubmissionDetailPage() {
 
       {isTrialSubmission && (
         <div
-          className="cg-alert-banner"
+          className="cg-lint-strip"
           style={{
-            margin: "0.75rem 1.5rem 0",
-            background: "#EFF6FF",
-            borderColor: "#93C5FD",
-            color: "#1E3A8A",
-            display: "flex",
-            alignItems: "center",
+            margin: "12px 20px 0",
             justifyContent: "space-between",
-            gap: "1rem",
             flexWrap: "wrap",
           }}
         >
-          <div style={{ fontSize: "0.86rem", lineHeight: 1.45 }}>
+          <div style={{ fontSize: "13px" }}>
             <strong>Guided Trial Run Walkthrough:</strong>{" "}
             {submission.status === "draft" ||
             submission.status === "changes_requested" ? (
               <span>
-                <strong>Step 1 (Creator):</strong> Expand any Blocker card on
-                the right, click <em>Accept &amp; Apply Fix</em> (and override or
-                accept Warnings), then click{" "}
-                <strong>Submit for Brand Review →</strong>.
+                <strong>Stage 1 (Creator):</strong> Inspect any Blocker card on
+                the right, click <em>Accept &amp; Apply Fix</em>, then click{" "}
+                <strong>Submit for Review →</strong>.
               </span>
             ) : submission.status === "in_review" ? (
               <span>
-                <strong>Step 2 (Brand Manager):</strong> Switch to{" "}
-                <strong>Stage 2 · Brand Manager</strong> (using the Role
-                switcher or button above) and click{" "}
-                <strong>Approve Brand Review → Legal</strong>.
+                <strong>Stage 2 (Brand Manager):</strong> Switch to{" "}
+                <strong>Brand Manager</strong> and approve brand compliance.
               </span>
             ) : submission.status === "approved" ? (
               <span>
-                <strong>Step 3 (Legal Reviewer):</strong> Switch to{" "}
-                <strong>Stage 3 · Legal Reviewer</strong> and click{" "}
-                <strong>Execute Final Legal Sign-Off &amp; Release</strong>.
+                <strong>Stage 3 (Legal Reviewer):</strong> Switch to{" "}
+                <strong>Legal Reviewer</strong> and issue final sign-off.
               </span>
             ) : (
               <span>
-                <strong>Step 4 (Complete!):</strong> Campaign is published &amp;
-                Merkle-sealed! Click <strong>Certificate</strong> or{" "}
-                <strong>Audit Log</strong> above, or click{" "}
-                <strong>Finish Trial &amp; Reset to Clean Workspace</strong> to
-                start fresh with your own data.
+                <strong>Complete:</strong> Campaign is published and Merkle-sealed.
               </span>
             )}
           </div>
@@ -1368,20 +1392,23 @@ export function SubmissionDetailPage() {
             className="cg-btn cg-btn-secondary cg-btn-sm"
             disabled={endingTrial}
             onClick={() => void handleFinishTrialAndReset()}
-            title="Delete this trial bundle and return to an empty Campaign Queue ready for your own data"
           >
             <X size={13} />
             <span>
               {endingTrial
                 ? "Clearing Trial…"
-                : "Finish Trial & Reset to Clean Workspace"}
+                : "Finish Trial & Reset Workspace"}
             </span>
           </button>
         </div>
       )}
 
       {error && (
-        <div className="cg-alert-banner" role="alert" style={{ margin: "0.75rem 1.5rem 0" }}>
+        <div
+          className="cg-alert-banner"
+          role="alert"
+          style={{ margin: "12px 20px 0" }}
+        >
           <span>{error}</span>
           <button
             type="button"
@@ -1395,9 +1422,8 @@ export function SubmissionDetailPage() {
 
       {/* ── Main 2-Column Split-Screen Review IDE ── */}
       <div className="cg-studio-workspace">
-        {/* LEFT COLUMN: Multi-Modal Asset Canvas (Copy + Banner + Discussion) */}
+        {/* LEFT COLUMN: Multimodal Asset Canvas */}
         <div className="cg-studio-canvas-col">
-          {/* Canvas Mode Switcher Bar */}
           <div className="cg-canvas-toolbar">
             <div className="cg-canvas-tabs" role="tablist">
               <button
@@ -1477,14 +1503,14 @@ export function SubmissionDetailPage() {
             )}
           </div>
 
-          {/* 1. Promotional Banner Stage (Shown in Split or Banner Mode) */}
+          {/* 1. Promotional Banner Stage */}
           {activeBannerAsset &&
             (canvasMode === "split" || canvasMode === "banner") && (
               <section className="cg-canvas-card cg-animate-swap">
                 <div className="cg-canvas-card-header">
                   <div>
                     <span className="cg-mono-label">
-                      VISUAL ASSET INSPECTOR · {activeBannerAsset.width}×
+                      Visual Asset Inspector · {activeBannerAsset.width}×
                       {activeBannerAsset.height}px
                     </span>
                     <h2>
@@ -1494,7 +1520,7 @@ export function SubmissionDetailPage() {
                   </div>
 
                   {imageNodes.length > 1 && (
-                    <div className="cg-banner-Asset-tabs">
+                    <div style={{ display: "flex", gap: "4px" }}>
                       {imageNodes.map((img, idx) => (
                         <button
                           key={img.node_id}
@@ -1540,10 +1566,10 @@ export function SubmissionDetailPage() {
                           const isSelected = selectedFindingId === ov.rowId;
                           const strokeColor =
                             ov.resolution !== "open"
-                              ? "#10b981"
+                              ? "#2e7d32"
                               : ov.severity >= 50
-                                ? "#ef4444"
-                                : "#f59e0b";
+                                ? "#c4242a"
+                                : "#92400e";
                           return (
                             <g
                               key={ov.rowId}
@@ -1562,8 +1588,8 @@ export function SubmissionDetailPage() {
                                 height={Math.max(ov.h, 12)}
                                 fill={
                                   isSelected
-                                    ? "rgba(239, 68, 68, 0.24)"
-                                    : "rgba(239, 68, 68, 0.08)"
+                                    ? "rgba(196, 36, 42, 0.24)"
+                                    : "rgba(196, 36, 42, 0.08)"
                                 }
                                 stroke={strokeColor}
                                 strokeWidth={isSelected ? 4 : 2.5}
@@ -1573,7 +1599,7 @@ export function SubmissionDetailPage() {
                                 x={ov.x + 6}
                                 y={Math.max(16, ov.y - 6)}
                                 fill="#ffffff"
-                                stroke="#09090b"
+                                stroke="#0a0a0a"
                                 strokeWidth={0.7}
                                 fontSize={Math.max(
                                   11,
@@ -1592,44 +1618,34 @@ export function SubmissionDetailPage() {
               </section>
             )}
 
-          {/* 2. Campaign Copy & ProseMirror Highlights (Shown in Split or Copy Mode) */}
+          {/* 2. Campaign Copy, Live Editor & ProseMirror Highlights */}
           {(canvasMode === "split" || canvasMode === "copy") && (
             <section className="cg-canvas-card cg-animate-swap">
               <div className="cg-canvas-card-header">
                 <div>
                   <span className="cg-mono-label">
-                    DOCUMENT AST &amp; PROSEMIRROR INLINE DECORATIONS
+                    Document AST &amp; ProseMirror Inline Decorations
                   </span>
                   <h2>Campaign Copy, KFS Tables &amp; Highlighted Claims</h2>
                 </div>
                 <span className="cg-canvas-hint">
-                  Click any highlighted span to focus its fault card →
+                  Click any highlighted span or press <kbd>J</kbd> / <kbd>K</kbd> to step findings
                 </span>
               </div>
 
-              {/* Live Artifact Editor */}
-              <div
-                className="draft-inline-editor"
-                style={{
-                  marginBottom: "1rem",
-                  padding: "0.85rem",
-                  borderRadius: "8px",
-                  border: "1px solid var(--cg-border)",
-                  background: "var(--cg-surface-2, #18181b)",
-                }}
-              >
+              {/* Clean Light-Surface Live Artifact Editor */}
+              <div className="draft-inline-editor">
                 <div
                   style={{
                     display: "flex",
                     justifyContent: "space-between",
                     alignItems: "center",
-                    marginBottom: "0.5rem",
+                    gap: "8px",
                   }}
                 >
                   <label
                     htmlFor="studio-artifact-textarea"
-                    className="draft-editor-label"
-                    style={{ margin: 0, fontWeight: 600 }}
+                    style={{ margin: 0, fontWeight: 600, fontSize: "13px" }}
                   >
                     Campaign Artifact Copy &amp; Claims (Draft Editor)
                   </label>
@@ -1645,7 +1661,9 @@ export function SubmissionDetailPage() {
                       className={savingDraft || scanning ? "cg-spin" : ""}
                     />
                     <span>
-                      {savingDraft || scanning ? "Re-Scanning…" : "Re-Scan Artifact"}
+                      {savingDraft || scanning
+                        ? "Re-Scanning…"
+                        : "Re-Scan Artifact"}
                     </span>
                   </button>
                 </div>
@@ -1657,76 +1675,46 @@ export function SubmissionDetailPage() {
                   value={draftEditValue}
                   onChange={(e) => setDraftEditValue(e.target.value)}
                   placeholder="Paste or write campaign text..."
-                  style={{
-                    width: "100%",
-                    boxSizing: "border-box",
-                    fontFamily: "monospace",
-                  }}
                 />
               </div>
 
-              {/* In-Place Review Decision Sign-Off Card */}
-              <div
-                className="cg-review-decision-card"
-                style={{
-                  marginBottom: "1rem",
-                  padding: "0.85rem",
-                  borderRadius: "8px",
-                  border: "1px solid var(--cg-border)",
-                  background: "var(--cg-surface-2, #18181b)",
-                }}
-              >
+              {/* Clean Light-Surface Stage Review Decision Sign-Off Card */}
+              <div className="cg-review-decision-card">
                 <div
                   style={{
                     display: "flex",
                     justifyContent: "space-between",
                     alignItems: "center",
-                    marginBottom: "0.5rem",
+                    gap: "8px",
+                    flexWrap: "wrap",
                   }}
                 >
-                  <span
-                    style={{
-                      fontSize: "0.85rem",
-                      fontWeight: 600,
-                      color: "var(--cg-text-primary)",
-                    }}
-                  >
+                  <span style={{ fontSize: "13px", fontWeight: 600 }}>
                     {role === "reviewer" || username === "brand_manager"
                       ? "Brand Manager Governance Sign-Off"
                       : role === "admin" || username === "legal_counsel"
                         ? "Legal Reviewer Compliance Sign-Off"
                         : "Stage Review Decision"}
                   </span>
-                  <span
-                    style={{
-                      fontSize: "0.78rem",
-                      color: "var(--cg-text-secondary)",
-                    }}
-                  >
-                    Active RBAC Signer: <strong>{username}</strong> ({role})
+                  <span style={{ fontSize: "12px", color: "var(--muted)" }}>
+                    Active RBAC Signer: <strong>@{username}</strong> ({role})
                   </span>
                 </div>
-                <div style={{ display: "flex", gap: "0.5rem" }}>
+                <div style={{ display: "flex", gap: "8px" }}>
                   <input
                     type="text"
                     placeholder="Add rationale for audit trail..."
                     value={decisionRationale}
                     onChange={(e) => setDecisionRationale(e.target.value)}
-                    style={{
-                      flex: 1,
-                      padding: "0.45rem 0.65rem",
-                      borderRadius: "6px",
-                      border: "1px solid var(--cg-border)",
-                      background: "var(--cg-surface-1, #09090b)",
-                      color: "var(--cg-text-primary)",
-                      fontSize: "0.85rem",
-                    }}
+                    style={{ flex: 1 }}
                   />
                   <button
                     type="button"
                     data-testid="decision-approve-btn"
                     className="cg-btn cg-btn-emerald cg-btn-sm"
-                    disabled={blockerCount > 0 && submission.status !== "approved"}
+                    disabled={
+                      blockerCount > 0 && submission.status !== "approved"
+                    }
                     onClick={() => void handleDecisionApprove()}
                   >
                     <CheckCircle2 size={13} />
@@ -1736,43 +1724,40 @@ export function SubmissionDetailPage() {
               </div>
 
               <div className="content-preview tiptap-wrapper">
-                  {textBlocks.length > 0 ? (
-                    tiptapEditor ? (
-                      <EditorContent editor={tiptapEditor} />
-                    ) : (
-                      <div className="ProseMirror">
-                        {textBlocks.map((block, idx) => (
-                          <p
-                            key={paragraphNodeIds[idx] ?? idx}
-                            style={{ margin: "0 0 0.85rem" }}
-                          >
-                            {renderHighlightedBlock(
-                              block,
-                              paragraphNodeIds[idx],
-                              findings,
-                              selectedFindingId,
-                              handleSelectFindingFromSpan,
-                            )}
-                          </p>
-                        ))}
-                      </div>
-                    )
+                {textBlocks.length > 0 ? (
+                  tiptapEditor ? (
+                    <EditorContent editor={tiptapEditor} />
                   ) : (
-                    <p className="text-muted">
-                      No text content blocks in this bundle.
-                    </p>
-                  )}
-                </div>
+                    <div className="ProseMirror">
+                      {textBlocks.map((block, idx) => (
+                        <p key={paragraphNodeIds[idx] ?? idx}>
+                          {renderHighlightedBlock(
+                            block,
+                            paragraphNodeIds[idx],
+                            findings,
+                            selectedFindingId,
+                            handleSelectFindingFromSpan,
+                          )}
+                        </p>
+                      ))}
+                    </div>
+                  )
+                ) : (
+                  <p style={{ color: "var(--muted)", margin: 0 }}>
+                    No text content blocks in this bundle.
+                  </p>
+                )}
+              </div>
             </section>
           )}
 
-          {/* 3. Collaborative Review Discussion (Shown in Split or Discussion Mode) */}
+          {/* 3. Collaborative Review Discussion */}
           {(canvasMode === "split" || canvasMode === "discussion") && (
             <section className="cg-canvas-card cg-animate-swap">
               <div className="cg-canvas-card-header">
                 <div>
                   <span className="cg-mono-label">
-                    COLLABORATIVE REVIEW NOTES
+                    Collaborative Review Notes
                   </span>
                   <h2>
                     Campaign Discussion Thread ({generalComments.length})
@@ -1785,7 +1770,7 @@ export function SubmissionDetailPage() {
 
               <div className="general-comments-list">
                 {generalComments.length === 0 ? (
-                  <p className="cg-empty-inline-note">
+                  <p style={{ fontSize: "13px", color: "var(--muted)", margin: 0 }}>
                     No general review notes yet. Leave a handoff note below for
                     the Brand Manager or Legal Reviewer.
                   </p>
@@ -1822,9 +1807,8 @@ export function SubmissionDetailPage() {
           )}
         </div>
 
-        {/* RIGHT COLUMN: Sleek Progressive-Disclosure Fault Inspector */}
+        {/* RIGHT COLUMN: Progressive-Disclosure Fault Inspector */}
         <aside className="cg-studio-inspector-col">
-          {/* Sticky Fault Inspector Header */}
           <div className="cg-inspector-toolbar">
             <div className="cg-inspector-toolbar-top">
               <div className="cg-inspector-filter-group">
@@ -1839,7 +1823,7 @@ export function SubmissionDetailPage() {
                 </button>
                 <button
                   type="button"
-                  className={`cg-filter-pill pill-blocker-tab ${
+                  className={`cg-filter-pill ${
                     filter === "blockers" ? "active" : ""
                   }`}
                   onClick={() => setFilter("blockers")}
@@ -1848,7 +1832,7 @@ export function SubmissionDetailPage() {
                 </button>
                 <button
                   type="button"
-                  className={`cg-filter-pill pill-warning-tab ${
+                  className={`cg-filter-pill ${
                     filter === "warnings" ? "active" : ""
                   }`}
                   onClick={() => setFilter("warnings")}
@@ -1867,14 +1851,13 @@ export function SubmissionDetailPage() {
                 </button>
               </div>
 
-              {/* Prev / Next Fault Stepper */}
               {filteredFindings.length > 1 && (
                 <div className="cg-fault-stepper-btns">
                   <button
                     type="button"
                     className="cg-icon-btn"
                     onClick={() => stepFindingSelection(-1)}
-                    title="Previous finding"
+                    title="Previous finding (K)"
                   >
                     <ChevronUp size={14} />
                   </button>
@@ -1882,7 +1865,7 @@ export function SubmissionDetailPage() {
                     type="button"
                     className="cg-icon-btn"
                     onClick={() => stepFindingSelection(1)}
-                    title="Next finding"
+                    title="Next finding (J)"
                   >
                     <ChevronDown size={14} />
                   </button>
@@ -1927,11 +1910,11 @@ export function SubmissionDetailPage() {
               Auditing campaign against <code>{submission.canon_id}</code>…
             </div>
           ) : filteredFindings.length === 0 ? (
-            <div className="cg-empty-box cg-empty-clean">
+            <div className="cg-empty-box">
               <CheckCircle2 size={24} className="cg-text-emerald" />
-              <p>
+              <p style={{ margin: 0 }}>
                 {findings.length === 0
-                  ? "Zero compliance issues found! This campaign bundle passes all active playbook rules."
+                  ? "Zero compliance issues found. This campaign bundle passes all active playbook rules."
                   : "No findings match the active filter."}
               </p>
             </div>
@@ -1944,6 +1927,7 @@ export function SubmissionDetailPage() {
                 const isSlotDiff =
                   evidence.kind === "slot_diff" &&
                   Array.isArray(evidence.slots);
+                const isAlgebraicProof = evidence.kind === "algebraic_proof";
                 const slots = (
                   isSlotDiff ? evidence.slots : []
                 ) as SlotComparisonItem[];
@@ -1984,7 +1968,6 @@ export function SubmissionDetailPage() {
                       isSelected ? "selected finding-selected" : ""
                     }`}
                   >
-                    {/* Card Top Metadata Bar */}
                     <div className="cg-fault-card-top">
                       <span className="cg-fault-index">#{idx + 1}</span>
                       <span
@@ -2017,16 +2000,61 @@ export function SubmissionDetailPage() {
                       </span>
                     </div>
 
-                    {/* Primary Finding Message */}
                     <p className="cg-fault-message">{f.message}</p>
 
                     {/* Grounding Citation */}
                     {f.payload?.rule_ref?.source_text && (
                       <div className="cg-fault-rule-box">
                         <span className="cg-mono-label">
-                          PLAYBOOK RULE · {f.payload.rule_ref.rule_id}
+                          Playbook Rule · <code>{f.payload.rule_ref.rule_id}</code>
                         </span>
                         <p>{f.payload.rule_ref.source_text}</p>
+                      </div>
+                    )}
+
+                    {/* Z3 SMT Algebraic Proof Block */}
+                    {isAlgebraicProof && (
+                      <div className="cg-fault-rule-box">
+                        <span className="cg-mono-label">
+                          Formal Verification · Solver{" "}
+                          <code>{String(evidence.solver ?? "z3-smt-v4")}</code>
+                        </span>
+                        {Boolean(evidence.constraint_expr) && (
+                          <pre
+                            style={{
+                              margin: "4px 0",
+                              padding: "6px 8px",
+                              backgroundColor: "var(--surface)",
+                              border: "1px solid var(--border)",
+                              borderRadius: "4px",
+                              fontSize: "11.5px",
+                              overflowX: "auto",
+                            }}
+                          >
+                            {String(evidence.constraint_expr)}
+                          </pre>
+                        )}
+                        <div
+                          style={{
+                            display: "flex",
+                            gap: "12px",
+                            flexWrap: "wrap",
+                            fontSize: "12px",
+                          }}
+                        >
+                          {Boolean(evidence.counterexample_witness) && (
+                            <span>
+                              Counterexample Witness:{" "}
+                              <code>{String(evidence.counterexample_witness)}</code>
+                            </span>
+                          )}
+                          {Boolean(evidence.canon_bound) && (
+                            <span>
+                              Approved Bound:{" "}
+                              <code>{String(evidence.canon_bound)}</code>
+                            </span>
+                          )}
+                        </div>
                       </div>
                     )}
 
@@ -2052,13 +2080,13 @@ export function SubmissionDetailPage() {
                               QASem Claim vs. Approved Fact SlotDiff
                             </strong>
                             {entailmentProb !== null && (
-                              <code style={{ marginLeft: "0.4rem" }}>
+                              <code style={{ marginLeft: "6px" }}>
                                 NLI={(entailmentProb * 100).toFixed(1)}%
                               </code>
                             )}
                           </span>
                           <span className="cg-slotdiff-toggle-action">
-                            {isSlotExpanded ? "Hide Matrix ▲" : "Inspect Matrix ▼"}
+                            {isSlotExpanded ? "Hide Matrix" : "Inspect Matrix"}
                           </span>
                         </button>
 
@@ -2100,11 +2128,9 @@ export function SubmissionDetailPage() {
                     {/* Progressive Disclosure 2: Suggested Text Replacement */}
                     {f.payload?.suggestion && (
                       <div className="cg-fault-suggestion-box">
-                        <div className="cg-fault-suggestion-header">
-                          <span className="cg-mono-label">
-                            RECOMMENDED REMEDIATION
-                          </span>
-                        </div>
+                        <span className="cg-mono-label">
+                          Recommended Remediation
+                        </span>
                         <p className="cg-fault-suggestion-text">
                           {f.payload.suggestion.label ??
                             f.payload.suggestion.explanation}
@@ -2125,7 +2151,14 @@ export function SubmissionDetailPage() {
                           className="cg-fault-swatches-box"
                           onClick={(e) => e.stopPropagation()}
                         >
-                          <div className="cg-evidence-header">
+                          <div
+                            style={{
+                              display: "flex",
+                              justifyContent: "space-between",
+                              fontSize: "12px",
+                              fontWeight: 600,
+                            }}
+                          >
                             <span>
                               3-Candidate WCAG &amp; Brand Palette Alternatives
                             </span>
@@ -2172,9 +2205,16 @@ export function SubmissionDetailPage() {
                     {/* Progressive Disclosure 4: Tier 3 Surgical Rewrite Result */}
                     {rewritePreviews[f.row_id] && (
                       <div className="cg-fault-rewrite-preview cg-animate-swap">
-                        <div className="cg-evidence-header">
+                        <div
+                          style={{
+                            display: "flex",
+                            justifyContent: "space-between",
+                            fontSize: "12px",
+                            fontWeight: 600,
+                          }}
+                        >
                           <span>
-                            ✓ Surgical Rewrite Verified (Edit Ratio:{" "}
+                            Surgical Rewrite Verified (Edit Ratio:{" "}
                             {(
                               rewritePreviews[f.row_id].edit_distance_ratio *
                               100
@@ -2185,7 +2225,7 @@ export function SubmissionDetailPage() {
                           <code>{rewritePreviews[f.row_id].used_provider}</code>
                         </div>
                         {rewritePreviews[f.row_id].provider_notice && (
-                          <div className="cg-rewrite-notice">
+                          <div style={{ fontSize: "12px", color: "var(--muted)" }}>
                             {rewritePreviews[f.row_id].provider_notice}
                           </div>
                         )}
@@ -2217,7 +2257,7 @@ export function SubmissionDetailPage() {
                             disabled={acceptLockedByForcingFunction}
                             title={
                               acceptLockedByForcingFunction
-                                ? "Inspect the SlotDiff matrix above first to unlock."
+                                ? "Inspect the SlotDiff matrix above first to enable acceptance."
                                 : "Apply suggested replacement to document"
                             }
                             className="cg-btn cg-btn-emerald cg-btn-sm"
@@ -2319,7 +2359,7 @@ export function SubmissionDetailPage() {
                       </div>
                     )}
 
-                    {/* Structured Popover for Override / Dismiss / Remediation Note */}
+                    {/* Origin-Aware Popover for Override / Dismiss / Remediation Note */}
                     {overrideTarget && overrideTarget.rowId === f.row_id && (
                       <div
                         className="override-popover"
@@ -2422,7 +2462,7 @@ export function SubmissionDetailPage() {
       {/* Workflow Transition Confirmation Modal */}
       {wfAction && (
         <div className="modal-overlay" onClick={() => setWfAction(null)}>
-          <div className="modal card" onClick={(e) => e.stopPropagation()}>
+          <div className="modal" onClick={(e) => e.stopPropagation()}>
             <div className="cg-gov-card-header">
               <h3>
                 Confirm Stage Transition:{" "}
@@ -2440,9 +2480,9 @@ export function SubmissionDetailPage() {
             </div>
             <p
               style={{
-                fontSize: "0.84rem",
-                color: "var(--cg-text-secondary)",
-                marginBottom: "0.85rem",
+                fontSize: "13px",
+                color: "var(--text-secondary)",
+                margin: "8px 0 12px",
               }}
             >
               This transition will be sealed in the tamper-evident RFC 9162
@@ -2485,7 +2525,7 @@ export function SubmissionDetailPage() {
           onClick={() => setShowVersionsModal(false)}
         >
           <div
-            className="modal card modal-wide"
+            className="modal modal-wide"
             onClick={(e) => e.stopPropagation()}
           >
             <div className="cg-gov-card-header">
@@ -2506,7 +2546,7 @@ export function SubmissionDetailPage() {
             </div>
             <div className="audit-timeline">
               {versions.map((v) => (
-                <div key={v.version_number} className="audit-event card">
+                <div key={v.version_number} className="audit-event">
                   <div className="audit-header">
                     <span className="audit-action">
                       Revision v{v.version_number}
@@ -2536,7 +2576,7 @@ export function SubmissionDetailPage() {
           onClick={() => setShowAuditModal(false)}
         >
           <div
-            className="modal card modal-wide"
+            className="modal modal-wide"
             onClick={(e) => e.stopPropagation()}
           >
             <div className="cg-gov-card-header">
@@ -2556,7 +2596,7 @@ export function SubmissionDetailPage() {
               </button>
             </div>
             {audit.length === 0 ? (
-              <p className="cg-empty-inline-note">
+              <p style={{ fontSize: "13px", color: "var(--muted)", marginTop: "12px" }}>
                 No stage transitions recorded yet. Submit, approve, or release
                 this campaign to record signed audit events.
               </p>
@@ -2565,15 +2605,16 @@ export function SubmissionDetailPage() {
                 {audit[0].tree_head && (
                   <div
                     className="cg-clean-note"
-                    style={{ marginBottom: "1rem" }}
+                    style={{
+                      marginTop: "12px",
+                      flexDirection: "column",
+                      alignItems: "flex-start",
+                    }}
                   >
                     <div>
                       <strong>Cryptographic Tree Head Summary:</strong>
                     </div>
-                    <div
-                      className="audit-hashes"
-                      style={{ marginTop: "0.35rem" }}
-                    >
+                    <div className="audit-hashes">
                       <span>
                         Merkle Root:{" "}
                         <code>
@@ -2605,7 +2646,7 @@ export function SubmissionDetailPage() {
                 )}
                 <div className="audit-timeline">
                   {audit.map((evt) => (
-                    <div key={evt.id} className="audit-event card">
+                    <div key={evt.id} className="audit-event">
                       <div className="audit-header">
                         <span className="audit-action">{evt.action}</span>
                         <span className="audit-transition">
@@ -2616,7 +2657,9 @@ export function SubmissionDetailPage() {
                         </span>
                       </div>
                       {evt.comment && (
-                        <p className="audit-comment">{evt.comment}</p>
+                        <p style={{ fontSize: "13px", margin: "4px 0" }}>
+                          {evt.comment}
+                        </p>
                       )}
                       <div className="audit-hashes">
                         <span>
@@ -2643,7 +2686,7 @@ export function SubmissionDetailPage() {
           onClick={() => setShowCertModal(false)}
         >
           <div
-            className="modal card modal-wide"
+            className="modal modal-wide"
             data-testid="certificate-modal"
             onClick={(e) => e.stopPropagation()}
             style={{ maxWidth: 680 }}
@@ -2666,28 +2709,23 @@ export function SubmissionDetailPage() {
               </button>
             </div>
 
-            <div className="cert-modal-body" style={{ marginTop: "1rem" }}>
+            <div style={{ marginTop: "14px", display: "flex", flexDirection: "column", gap: "12px" }}>
               <div
-                className="cg-clean-note"
                 style={{
-                  background: "var(--cg-surface-2, #18181b)",
-                  border: "1px solid var(--cg-border)",
-                  borderRadius: "8px",
-                  padding: "1rem",
-                  marginBottom: "1rem",
+                  backgroundColor: "var(--surface-subtle)",
+                  border: "1px solid var(--border)",
+                  borderRadius: "6px",
+                  padding: "14px",
                 }}
               >
-                <div style={{ marginBottom: "0.5rem" }}>
-                  <strong style={{ color: "var(--cg-text-primary)" }}>
-                    Merkle Findings Root (SHA-256)
-                  </strong>
+                <div style={{ marginBottom: "6px" }}>
+                  <strong>Merkle Findings Root (SHA-256)</strong>
                 </div>
-                <div
+                <code
                   style={{
-                    fontFamily: "monospace",
-                    fontSize: "0.85rem",
+                    fontSize: "12.5px",
                     wordBreak: "break-all",
-                    color: "#38bdf8",
+                    color: "var(--signal)",
                   }}
                 >
                   {(
@@ -2697,57 +2735,58 @@ export function SubmissionDetailPage() {
                   )?.root_hash ||
                     submission?.content_hash ||
                     "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08"}
-                </div>
+                </code>
               </div>
 
               <div
                 style={{
                   display: "grid",
                   gridTemplateColumns: "1fr 1fr",
-                  gap: "0.75rem",
-                  fontSize: "0.85rem",
+                  gap: "10px",
+                  fontSize: "13px",
                 }}
               >
                 <div>
-                  <span style={{ color: "var(--cg-text-secondary)" }}>
-                    Submission ID:{" "}
-                  </span>
+                  <span style={{ color: "var(--muted)" }}>Submission ID: </span>
                   <code>{submission.id}</code>
                 </div>
                 <div>
-                  <span style={{ color: "var(--cg-text-secondary)" }}>
-                    Status:{" "}
-                  </span>
+                  <span style={{ color: "var(--muted)" }}>Status: </span>
                   <span className={`status-badge status-${submission.status}`}>
                     {submission.status.toUpperCase()}
                   </span>
                 </div>
                 <div>
-                  <span style={{ color: "var(--cg-text-secondary)" }}>
-                    Playbook:{" "}
-                  </span>
+                  <span style={{ color: "var(--muted)" }}>Playbook: </span>
                   <code>{submission.canon_id}</code>
                 </div>
                 <div>
-                  <span style={{ color: "var(--cg-text-secondary)" }}>
-                    Issued At:{" "}
-                  </span>
+                  <span style={{ color: "var(--muted)" }}>Issued At: </span>
                   <span>
                     {String(certData?.issued_at ?? submission.created_at)}
                   </span>
                 </div>
+                <div>
+                  <span style={{ color: "var(--muted)" }}>
+                    Replay Manifest SHA:{" "}
+                  </span>
+                  <code>
+                    {String(
+                      replayData?.manifest_hash ?? submission.content_hash,
+                    ).slice(0, 14)}
+                    …
+                  </code>
+                </div>
+                <div>
+                  <span style={{ color: "var(--muted)" }}>
+                    C2PA v2.3 Assets:{" "}
+                  </span>
+                  <span>{c2paCount} signed manifest(s)</span>
+                </div>
               </div>
             </div>
 
-            <div
-              className="modal-actions"
-              style={{
-                marginTop: "1.5rem",
-                display: "flex",
-                justifyContent: "flex-end",
-                gap: "0.5rem",
-              }}
-            >
+            <div className="modal-actions">
               <button
                 type="button"
                 className="cg-btn cg-btn-primary"

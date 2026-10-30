@@ -763,6 +763,49 @@ async function handleBrowserRequest<T>(
     return comment as unknown as T;
   }
 
+  const replayMatch = path.match(/^\/submissions\/(\d+)\/replay-manifest(\?.*)?$/);
+  if (replayMatch && method === "GET") {
+    const subId = Number(replayMatch[1]);
+    const sub = browserBackend.getSubmission(subId);
+    if (!sub) throw new ApiError(404, "Submission not found");
+    return {
+      submission_id: sub.id,
+      content_hash: sub.content_hash,
+      ast_hash: sha256Hex(sub.raw_content + ":ast"),
+      canon_id: sub.canon_id,
+      canon_hash: sub.canon_hash,
+      alpha: 0.1,
+      conformal_threshold: 0.34,
+      manifest_hash: sha256Hex(sub.content_hash + sub.canon_hash),
+      registered_checks: [
+        { check_id: "terminology.banned", check_version: "1.0.0" },
+        { check_id: "claim.algebra", check_version: "1.0.0" },
+        { check_id: "claim.slot_nli", check_version: "1.0.0" },
+        { check_id: "trigger.disclaimer", check_version: "1.0.0" },
+        { check_id: "accessibility.contrast", check_version: "1.0.0" },
+        { check_id: "visual.palette_drift", check_version: "1.0.0" },
+        { check_id: "visual.logo_orb", check_version: "1.0.0" },
+      ],
+    } as unknown as T;
+  }
+
+  const c2paMatch = path.match(/^\/submissions\/(\d+)\/c2pa$/);
+  if (c2paMatch && method === "GET") {
+    const subId = Number(c2paMatch[1]);
+    const sub = browserBackend.getSubmission(subId);
+    return {
+      submission_id: subId,
+      status: sub?.status || "draft",
+      c2pa_count: sub?.image_nodes?.length || 0,
+      manifests: (sub?.image_nodes || []).map((img: any, idx: number) => ({
+        node_id: img.node_id || `img[${idx}]`,
+        claim_generator: "CanonGate/2.3 C2PA Provenance Authority",
+        signing_alg: "ES256 (ECDSA P-256)",
+        signed_asset_exists: sub?.status === "approved" || sub?.status === "published",
+      })),
+    } as unknown as T;
+  }
+
   throw new ApiError(404, `Endpoint ${method} ${path} not found`);
 }
 
@@ -1353,6 +1396,19 @@ export function getGovernanceCertificate(
   submissionId: number,
 ): Promise<Record<string, unknown>> {
   return request(`/submissions/${submissionId}/certificate`);
+}
+
+export function getReplayManifest(
+  submissionId: number,
+  alpha = 0.1,
+): Promise<Record<string, unknown>> {
+  return request(`/submissions/${submissionId}/replay-manifest?alpha=${encodeURIComponent(alpha)}`);
+}
+
+export function getC2paManifests(
+  submissionId: number,
+): Promise<{ submission_id: number; status: string; c2pa_count: number; manifests: Array<Record<string, unknown>> }> {
+  return request(`/submissions/${submissionId}/c2pa`);
 }
 
 export interface SubmissionCommentItem {
