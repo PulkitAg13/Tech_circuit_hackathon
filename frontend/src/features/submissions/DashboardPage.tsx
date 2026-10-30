@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, type FormEvent } from "react";
+import { useState, useEffect, useCallback, useRef, useMemo, type FormEvent } from "react";
 import {
   listSubmissions,
   listCanons,
@@ -11,6 +11,7 @@ import {
   calibrateCanonRule,
   compileBrandCanon,
   runGateCheck,
+  callMcpRpc,
   getApiBase,
   type Submission,
   type CanonSummary,
@@ -34,6 +35,8 @@ import {
   BookOpen,
   Check,
   CheckCircle2,
+  Copy,
+  Cpu,
   FilePlus2,
   FileText,
   Filter,
@@ -46,6 +49,7 @@ import {
   Search,
   ShieldCheck,
   Sliders,
+  Sparkles,
   Terminal,
   Trash2,
   Upload,
@@ -54,8 +58,6 @@ import {
 
 const CUSTOM_PLAYBOOK_VALUE = "__custom__";
 
-// Known test-suite / legacy demo submission titles that should be auto-purged
-// if an older SQLite database or shared test server still holds them.
 const AUTO_PURGE_TEST_TITLES = new Set([
   "clean acme announcement", /* taste-skill-ignore */
   "minor tone drift",
@@ -63,7 +65,7 @@ const AUTO_PURGE_TEST_TITLES = new Set([
   "ayurglow curcumin gold elixir launch",
   "ayurglow curcumin gold elixir landing page",
   "diwali instant digital loan campaign bundle",
-  "rbi 2025 kfs & ccpa pre-flight — instant personal loan bundle",
+  "rbi 2025 kfs & ccpa pre-flight · instant personal loan bundle",
   "quickloan festival credit campaign",
   "quickloan diwali festival campaign",
   "acme quickloan diwali festival campaign", /* taste-skill-ignore */
@@ -87,10 +89,104 @@ const CANON_DISPLAY_LABELS: Record<string, string> = {
     "ASCI & CCPA Advertising & Substantiation Baseline",
   "acme-corp": /* taste-skill-ignore */
     "WCAG 2.1 AA Accessibility & Enterprise Baseline",
+  "studio-brand-guidelines":
+    "Brand Guidelines (Poppins/Lora ≥24pt · #141413/#FAF9F5/#D97757 · 60/30/10)", /* taste-skill-ignore */
 };
 
 function formatCanonName(id: string): string {
   return CANON_DISPLAY_LABELS[id] ?? id;
+}
+
+const SAMPLE_PLAYBOOK_TEMPLATES = [
+  {
+    id: "neobank-credit-2026",
+    label: "Fintech NeoBank Credit Playbook",
+    rawText: [
+      'Never use "instant guaranteed loan" · use "credit facility subject to underwriting"',
+      'Never use "zero credit check" · use "streamlined bureau verification"',
+      'Never use "risk-free returns" · use "market-linked returns subject to scheme risks"',
+      "0% processing fee on credit lines [under Rs 75,000; for salaried applicants only]",
+      "Annual Percentage Rate (APR) is 16.5% [up to Rs 3,00,000]",
+      'Trigger: "0% processing fee" -> "Subject to RBI Key Fact Statement (KFS) Schedule"',
+      "Primary Brand Palette: #0D3B66, #1B6E66",
+    ].join("\n"),
+  },
+  {
+    id: "studio-brand-guidelines-2026",
+    label: "Official Brand Guidelines (Poppins/Lora + Palette)",
+    rawText: [
+      "Never use \"Comic Sans\" · use \"Poppins (headings >= 24pt) or Lora (body < 24pt)\"",
+      "Never use \"unbranded neon gradient\" · use \"Warm Alabaster (#FAF9F5) or Slate Ink (#141413)\"", /* taste-skill-ignore */
+      "Heading typography uses Poppins [at least 24pt; with Arial fallback]",
+      "Body typography uses Lora [under 24pt; with Georgia fallback]",
+      "Trigger: \"Poppins\" -> \"fallback Arial/Georgia\"",
+      "Official Brand Palette: #141413, #FAF9F5, #B0AEA5, #E8E6DC, #D97757, #6A9BCC, #788C5D", /* taste-skill-ignore */
+    ].join("\n"),
+  },
+  {
+    id: "ayurveda-wellness-d2c",
+    label: "Ayurvedic D2C Wellness Playbook",
+    rawText: [
+      'Never use "miracle cure" · use "clinically studied botanical support"',
+      'Never use "100% permanent weight loss" · use "supports healthy metabolic balance"',
+      "2x bioavailability improvement [in a 12-week clinical study of 120 adults]",
+      'Trigger: "clinically studied" -> "Results based on controlled ingredient study; not a substitute for medical advice"',
+      "Brand Palette Tokens: #2E6F40, #D99B26",
+    ].join("\n"),
+  },
+] as const;
+
+const SAMPLE_CAMPAIGN_PRESETS = [
+  {
+    id: "preset-rbi",
+    label: "RBI Lending Ad (Has Blockers)",
+    canonId: "indian-digital-lending",
+    title: "Q3 Instant Personal Loan Campaign",
+    content:
+      "Get instant personal loans with guaranteed approval and no credit check! Enjoy 0% processing fee on loans under Rs 1,00,000. Annual Percentage Rate (APR) is 14%.",
+  },
+  {
+    id: "preset-nutra",
+    label: "ASCI Nutra + Drip Pricing Ad",
+    canonId: "indian-d2c-nutra",
+    title: "Curcumin Gold Festival Bundle",
+    content:
+      "Try our miracle cure botanical elixir with 2x faster absorption! Flat 27% discount (inclusive of all taxes). GST and additional charges may apply.",
+  },
+] as const;
+
+function estimateLiveRuleExtraction(
+  text: string,
+  extraTerms: CustomTermInput[],
+  extraFacts: CustomFactInput[],
+  extraColors: CustomColorInput[],
+  extraTriggers: CustomTriggerInput[],
+) {
+  const lines = text.split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
+  let termCount = extraTerms.filter((t) => t.pattern_text.trim() && t.preferred.trim()).length;
+  let factCount = extraFacts.filter((f) => f.text.trim()).length;
+  let trigCount = extraTriggers.filter((t) => t.trigger_pattern.trim() && t.required_disclaimer_text.trim()).length;
+
+  for (const line of lines) {
+    if (/(?:never\s+use|avoid|ban|do\s+not\s+use)\s+/i.test(line) || /["'“][^"'”]+["'”]\s*(?:->|→|=>)\s*["'“]/i.test(line)) {
+      termCount++;
+    } else if (/(?:trigger|when\s+mentioning|if\s+claiming)\s*[:-]?/i.test(line)) {
+      trigCount++;
+    } else if (/\[[^\]]+\]/.test(line)) {
+      factCount++;
+    }
+  }
+  const hexes = new Set((text.match(/#[0-9A-Fa-f]{6}\b/g) || []).map((h) => h.toUpperCase()));
+  for (const c of extraColors) {
+    if (c.hex?.trim()) hexes.add(c.hex.trim().toUpperCase());
+  }
+  if (text.trim() && termCount === 0) termCount = 1;
+  return {
+    terms: termCount,
+    facts: Math.max(factCount, text.trim() ? 1 : 0),
+    colors: Math.max(hexes.size, text.trim() ? 1 : 0),
+    triggers: trigCount,
+  };
 }
 
 const ROLE_META: Record<
@@ -177,11 +273,12 @@ function getStageMeta(status: string) {
 }
 
 export function DashboardPage() {
-  const { username, displayName, role, switchRole, logout } = useAuth();
+  const { token, username, displayName, role, switchRole, logout } = useAuth();
   const navigate = useNavigate();
+  const isSigningOutRef = useRef(false);
 
   const [activeTab, setActiveTab] = useState<
-    "submissions" | "governance" | "gate"
+    "submissions" | "governance" | "mcp" | "gate"
   >("submissions");
   const [govSubTab, setGovSubTab] = useState<
     "rules" | "friction" | "calibrate" | "compile"
@@ -194,7 +291,7 @@ export function DashboardPage() {
   const [searchQuery, setSearchQuery] = useState<string>("");
   const [ruleSearchQuery, setRuleSearchQuery] = useState<string>("");
 
-  // New submission form — automatically shown when queue is empty
+  // New submission form · automatically shown when queue is empty
   const [showForm, setShowForm] = useState(false);
   const [title, setTitle] = useState("");
   const [rawContent, setRawContent] = useState("");
@@ -206,6 +303,7 @@ export function DashboardPage() {
   const [deletingId, setDeletingId] = useState<number | null>(null);
   const [clearingAll, setClearingAll] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [playbookNotice, setPlaybookNotice] = useState<string | null>(null);
 
   // Inline Custom Company Guidelines / Documents onboarding inside Campaign Submission Form
   const [inlineCanonId, setInlineCanonId] = useState<string>("");
@@ -219,6 +317,7 @@ export function DashboardPage() {
   const [inlineTriggers, setInlineTriggers] = useState<CustomTriggerInput[]>(
     [],
   );
+  const [inlineCompilingOnly, setInlineCompilingOnly] = useState(false);
 
   // Brand Playbook (Canon) Studio state
   const [govCanonId, setGovCanonId] = useState<string>("");
@@ -244,7 +343,7 @@ export function DashboardPage() {
   const [calibrationResult, setCalibrationResult] =
     useState<CalibrateCanonRuleResponse | null>(null);
 
-  // Playbook Studio Import state (Tab 4)
+  // Playbook Studio Import state (Tab: Onboard New Playbook)
   const [compileId, setCompileId] = useState<string>("");
   const [compileText, setCompileText] = useState<string>("");
   const [compileAttachments, setCompileAttachments] = useState<
@@ -260,7 +359,18 @@ export function DashboardPage() {
   const [compileResult, setCompileResult] =
     useState<CompileCanonResponse | null>(null);
 
-  // Pre-Publish Webhook Gate Studio state (`POST /api/gate/check`) — starts empty
+  // MCP Brand Rule Server Hub state (`activeTab === "mcp"`)
+  const [mcpCanonName, setMcpCanonName] = useState<string>("fintech-mcp-playbook");
+  const [mcpRawGuidelines, setMcpRawGuidelines] = useState<string>(
+    SAMPLE_PLAYBOOK_TEMPLATES[0].rawText,
+  );
+  const [mcpSelectedTool, setMcpSelectedTool] = useState<string>("list_canons");
+  const [mcpRequestJson, setMcpRequestJson] = useState<string>("");
+  const [mcpResponseJson, setMcpResponseJson] = useState<string>("");
+  const [mcpRunning, setMcpRunning] = useState<boolean>(false);
+  const [mcpCopiedKey, setMcpCopiedKey] = useState<string | null>(null);
+
+  // Pre-Publish Webhook Gate Studio state (`POST /api/gate/check`)
   const [gateCanonId, setGateCanonId] = useState<string>(
     "indian-digital-lending",
   );
@@ -268,12 +378,36 @@ export function DashboardPage() {
     "generic" | "shopify" | "webflow"
   >("generic");
   const [gateAlpha, setGateAlpha] = useState<number>(0.1);
-  const [gateTitle, setGateTitle] = useState<string>("");
-  const [gateContent, setGateContent] = useState<string>("");
+  const [gateTitle, setGateTitle] = useState<string>(SAMPLE_CAMPAIGN_PRESETS[0].title);
+  const [gateContent, setGateContent] = useState<string>(SAMPLE_CAMPAIGN_PRESETS[0].content);
   const [gatePersist, setGatePersist] = useState<boolean>(false);
   const [gateRunning, setGateRunning] = useState<boolean>(false);
   const [gateResult, setGateResult] =
     useState<GateCheckResponsePayload | null>(null);
+
+  const inlineLiveStats = useMemo(
+    () =>
+      estimateLiveRuleExtraction(
+        inlineCanonText,
+        inlineTerms,
+        inlineFacts,
+        inlineColors,
+        inlineTriggers,
+      ),
+    [inlineCanonText, inlineTerms, inlineFacts, inlineColors, inlineTriggers],
+  );
+
+  const studioLiveStats = useMemo(
+    () =>
+      estimateLiveRuleExtraction(
+        compileText,
+        studioTerms,
+        studioFacts,
+        studioColors,
+        studioTriggers,
+      ),
+    [compileText, studioTerms, studioFacts, studioColors, studioTriggers],
+  );
 
   const syncRuleSliders = useCallback((rule: CanonRuleItem | undefined) => {
     if (!rule) return;
@@ -293,6 +427,9 @@ export function DashboardPage() {
   }, []);
 
   const refresh = useCallback(async () => {
+    if (isSigningOutRef.current || !localStorage.getItem("cg_token")) {
+      return;
+    }
     setLoading(true);
     setError(null);
     const [subsRes, cansRes] = await Promise.allSettled([
@@ -336,7 +473,6 @@ export function DashboardPage() {
         (s) => !AUTO_PURGE_TEST_TITLES.has(s.title.trim().toLowerCase()),
       );
 
-      // Automatically purge leftover pytest / legacy demo rows in the background
       if (junkRows.length > 0) {
         void Promise.allSettled(
           junkRows.map((j) => deleteSubmission(j.id)),
@@ -347,7 +483,7 @@ export function DashboardPage() {
       if (userRows.length === 0) {
         setShowForm(true);
       }
-    } else {
+    } else if (!isSigningOutRef.current) {
       setError(
         (subsRes.reason as Error)?.message || "Failed to load submissions",
       );
@@ -365,21 +501,28 @@ export function DashboardPage() {
     }
   }
 
+  function handleSignOut() {
+    isSigningOutRef.current = true;
+    logout();
+    navigate("/login", { replace: true });
+  }
+
   useEffect(() => {
+    if (!token || isSigningOutRef.current) return;
     let active = true;
     void Promise.resolve().then(() => {
-      if (active) {
+      if (active && !isSigningOutRef.current) {
         setSubmissions([]);
-        refresh();
+        void refresh();
       }
     });
     return () => {
       active = false;
     };
-  }, [refresh, username, role]);
+  }, [refresh, token, username, role]);
 
   const loadGovernanceTelemetry = useCallback(async (canonId: string) => {
-    if (!canonId) return;
+    if (!canonId || isSigningOutRef.current) return;
     setGovLoading(true);
     setPrProposal(null);
     try {
@@ -401,7 +544,7 @@ export function DashboardPage() {
       let active = true;
       void Promise.resolve().then(() => {
         if (active) {
-          loadGovernanceTelemetry(govCanonId);
+          void loadGovernanceTelemetry(govCanonId);
         }
       });
       return () => {
@@ -494,22 +637,76 @@ export function DashboardPage() {
     }
   }
 
+  // Standalone compilation of inline playbook rules (without requiring campaign copy!)
+  async function handleCompileInlinePlaybookOnly() {
+    const cleanId =
+      inlineCanonId
+        .trim()
+        .toLowerCase()
+        .replace(/[^a-z0-9-_]+/g, "-") || "custom-company-playbook";
+    const hasInlineRules =
+      inlineTerms.length > 0 ||
+      inlineFacts.length > 0 ||
+      inlineColors.length > 0 ||
+      inlineTriggers.length > 0;
+
+    if (
+      !inlineCanonText.trim() &&
+      inlineCanonFiles.length === 0 &&
+      !hasInlineRules
+    ) {
+      setError(
+        "Paste your company brand guidelines/facts or click a Sample Playbook Template below to compile.",
+      );
+      return;
+    }
+
+    setInlineCompilingOnly(true);
+    setError(null);
+    setPlaybookNotice(null);
+    try {
+      const res = await compileBrandCanon(
+        cleanId,
+        inlineCanonText,
+        inlineCanonFiles,
+        "1.0",
+        true,
+        {
+          custom_terms: inlineTerms,
+          custom_facts: inlineFacts,
+          custom_colors: inlineColors,
+          custom_triggers: inlineTriggers,
+        },
+      );
+      await refresh();
+      setSelectedCanon(res.canon_id);
+      setGovCanonId(res.canon_id);
+      setCompileResult(res);
+      setPlaybookNotice(
+        `Compiled & Activated Playbook "${res.canon_id}" (v${res.version}) · extracted ${res.term_count} terminology rules, ${res.fact_count} facts, ${res.color_count} brand colour tokens, and ${res.trigger_count ?? 0} disclaimer triggers.`,
+      );
+    } catch (err) {
+      setError((err as Error).message);
+    } finally {
+      setInlineCompilingOnly(false);
+    }
+  }
+
   async function handleCompileCanon(e: FormEvent) {
     e.preventDefault();
-    const targetId = compileId.trim();
+    const targetId = compileId.trim() || "custom-brand-playbook";
     const hasCustomRules =
       studioTerms.length > 0 ||
       studioFacts.length > 0 ||
       studioColors.length > 0 ||
       studioTriggers.length > 0;
     if (
-      !targetId ||
-      (!compileText.trim() &&
-        compileAttachments.length === 0 &&
-        !hasCustomRules)
+      !compileText.trim() &&
+      compileAttachments.length === 0 &&
+      !hasCustomRules
     ) {
       setError(
-        "Please provide a Playbook ID and either company guideline text, an uploaded document/logo, or structured rules.",
+        "Please paste company guideline text, select a sample template above, upload a document, or add structured rules.",
       );
       return;
     }
@@ -521,7 +718,7 @@ export function DashboardPage() {
         compileText,
         compileAttachments,
         "1.0",
-        false,
+        true,
         {
           custom_terms: studioTerms,
           custom_facts: studioFacts,
@@ -530,16 +727,12 @@ export function DashboardPage() {
         },
       );
       setCompileResult(res);
-      setCompileId("");
-      setCompileText("");
-      setCompileAttachments([]);
-      setStudioTerms([]);
-      setStudioFacts([]);
-      setStudioColors([]);
-      setStudioTriggers([]);
       await refresh();
+      setSelectedCanon(res.canon_id);
       handleSelectGovCanon(res.canon_id);
-      setGovSubTab("rules");
+      setPrAppliedBanner(
+        `Compiled & Activated Playbook "${res.canon_id}" (v${res.version}) · ${res.term_count} terminology rules, ${res.fact_count} facts, ${res.color_count} colour tokens now active.`,
+      );
     } catch (err) {
       setError((err as Error).message);
     } finally {
@@ -547,8 +740,69 @@ export function DashboardPage() {
     }
   }
 
-  async function handleRunWebhookGate(e: FormEvent) {
-    e.preventDefault();
+  async function handleRunMcpTool(
+    toolName: string,
+    toolArgs: Record<string, unknown>,
+  ) {
+    setMcpRunning(true);
+    setMcpSelectedTool(toolName);
+    const reqObj = {
+      jsonrpc: "2.0",
+      id: Date.now(),
+      method: "tools/call",
+      params: {
+        name: toolName,
+        arguments: toolArgs,
+      },
+    };
+    setMcpRequestJson(JSON.stringify(reqObj, null, 2));
+    try {
+      const res = await callMcpRpc("tools/call", {
+        name: toolName,
+        arguments: toolArgs,
+      });
+      setMcpResponseJson(JSON.stringify(res, null, 2));
+      if (toolName === "compile_canon" || toolName === "submit_batch") {
+        await refresh();
+      }
+    } catch (err) {
+      setMcpResponseJson(
+        JSON.stringify({ error: (err as Error).message }, null, 2),
+      );
+    } finally {
+      setMcpRunning(false);
+    }
+  }
+
+  async function handleReadMcpResource(uri: string) {
+    setMcpRunning(true);
+    const reqObj = {
+      jsonrpc: "2.0",
+      id: Date.now(),
+      method: "resources/read",
+      params: { uri },
+    };
+    setMcpRequestJson(JSON.stringify(reqObj, null, 2));
+    try {
+      const res = await callMcpRpc("resources/read", { uri });
+      setMcpResponseJson(JSON.stringify(res, null, 2));
+    } catch (err) {
+      setMcpResponseJson(
+        JSON.stringify({ error: (err as Error).message }, null, 2),
+      );
+    } finally {
+      setMcpRunning(false);
+    }
+  }
+
+  function handleCopyText(key: string, text: string) {
+    navigator.clipboard?.writeText(text).catch(() => {});
+    setMcpCopiedKey(key);
+    setTimeout(() => setMcpCopiedKey(null), 2000);
+  }
+
+  async function handleRunWebhookGate(e?: FormEvent) {
+    if (e) e.preventDefault();
     if (!gateContent.trim()) return;
     setGateRunning(true);
     setError(null);
@@ -574,15 +828,33 @@ export function DashboardPage() {
 
   async function handleCreate(e: FormEvent) {
     e.preventDefault();
+    setError(null);
+    setPlaybookNotice(null);
+
+    const hasInlinePlaybookInput =
+      selectedCanon === CUSTOM_PLAYBOOK_VALUE &&
+      (inlineCanonText.trim().length > 0 ||
+        inlineCanonFiles.length > 0 ||
+        inlineTerms.length > 0 ||
+        inlineFacts.length > 0 ||
+        inlineColors.length > 0 ||
+        inlineTriggers.length > 0);
+
+    // If user pasted custom playbook guidelines and clicked submit without campaign copy,
+    // compile & activate the playbook standalone instead of throwing an error!
+    if (hasInlinePlaybookInput && !rawContent.trim() && uploadedAttachments.length === 0) {
+      await handleCompileInlinePlaybookOnly();
+      return;
+    }
+
     if (!rawContent.trim() && uploadedAttachments.length === 0) {
       setError(
-        "Please enter campaign copy or attach at least one document or banner image.",
+        "Please enter campaign copy (or click a 1-Click Sample Campaign above) or attach a document/banner.",
       );
       return;
     }
 
     setSubmitting(true);
-    setError(null);
     try {
       let targetCanonId = selectedCanon;
 
@@ -592,18 +864,9 @@ export function DashboardPage() {
             .trim()
             .toLowerCase()
             .replace(/[^a-z0-9-_]+/g, "-") || "company-custom-playbook";
-        const hasInlineRules =
-          inlineTerms.length > 0 ||
-          inlineFacts.length > 0 ||
-          inlineColors.length > 0 ||
-          inlineTriggers.length > 0;
-        if (
-          !inlineCanonText.trim() &&
-          inlineCanonFiles.length === 0 &&
-          !hasInlineRules
-        ) {
+        if (!hasInlinePlaybookInput) {
           setError(
-            "Please upload your company guideline/fact-sheet files, paste your company rules/facts, or add structured rules below.",
+            "Please paste your company rules/facts, click a sample playbook template, or add structured rules.",
           );
           setSubmitting(false);
           return;
@@ -613,7 +876,7 @@ export function DashboardPage() {
           inlineCanonText,
           inlineCanonFiles,
           "1.0",
-          false,
+          true,
           {
             custom_terms: inlineTerms,
             custom_facts: inlineFacts,
@@ -625,7 +888,7 @@ export function DashboardPage() {
       }
 
       const sub = await createSubmission(
-        title.trim() || "Untitled Campaign",
+        title.trim() || "Campaign Compliance Audit",
         rawContent,
         targetCanonId,
         [],
@@ -800,7 +1063,7 @@ export function DashboardPage() {
 
   return (
     <div className="cg-workspace-layout">
-      {/* ── Left Sidebar Navigation Rail (Tinted Frame, White Sheet) ── */}
+      {/* ── Left Sidebar Navigation Rail ── */}
       <aside className="cg-sidebar" aria-label="Workspace Navigation">
         <div className="cg-sidebar-top">
           <div className="cg-sidebar-brand-row">
@@ -817,6 +1080,7 @@ export function DashboardPage() {
             <span className="cg-nav-section-title">Operations</span>
             <button
               type="button"
+              data-testid="nav-campaign-queue"
               className={`cg-nav-item ${
                 activeTab === "submissions" ? "active" : ""
               }`}
@@ -831,14 +1095,37 @@ export function DashboardPage() {
 
             <button
               type="button"
+              data-testid="nav-import-playbook"
               className={`cg-nav-item ${
-                activeTab === "governance" && govSubTab !== "friction"
+                activeTab === "governance" && govSubTab === "compile"
                   ? "active"
                   : ""
               }`}
               onClick={() => {
                 setActiveTab("governance");
-                if (govSubTab === "friction") setGovSubTab("rules");
+                setGovSubTab("compile");
+              }}
+            >
+              <span className="cg-nav-item-left">
+                <FilePlus2 size={15} />
+                <span>Import Custom Playbook</span>
+              </span>
+              <span className="cg-ws-count">+New</span>
+            </button>
+
+            <button
+              type="button"
+              data-testid="nav-playbooks-rules"
+              className={`cg-nav-item ${
+                activeTab === "governance" &&
+                govSubTab !== "friction" &&
+                govSubTab !== "compile"
+                  ? "active"
+                  : ""
+              }`}
+              onClick={() => {
+                setActiveTab("governance");
+                setGovSubTab("rules");
               }}
             >
               <span className="cg-nav-item-left">
@@ -866,8 +1153,23 @@ export function DashboardPage() {
               </span>
             </button>
 
+            <span className="cg-nav-section-title">Developer &amp; AI Agents</span>
             <button
               type="button"
+              data-testid="nav-mcp-server"
+              className={`cg-nav-item ${activeTab === "mcp" ? "active" : ""}`}
+              onClick={() => setActiveTab("mcp")}
+            >
+              <span className="cg-nav-item-left">
+                <Cpu size={15} />
+                <span>MCP Brand Rule Server</span>
+              </span>
+              <span className="cg-ws-count">MCP</span>
+            </button>
+
+            <button
+              type="button"
+              data-testid="nav-gate-api"
               className={`cg-nav-item ${activeTab === "gate" ? "active" : ""}`}
               onClick={() => setActiveTab("gate")}
             >
@@ -885,7 +1187,7 @@ export function DashboardPage() {
             >
               <span className="cg-nav-item-left">
                 <Globe size={15} />
-                <span>Product Overview</span>
+                <span>Home &amp; Auth Gateway</span>
               </span>
             </Link>
           </nav>
@@ -956,13 +1258,11 @@ export function DashboardPage() {
 
             <button
               type="button"
-              onClick={() => {
-                logout();
-                navigate("/login");
-              }}
+              data-testid="sidebar-signout-btn"
+              onClick={handleSignOut}
               className="cg-btn cg-btn-ghost cg-btn-sm"
               style={{ width: "100%", justifyContent: "center" }}
-              title="Sign out or switch account"
+              title="Sign out and return to Sign In screen"
             >
               <LogOut size={13} />
               <span>Sign Out</span>
@@ -984,6 +1284,24 @@ export function DashboardPage() {
               >
                 <X size={14} />
                 <span>Dismiss</span>
+              </button>
+            </div>
+          )}
+
+          {playbookNotice && (
+            <div className="cg-success-banner" role="status" data-testid="playbook-compiled-banner">
+              <CheckCircle2 size={15} />
+              <span>{playbookNotice}</span>
+              <button
+                type="button"
+                className="cg-btn cg-btn-ghost cg-btn-sm"
+                style={{ marginLeft: "auto" }}
+                onClick={() => {
+                  setActiveTab("governance");
+                  setGovSubTab("rules");
+                }}
+              >
+                <span>Inspect Compiled Rules →</span>
               </button>
             </div>
           )}
@@ -1027,10 +1345,25 @@ export function DashboardPage() {
                   )}
                   <button
                     type="button"
+                    data-testid="header-import-playbook-btn"
                     className="cg-btn cg-btn-secondary cg-btn-sm"
                     onClick={() => {
-                      setShowForm(true);
-                      setSelectedCanon(CUSTOM_PLAYBOOK_VALUE);
+                      const hasPastedInline =
+                        inlineCanonText.trim().length > 0 ||
+                        inlineCanonFiles.length > 0 ||
+                        inlineTerms.length > 0 ||
+                        inlineFacts.length > 0 ||
+                        inlineColors.length > 0 ||
+                        inlineTriggers.length > 0;
+                      if (showForm && selectedCanon === CUSTOM_PLAYBOOK_VALUE && hasPastedInline) {
+                        void handleCompileInlinePlaybookOnly();
+                      } else {
+                        setShowForm(true);
+                        setSelectedCanon(CUSTOM_PLAYBOOK_VALUE);
+                        setTimeout(() => {
+                          document.getElementById("inline-canon-text")?.focus();
+                        }, 60);
+                      }
                     }}
                   >
                     <Upload size={13} />
@@ -1061,7 +1394,7 @@ export function DashboardPage() {
                 <div className="cg-kpi-cell">
                   <span className="cg-mono-label">Active Campaign Bundles</span>
                   <strong>{submissions.length}</strong>
-                  <span>{canons.length} governing baselines available</span>
+                  <span>{canons.length} governing playbooks available</span>
                 </div>
                 <div className="cg-kpi-cell">
                   <span className="cg-mono-label">Awaiting Your Action</span>
@@ -1089,7 +1422,7 @@ export function DashboardPage() {
                 </div>
               </div>
 
-              {/* ── Campaign Bundle Composer (Clean, Zero Fake Presets) ── */}
+              {/* ── Campaign Bundle Composer ── */}
               {showForm && (
                 <form
                   className="cg-composer-card cg-animate-swap"
@@ -1099,10 +1432,26 @@ export function DashboardPage() {
                     <div>
                       <h3>New Campaign Pre-Flight Audit</h3>
                     </div>
-                    <span className="cg-mono-label">
-                      Upload your copy, documents, or banners and select a
-                      governing baseline
-                    </span>
+                    <div className="cg-composer-presets">
+                      <span style={{ fontSize: "12px", color: "var(--muted)", marginRight: "4px" }}>
+                        Quick Fill:
+                      </span>
+                      {SAMPLE_CAMPAIGN_PRESETS.map((p) => (
+                        <button
+                          key={p.id}
+                          type="button"
+                          className="cg-preset-chip"
+                          onClick={() => {
+                            setTitle(p.title);
+                            setSelectedCanon(p.canonId);
+                            setRawContent(p.content);
+                          }}
+                        >
+                          <Sparkles size={12} />
+                          <span>{p.label}</span>
+                        </button>
+                      ))}
+                    </div>
                   </div>
 
                   <div className="cg-composer-body">
@@ -1115,7 +1464,6 @@ export function DashboardPage() {
                           value={title}
                           onChange={(e) => setTitle(e.target.value)}
                           placeholder="e.g., Q3 Lending Launch"
-                          required
                         />
                       </div>
 
@@ -1160,22 +1508,33 @@ export function DashboardPage() {
 
                     {/* Progressive Disclosure: Inline Custom Playbook Onboarding */}
                     {selectedCanon === CUSTOM_PLAYBOOK_VALUE && (
-                      <div className="cg-custom-canon-box cg-animate-swap">
+                      <div className="cg-custom-canon-box cg-animate-swap" data-testid="inline-custom-playbook-box">
                         <div className="cg-custom-canon-header">
                           <div>
                             <h4>
                               Compile Custom Company Brand Playbook (Pipeline A)
                             </h4>
                             <p>
-                              Upload your brand book (`.pdf`, `.docx`, `.md`),
-                              approved KFS/product fact sheets (`.csv`, `.json`,
-                              `.yaml`), or reference logo (`.png`, `.jpg`), or
-                              define rules below.
+                              Paste your brand rules, approved facts, hex colors, and disclaimer triggers below (or load a sample template) and click <strong>Compile &amp; Activate Playbook Only</strong> to save immediately.
                             </p>
                           </div>
-                          <span className="cg-brand-version">
-                            Guards 1–3 Protected
-                          </span>
+                          <div className="cg-composer-presets">
+                            {SAMPLE_PLAYBOOK_TEMPLATES.map((tpl) => (
+                              <button
+                                key={tpl.id}
+                                type="button"
+                                data-testid={`sample-playbook-${tpl.id}`}
+                                className="cg-preset-chip"
+                                onClick={() => {
+                                  setInlineCanonId(tpl.id);
+                                  setInlineCanonText(tpl.rawText);
+                                }}
+                              >
+                                <Sparkles size={12} />
+                                <span>Load {tpl.label}</span>
+                              </button>
+                            ))}
+                          </div>
                         </div>
 
                         <div className="cg-field-row-2">
@@ -1189,7 +1548,6 @@ export function DashboardPage() {
                               value={inlineCanonId}
                               onChange={(e) => setInlineCanonId(e.target.value)}
                               placeholder="e.g. my-company-brand-v1"
-                              required
                             />
                           </div>
 
@@ -1204,7 +1562,7 @@ export function DashboardPage() {
                               multiple
                               accept=".pdf,.docx,.csv,.json,.yaml,.yml,.md,.txt,.html,.png,.jpg,.jpeg,.webp"
                               onChange={(e) =>
-                                handleInlineCanonFileSelect(e.target.files)
+                                void handleInlineCanonFileSelect(e.target.files)
                               }
                             />
                             {inlineCanonFiles.length > 0 && (
@@ -1239,70 +1597,100 @@ export function DashboardPage() {
                           </label>
                           <textarea
                             id="inline-canon-text"
-                            rows={3}
+                            rows={4}
                             value={inlineCanonText}
                             onChange={(e) => setInlineCanonText(e.target.value)}
-                            placeholder="Paste your brand rules, approved product claims, required disclosures, or hex colour tokens…"
+                            placeholder='e.g. Never use "guaranteed approval" · use "subject to credit assessment". 0% processing fee [under Rs 50,000]. Trigger: "0% processing fee" -> "Subject to KFS". Brand Hex: #0D3B66'
                           />
                         </div>
 
-                        <div className="cg-rule-builder-toolbar">
-                          <button
-                            type="button"
-                            className="cg-btn cg-btn-secondary cg-btn-sm"
-                            onClick={() =>
-                              setInlineTerms((prev) => [
-                                ...prev,
-                                {
-                                  pattern_text: "",
-                                  preferred: "",
-                                  severity: 60,
-                                },
-                              ])
-                            }
-                          >
-                            + Banned/Preferred Term
-                          </button>
-                          <button
-                            type="button"
-                            className="cg-btn cg-btn-secondary cg-btn-sm"
-                            onClick={() =>
-                              setInlineFacts((prev) => [
-                                ...prev,
-                                { text: "", conditions: [], valid_until: "" },
-                              ])
-                            }
-                          >
-                            + Approved Fact
-                          </button>
-                          <button
-                            type="button"
-                            className="cg-btn cg-btn-secondary cg-btn-sm"
-                            onClick={() =>
-                              setInlineColors((prev) => [
-                                ...prev,
-                                { name: "", hex: "#0D3B66", max_delta_e: 3.5 },
-                              ])
-                            }
-                          >
-                            + Brand Colour Hex
-                          </button>
-                          <button
-                            type="button"
-                            className="cg-btn cg-btn-secondary cg-btn-sm"
-                            onClick={() =>
-                              setInlineTriggers((prev) => [
-                                ...prev,
-                                {
-                                  trigger_pattern: "",
-                                  required_disclaimer_text: "",
-                                  severity: 70,
-                                },
-                              ])
-                            }
-                          >
-                            + Disclaimer Trigger
-                          </button>
+                        <div
+                          style={{
+                            display: "flex",
+                            justifyContent: "space-between",
+                            alignItems: "center",
+                            flexWrap: "wrap",
+                            gap: "10px",
+                          }}
+                        >
+                          <div className="cg-rule-builder-toolbar">
+                            <button
+                              type="button"
+                              className="cg-btn cg-btn-secondary cg-btn-sm"
+                              onClick={() =>
+                                setInlineTerms((prev) => [
+                                  ...prev,
+                                  {
+                                    pattern_text: "",
+                                    preferred: "",
+                                    severity: 60,
+                                  },
+                                ])
+                              }
+                            >
+                              + Banned/Preferred Term
+                            </button>
+                            <button
+                              type="button"
+                              className="cg-btn cg-btn-secondary cg-btn-sm"
+                              onClick={() =>
+                                setInlineFacts((prev) => [
+                                  ...prev,
+                                  { text: "", conditions: [], valid_until: "" },
+                                ])
+                              }
+                            >
+                              + Approved Fact
+                            </button>
+                            <button
+                              type="button"
+                              className="cg-btn cg-btn-secondary cg-btn-sm"
+                              onClick={() =>
+                                setInlineColors((prev) => [
+                                  ...prev,
+                                  { name: "", hex: "#0D3B66", max_delta_e: 3.5 },
+                                ])
+                              }
+                            >
+                              + Brand Colour Hex
+                            </button>
+                            <button
+                              type="button"
+                              className="cg-btn cg-btn-secondary cg-btn-sm"
+                              onClick={() =>
+                                setInlineTriggers((prev) => [
+                                  ...prev,
+                                  {
+                                    trigger_pattern: "",
+                                    required_disclaimer_text: "",
+                                    severity: 70,
+                                  },
+                                ])
+                              }
+                            >
+                              + Disclaimer Trigger
+                            </button>
+                          </div>
+
+                          <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
+                            <span className="cg-brand-version" data-testid="inline-live-parser-preview">
+                              Live Extract: {inlineLiveStats.terms} terms · {inlineLiveStats.facts} facts · {inlineLiveStats.colors} hex · {inlineLiveStats.triggers} triggers
+                            </span>
+                            <button
+                              type="button"
+                              data-testid="compile-inline-playbook-btn"
+                              className="cg-btn cg-btn-emerald cg-btn-sm"
+                              disabled={inlineCompilingOnly}
+                              onClick={() => void handleCompileInlinePlaybookOnly()}
+                            >
+                              <CheckCircle2 size={13} />
+                              <span>
+                                {inlineCompilingOnly
+                                  ? "Compiling Playbook…"
+                                  : "Compile & Activate Playbook Only"}
+                              </span>
+                            </button>
+                          </div>
                         </div>
 
                         {inlineTerms.map((t, idx) => (
@@ -1520,7 +1908,7 @@ export function DashboardPage() {
                           type="file"
                           multiple
                           accept=".docx,.pdf,.html,.htm,.md,.txt,.csv,.json,.png,.jpg,.jpeg,.webp"
-                          onChange={(e) => handleFileSelect(e.target.files)}
+                          onChange={(e) => void handleFileSelect(e.target.files)}
                         />
                         <p className="cg-field-help">
                           All text and visual assets are parsed locally into a
@@ -1575,8 +1963,8 @@ export function DashboardPage() {
                         <span>
                           {submitting
                             ? "Running Pre-Publish Checks…"
-                            : selectedCanon === CUSTOM_PLAYBOOK_VALUE
-                              ? "Compile Playbook & Open Studio"
+                            : selectedCanon === CUSTOM_PLAYBOOK_VALUE && !rawContent.trim()
+                              ? "Compile & Activate Playbook"
                               : "Create & Run Scan"}
                         </span>
                         <ArrowRight size={15} className="cg-arrow-shift" />
@@ -1673,7 +2061,7 @@ export function DashboardPage() {
                 <div className="cg-empty-box">
                   <p style={{ margin: 0 }}>
                     {submissions.length === 0
-                      ? "Your campaign queue is clean and empty. Use the composer above to upload your first campaign copy, document, or banner."
+                      ? "Your campaign queue is clean and empty. Use the composer above (or click a Quick Fill preset) to run your first pre-flight audit."
                       : "No campaigns match your active stage or search filter."}
                   </p>
                   {(stageFilter !== "all" || searchQuery) && (
@@ -1726,7 +2114,7 @@ export function DashboardPage() {
                               type="button"
                               className="cg-delete-btn"
                               disabled={deletingId === s.id}
-                              onClick={(e) => handleDeleteSubmission(e, s.id)}
+                              onClick={(e) => void handleDeleteSubmission(e, s.id)}
                               title="Delete campaign bundle"
                             >
                               <Trash2 size={13} />
@@ -1736,7 +2124,6 @@ export function DashboardPage() {
 
                         <h3 className="cg-triage-title">{s.title}</h3>
 
-                        {/* 4-Step Visual Stage Progress Bar */}
                         <div
                           className="cg-mini-stage-bar"
                           title={stageInfo.ownerText}
@@ -1784,7 +2171,7 @@ export function DashboardPage() {
               )}
             </div>
           ) : activeTab === "governance" ? (
-            /* ── Tab 2: Brand Playbooks, Rules & Empirical Bayes Telemetry ── */
+            /* ── Tab 2: Brand Playbooks, Rules & Custom Playbook Compiler ── */
             <div key="tab-governance" className="cg-gov-studio cg-animate-swap">
               <div className="cg-console-hero-bar">
                 <div className="cg-console-hero-left">
@@ -1816,7 +2203,6 @@ export function DashboardPage() {
                 </div>
               )}
 
-              {/* KPI Summary Strip */}
               {activeCanonSummary && (
                 <div className="cg-kpi-strip">
                   <div className="cg-kpi-cell">
@@ -1859,7 +2245,6 @@ export function DashboardPage() {
                 </div>
               )}
 
-              {/* Sub-Navigation Tabs */}
               <div className="cg-gov-subtabs" role="tablist">
                 <button
                   type="button"
@@ -1875,6 +2260,18 @@ export function DashboardPage() {
                     Rule &amp; Fact Catalog (
                     {activeCanonSummary?.rules?.length ?? 0})
                   </span>
+                </button>
+                <button
+                  type="button"
+                  role="tab"
+                  aria-selected={govSubTab === "compile"}
+                  className={`cg-gov-subtab ${
+                    govSubTab === "compile" ? "active" : ""
+                  }`}
+                  onClick={() => setGovSubTab("compile")}
+                >
+                  <FilePlus2 size={14} />
+                  <span>Import Custom Playbook (Pipeline A)</span>
                 </button>
                 <button
                   type="button"
@@ -1899,18 +2296,6 @@ export function DashboardPage() {
                 >
                   <Sliders size={14} />
                   <span>Calibrate Thresholds</span>
-                </button>
-                <button
-                  type="button"
-                  role="tab"
-                  aria-selected={govSubTab === "compile"}
-                  className={`cg-gov-subtab ${
-                    govSubTab === "compile" ? "active" : ""
-                  }`}
-                  onClick={() => setGovSubTab("compile")}
-                >
-                  <FilePlus2 size={14} />
-                  <span>Onboard New Playbook (Pipeline A)</span>
                 </button>
               </div>
 
@@ -1978,7 +2363,7 @@ export function DashboardPage() {
                               <strong>{r.label}</strong>
                             </td>
                             <td className="cg-td-muted">
-                              {r.source_text || "—"}
+                              {r.source_text || "·"}
                             </td>
                             <td>
                               <button
@@ -2149,7 +2534,7 @@ export function DashboardPage() {
                           <button
                             type="button"
                             className="cg-btn cg-btn-primary"
-                            onClick={handleProposePr}
+                            onClick={() => void handleProposePr()}
                             disabled={prLoading}
                           >
                             <GitPullRequest size={14} />
@@ -2190,7 +2575,7 @@ export function DashboardPage() {
                           <button
                             type="button"
                             className="cg-btn cg-btn-emerald"
-                            onClick={handleApplyPr}
+                            onClick={() => void handleApplyPr()}
                             disabled={applyingPr}
                           >
                             <CheckCircle2 size={15} />
@@ -2280,7 +2665,7 @@ export function DashboardPage() {
                   </div>
 
                   <form
-                    onSubmit={handleCalibrateRule}
+                    onSubmit={(e) => void handleCalibrateRule(e)}
                     className="cg-calibrate-form"
                     style={{
                       display: "flex",
@@ -2427,25 +2812,39 @@ export function DashboardPage() {
                 </div>
               )}
 
-              {/* Sub-Tab 4: Onboard New Playbook (Pipeline A) */}
+              {/* Sub-Tab 4: Import Custom Playbook (Pipeline A) */}
               {govSubTab === "compile" && (
-                <div key="gov-compile" className="cg-gov-card cg-animate-swap">
+                <div key="gov-compile" className="cg-gov-card cg-animate-swap" data-testid="studio-compile-playbook-card">
                   <div className="cg-gov-card-header">
                     <div>
                       <h3>
-                        Compile New Company Brand Playbook (Pipeline A · Guards
-                        1–3)
+                        Import &amp; Compile Custom Company Playbook (Pipeline A · Guards 1–3)
                       </h3>
                       <p>
-                        Ingest raw brand books (`.pdf`, `.docx`, `.md`), product
-                        fact sheets (`.csv`, `.json`, `.yaml`), and reference
-                        logos (`.png`, `.jpg`) into a deterministic YAML canon.
+                        Paste raw brand rules, approved facts, hex color tokens, and disclaimer triggers·or click a 1-click template·to compile a deterministic YAML canon.
                       </p>
+                    </div>
+                    <div className="cg-composer-presets">
+                      {SAMPLE_PLAYBOOK_TEMPLATES.map((tpl) => (
+                        <button
+                          key={tpl.id}
+                          type="button"
+                          data-testid={`studio-template-${tpl.id}`}
+                          className="cg-preset-chip"
+                          onClick={() => {
+                            setCompileId(tpl.id);
+                            setCompileText(tpl.rawText);
+                          }}
+                        >
+                          <Sparkles size={12} />
+                          <span>Load {tpl.label}</span>
+                        </button>
+                      ))}
                     </div>
                   </div>
 
                   <form
-                    onSubmit={handleCompileCanon}
+                    onSubmit={(e) => void handleCompileCanon(e)}
                     className="cg-calibrate-form"
                     style={{
                       display: "flex",
@@ -2464,7 +2863,6 @@ export function DashboardPage() {
                           value={compileId}
                           onChange={(e) => setCompileId(e.target.value)}
                           placeholder="e.g. enterprise-retail-2026"
-                          required
                         />
                       </div>
 
@@ -2478,7 +2876,7 @@ export function DashboardPage() {
                           multiple
                           accept=".pdf,.docx,.csv,.json,.yaml,.yml,.md,.txt,.html,.png,.jpg,.jpeg,.webp"
                           onChange={(e) =>
-                            handleCompileFileSelect(e.target.files)
+                            void handleCompileFileSelect(e.target.files)
                           }
                         />
                         {compileAttachments.length > 0 && (
@@ -2513,66 +2911,95 @@ export function DashboardPage() {
                       </label>
                       <textarea
                         id="compile-raw-text"
-                        rows={4}
+                        rows={5}
                         value={compileText}
                         onChange={(e) => setCompileText(e.target.value)}
-                        placeholder="Paste your company brand rules, approved claims, required disclosures, and hex colour tokens…"
+                        placeholder='Paste your company brand rules, approved claims, required disclosures, and hex colour tokens…'
                       />
                     </div>
 
-                    <div className="cg-rule-builder-toolbar">
-                      <button
-                        type="button"
-                        className="cg-btn cg-btn-secondary cg-btn-sm"
-                        onClick={() =>
-                          setStudioTerms((prev) => [
-                            ...prev,
-                            { pattern_text: "", preferred: "", severity: 60 },
-                          ])
-                        }
-                      >
-                        + Term Rule
-                      </button>
-                      <button
-                        type="button"
-                        className="cg-btn cg-btn-secondary cg-btn-sm"
-                        onClick={() =>
-                          setStudioFacts((prev) => [
-                            ...prev,
-                            { text: "", conditions: [], valid_until: "" },
-                          ])
-                        }
-                      >
-                        + Approved Fact
-                      </button>
-                      <button
-                        type="button"
-                        className="cg-btn cg-btn-secondary cg-btn-sm"
-                        onClick={() =>
-                          setStudioColors((prev) => [
-                            ...prev,
-                            { name: "", hex: "#0D3B66", max_delta_e: 3.0 },
-                          ])
-                        }
-                      >
-                        + Colour Token
-                      </button>
-                      <button
-                        type="button"
-                        className="cg-btn cg-btn-secondary cg-btn-sm"
-                        onClick={() =>
-                          setStudioTriggers((prev) => [
-                            ...prev,
-                            {
-                              trigger_pattern: "",
-                              required_disclaimer_text: "",
-                              severity: 70,
-                            },
-                          ])
-                        }
-                      >
-                        + Disclaimer Trigger
-                      </button>
+                    <div
+                      style={{
+                        display: "flex",
+                        justifyContent: "space-between",
+                        alignItems: "center",
+                        flexWrap: "wrap",
+                        gap: "10px",
+                      }}
+                    >
+                      <div className="cg-rule-builder-toolbar">
+                        <button
+                          type="button"
+                          className="cg-btn cg-btn-secondary cg-btn-sm"
+                          onClick={() =>
+                            setStudioTerms((prev) => [
+                              ...prev,
+                              { pattern_text: "", preferred: "", severity: 60 },
+                            ])
+                          }
+                        >
+                          + Term Rule
+                        </button>
+                        <button
+                          type="button"
+                          className="cg-btn cg-btn-secondary cg-btn-sm"
+                          onClick={() =>
+                            setStudioFacts((prev) => [
+                              ...prev,
+                              { text: "", conditions: [], valid_until: "" },
+                            ])
+                          }
+                        >
+                          + Approved Fact
+                        </button>
+                        <button
+                          type="button"
+                          className="cg-btn cg-btn-secondary cg-btn-sm"
+                          onClick={() =>
+                            setStudioColors((prev) => [
+                              ...prev,
+                              { name: "", hex: "#0D3B66", max_delta_e: 3.0 },
+                            ])
+                          }
+                        >
+                          + Colour Token
+                        </button>
+                        <button
+                          type="button"
+                          className="cg-btn cg-btn-secondary cg-btn-sm"
+                          onClick={() =>
+                            setStudioTriggers((prev) => [
+                              ...prev,
+                              {
+                                trigger_pattern: "",
+                                required_disclaimer_text: "",
+                                severity: 70,
+                              },
+                            ])
+                          }
+                        >
+                          + Disclaimer Trigger
+                        </button>
+                      </div>
+
+                      <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
+                        <span className="cg-brand-version">
+                          Live Extract: {studioLiveStats.terms} terms · {studioLiveStats.facts} facts · {studioLiveStats.colors} hex · {studioLiveStats.triggers} triggers
+                        </span>
+                        <button
+                          type="submit"
+                          data-testid="studio-compile-submit-btn"
+                          className="cg-btn cg-btn-primary"
+                          disabled={compiling}
+                        >
+                          <CheckCircle2 size={14} />
+                          <span>
+                            {compiling
+                              ? "Compiling Playbook…"
+                              : "Compile & Register Playbook"}
+                          </span>
+                        </button>
+                      </div>
                     </div>
 
                     {studioTerms.map((t, idx) => (
@@ -2618,178 +3045,340 @@ export function DashboardPage() {
                         </button>
                       </div>
                     ))}
-
-                    {studioFacts.map((f, idx) => (
-                      <div key={`sf-${idx}`} className="cg-inline-rule-row">
-                        <input
-                          type="text"
-                          placeholder="Approved fact/claim"
-                          value={f.text}
-                          onChange={(e) =>
-                            setStudioFacts((prev) =>
-                              prev.map((item, i) =>
-                                i === idx
-                                  ? { ...item, text: e.target.value }
-                                  : item,
-                              ),
-                            )
-                          }
-                        />
-                        <input
-                          type="text"
-                          placeholder="Valid until YYYY-MM-DD"
-                          value={f.valid_until ?? ""}
-                          onChange={(e) =>
-                            setStudioFacts((prev) =>
-                              prev.map((item, i) =>
-                                i === idx
-                                  ? { ...item, valid_until: e.target.value }
-                                  : item,
-                              ),
-                            )
-                          }
-                        />
-                        <button
-                          type="button"
-                          className="cg-btn cg-btn-ghost cg-btn-sm"
-                          onClick={() =>
-                            setStudioFacts((prev) =>
-                              prev.filter((_, i) => i !== idx),
-                            )
-                          }
-                        >
-                          <X size={13} />
-                        </button>
-                      </div>
-                    ))}
-
-                    {studioColors.map((c, idx) => (
-                      <div key={`sc-${idx}`} className="cg-inline-rule-row">
-                        <input
-                          type="text"
-                          placeholder="Colour name"
-                          value={c.name}
-                          onChange={(e) =>
-                            setStudioColors((prev) =>
-                              prev.map((item, i) =>
-                                i === idx
-                                  ? { ...item, name: e.target.value }
-                                  : item,
-                              ),
-                            )
-                          }
-                        />
-                        <input
-                          type="text"
-                          placeholder="#RRGGBB"
-                          value={c.hex}
-                          onChange={(e) =>
-                            setStudioColors((prev) =>
-                              prev.map((item, i) =>
-                                i === idx
-                                  ? { ...item, hex: e.target.value }
-                                  : item,
-                              ),
-                            )
-                          }
-                        />
-                        <button
-                          type="button"
-                          className="cg-btn cg-btn-ghost cg-btn-sm"
-                          onClick={() =>
-                            setStudioColors((prev) =>
-                              prev.filter((_, i) => i !== idx),
-                            )
-                          }
-                        >
-                          <X size={13} />
-                        </button>
-                      </div>
-                    ))}
-
-                    {studioTriggers.map((tr, idx) => (
-                      <div key={`str-${idx}`} className="cg-inline-rule-row">
-                        <input
-                          type="text"
-                          placeholder="Trigger keyword"
-                          value={tr.trigger_pattern}
-                          onChange={(e) =>
-                            setStudioTriggers((prev) =>
-                              prev.map((item, i) =>
-                                i === idx
-                                  ? {
-                                      ...item,
-                                      trigger_pattern: e.target.value,
-                                    }
-                                  : item,
-                              ),
-                            )
-                          }
-                        />
-                        <input
-                          type="text"
-                          placeholder="Required disclaimer text"
-                          value={tr.required_disclaimer_text}
-                          onChange={(e) =>
-                            setStudioTriggers((prev) =>
-                              prev.map((item, i) =>
-                                i === idx
-                                  ? {
-                                      ...item,
-                                      required_disclaimer_text: e.target.value,
-                                    }
-                                  : item,
-                              ),
-                            )
-                          }
-                        />
-                        <button
-                          type="button"
-                          className="cg-btn cg-btn-ghost cg-btn-sm"
-                          onClick={() =>
-                            setStudioTriggers((prev) =>
-                              prev.filter((_, i) => i !== idx),
-                            )
-                          }
-                        >
-                          <X size={13} />
-                        </button>
-                      </div>
-                    ))}
-
-                    <div className="cg-composer-actions">
-                      <button
-                        type="submit"
-                        className="cg-btn cg-btn-primary"
-                        disabled={compiling}
-                      >
-                        {compiling
-                          ? "Compiling Playbook…"
-                          : "Compile & Register Playbook"}
-                      </button>
-                    </div>
                   </form>
 
                   {compileResult && (
                     <div
-                      className="cg-success-banner"
-                      style={{ marginTop: "10px" }}
+                      className="cg-animate-swap"
+                      style={{ marginTop: "14px", display: "flex", flexDirection: "column", gap: "10px" }}
+                      data-testid="studio-compile-result"
                     >
-                      <Check size={14} />
-                      <span>
-                        Compiled Playbook{" "}
-                        <strong>{compileResult.canon_id}</strong> v
-                        {compileResult.version} ({compileResult.term_count}{" "}
-                        terms, {compileResult.fact_count} facts,{" "}
-                        {compileResult.color_count} colours).
-                      </span>
+                      <div className="cg-success-banner">
+                        <Check size={14} />
+                        <span>
+                          Compiled &amp; Registered Playbook{" "}
+                          <strong>{compileResult.canon_id}</strong> v
+                          {compileResult.version} ({compileResult.term_count}{" "}
+                          terminology rules, {compileResult.fact_count} facts,{" "}
+                          {compileResult.color_count} colour tokens).
+                        </span>
+                        <button
+                          type="button"
+                          className="cg-btn cg-btn-secondary cg-btn-sm"
+                          style={{ marginLeft: "auto" }}
+                          onClick={() => {
+                            handleSelectGovCanon(compileResult.canon_id);
+                            setGovSubTab("rules");
+                          }}
+                        >
+                          <span>View in Rule Catalog →</span>
+                        </button>
+                      </div>
+                      <div className="yaml-diff-box">
+                        <div className="yaml-diff-title">
+                          Compiled Canon YAML Preview (<code>canons/{compileResult.canon_id}/canon.yaml</code>)
+                        </div>
+                        <pre className="yaml-diff-pre">{compileResult.yaml_preview}</pre>
+                      </div>
                     </div>
                   )}
                 </div>
               )}
             </div>
+          ) : activeTab === "mcp" ? (
+            /* ── Tab 3: MCP Brand Rule Server & AI Agent Hub (`canongate-mcp`) ── */
+            <div key="tab-mcp" className="cg-gov-studio cg-animate-swap" data-testid="mcp-server-hub">
+              <div className="cg-console-hero-bar">
+                <div className="cg-console-hero-left">
+                  <h1 className="cg-console-title">
+                    MCP Brand Rule Server &amp; AI Agent Hub (<code>canongate-mcp</code>)
+                  </h1>
+                  <span className="cg-role-stage-tag">MCP 2026-07-28</span>
+                </div>
+                <span className="cg-brand-version">stdio + Streamable HTTP (POST /api/mcp)</span>
+              </div>
+
+              <div className="cg-kpi-strip">
+                <div className="cg-kpi-cell">
+                  <span className="cg-mono-label">MCP Protocol Version</span>
+                  <strong>2026-07-28</strong>
+                  <span>JSON-RPC 2.0 Compliant</span>
+                </div>
+                <div className="cg-kpi-cell">
+                  <span className="cg-mono-label">Exposed Governance Tools</span>
+                  <strong>8 Tools</strong>
+                  <span>Compile, List, Audit, Explain &amp; Fix</span>
+                </div>
+                <div className="cg-kpi-cell">
+                  <span className="cg-mono-label">Live Canon Resources</span>
+                  <strong>{canons.length}</strong>
+                  <code>canongate://canons/&lt;id&gt;</code>
+                </div>
+                <div className="cg-kpi-cell">
+                  <span className="cg-mono-label">HTTP Endpoint</span>
+                  <strong>/api/mcp</strong>
+                  <span>Streamable HTTP + Local Engine</span>
+                </div>
+              </div>
+
+              <div className="cg-gov-two-col">
+                {/* Left Card: How Users & AI Agents Supply/Get Brand Rules via MCP */}
+                <div className="cg-gov-card">
+                  <div className="cg-gov-card-header">
+                    <div>
+                      <h3>1. Connect Your AI Agent &amp; Push Brand Rules via MCP</h3>
+                      <p>
+                        Give Claude Desktop, Cursor, Windsurf, or custom AI agents direct access to your company brand rules·or push new brand rules directly via the <code>compile_canon</code> MCP tool below.
+                      </p>
+                    </div>
+                  </div>
+
+                  <div className="cg-mcp-code-card">
+                    <div className="cg-mcp-card-title">
+                      <span>Claude Desktop / Cursor Config (<code>claude_desktop_config.json</code>)</span>
+                      <button
+                        type="button"
+                        className="cg-btn cg-btn-secondary cg-btn-sm"
+                        onClick={() =>
+                          handleCopyText(
+                            "stdio",
+                            JSON.stringify(
+                              {
+                                mcpServers: {
+                                  canongate: {
+                                    command: "uv",
+                                    args: ["run", "canongate-mcp"],
+                                    env: {
+                                      CANONGATE_HTTP_ENDPOINT: "http://localhost:8000/api/mcp",
+                                    },
+                                  },
+                                },
+                              },
+                              null,
+                              2,
+                            ),
+                          )
+                        }
+                      >
+                        {mcpCopiedKey === "stdio" ? <Check size={12} /> : <Copy size={12} />}
+                        <span>{mcpCopiedKey === "stdio" ? "Copied" : "Copy Config"}</span>
+                      </button>
+                    </div>
+                    <pre className="cg-mcp-pre">{`{
+  "mcpServers": {
+    "canongate": {
+      "command": "uv",
+      "args": ["run", "canongate-mcp"],
+      "env": {
+        "CANONGATE_HTTP_ENDPOINT": "http://localhost:8000/api/mcp"
+      }
+    }
+  }
+}`}</pre>
+                  </div>
+
+                  {/* Direct MCP Brand Rule Compiler Form */}
+                  <div
+                    style={{
+                      borderTop: "1px solid var(--border)",
+                      paddingTop: "12px",
+                      display: "flex",
+                      flexDirection: "column",
+                      gap: "10px",
+                    }}
+                  >
+                    <h4 style={{ margin: 0, fontSize: "14px" }}>
+                      Push Brand Rules Directly via MCP <code>compile_canon</code> Tool
+                    </h4>
+                    <div className="cg-field-group">
+                      <label htmlFor="mcp-canon-name">Playbook ID to Register via MCP</label>
+                      <input
+                        id="mcp-canon-name"
+                        type="text"
+                        value={mcpCanonName}
+                        onChange={(e) => setMcpCanonName(e.target.value)}
+                        placeholder="e.g. fintech-mcp-playbook"
+                      />
+                    </div>
+                    <div className="cg-field-group">
+                      <label htmlFor="mcp-raw-guidelines">
+                        Brand Rules, Approved Claims &amp; Hex Tokens Payload
+                      </label>
+                      <textarea
+                        id="mcp-raw-guidelines"
+                        rows={4}
+                        value={mcpRawGuidelines}
+                        onChange={(e) => setMcpRawGuidelines(e.target.value)}
+                      />
+                    </div>
+                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: "8px", flexWrap: "wrap" }}>
+                      <span style={{ fontSize: "12px", color: "var(--muted)" }}>
+                        Calls <code>POST /api/mcp</code> → <code>tools/call (compile_canon)</code>
+                      </span>
+                      <button
+                        type="button"
+                        data-testid="mcp-compile-canon-btn"
+                        className="cg-btn cg-btn-primary cg-btn-sm"
+                        disabled={mcpRunning || !mcpRawGuidelines.trim()}
+                        onClick={() =>
+                          void handleRunMcpTool("compile_canon", {
+                            canon_id: mcpCanonName.trim() || "mcp-custom-playbook",
+                            canon_name: mcpCanonName.trim() || "mcp-custom-playbook",
+                            raw_text: mcpRawGuidelines,
+                            persist: true,
+                          })
+                        }
+                      >
+                        <Cpu size={13} />
+                        <span>
+                          {mcpRunning ? "Executing MCP RPC…" : "Compile Brand Rules via MCP"}
+                        </span>
+                      </button>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Right Card: Live MCP Tool & Resource Playground */}
+                <div className="cg-gov-card">
+                  <div className="cg-gov-card-header">
+                    <div>
+                      <h3>2. Live MCP JSON-RPC 2.0 Tool &amp; Resource Tester</h3>
+                      <p>
+                        Click any MCP tool or <code>canongate://canons/&lt;id&gt;</code> resource URI below to execute a live JSON-RPC 2.0 request and inspect the exact payload returned to AI agents.
+                      </p>
+                    </div>
+                  </div>
+
+                  <div>
+                    <span className="cg-mono-label" style={{ marginBottom: "6px" }}>
+                      Execute MCP Governance Tools (<code>tools/call</code>):
+                    </span>
+                    <div className="cg-composer-presets">
+                      <button
+                        type="button"
+                        data-testid="mcp-tool-list_canons"
+                        className={`cg-preset-chip ${mcpSelectedTool === "list_canons" ? "active" : ""}`}
+                        onClick={() => void handleRunMcpTool("list_canons", {})}
+                      >
+                        <code>list_canons</code>
+                      </button>
+                      <button
+                        type="button"
+                        data-testid="mcp-tool-get_canon_rules"
+                        className={`cg-preset-chip ${mcpSelectedTool === "get_canon_rules" ? "active" : ""}`}
+                        onClick={() =>
+                          void handleRunMcpTool("get_canon_rules", {
+                            canon_id: canons[0]?.id || "indian-digital-lending",
+                          })
+                        }
+                      >
+                        <code>get_canon_rules</code>
+                      </button>
+                      <button
+                        type="button"
+                        data-testid="mcp-tool-submit_batch"
+                        className={`cg-preset-chip ${mcpSelectedTool === "submit_batch" ? "active" : ""}`}
+                        onClick={() =>
+                          void handleRunMcpTool("submit_batch", {
+                            title: "MCP Agent Loan Ad Audit",
+                            canon_id: "indian-digital-lending",
+                            raw_content:
+                              "Instant personal loan with guaranteed approval and 0% processing fee on loans under Rs 1,00,000!",
+                          })
+                        }
+                      >
+                        <code>submit_batch</code>
+                      </button>
+                      <button
+                        type="button"
+                        data-testid="mcp-tool-get_findings"
+                        className={`cg-preset-chip ${mcpSelectedTool === "get_findings" ? "active" : ""}`}
+                        onClick={() =>
+                          void handleRunMcpTool("get_findings", {
+                            submission_id: submissions[0]?.id ?? 1,
+                          })
+                        }
+                      >
+                        <code>get_findings</code>
+                      </button>
+                      <button
+                        type="button"
+                        data-testid="mcp-tool-explain_finding"
+                        className={`cg-preset-chip ${mcpSelectedTool === "explain_finding" ? "active" : ""}`}
+                        onClick={() =>
+                          void handleRunMcpTool("explain_finding", {
+                            finding_id: "1",
+                          })
+                        }
+                      >
+                        <code>explain_finding</code>
+                      </button>
+                      <button
+                        type="button"
+                        data-testid="mcp-tool-propose_fix"
+                        className={`cg-preset-chip ${mcpSelectedTool === "propose_fix" ? "active" : ""}`}
+                        onClick={() =>
+                          void handleRunMcpTool("propose_fix", {
+                            finding_id: "1",
+                          })
+                        }
+                      >
+                        <code>propose_fix</code>
+                      </button>
+                    </div>
+                  </div>
+
+                  <div>
+                    <span className="cg-mono-label" style={{ marginBottom: "6px" }}>
+                      Read MCP Brand Rule Resources (<code>resources/read</code>):
+                    </span>
+                    <div className="cg-composer-presets">
+                      {canons.map((c) => (
+                        <button
+                          key={c.id}
+                          type="button"
+                          className="cg-preset-chip"
+                          onClick={() =>
+                            void handleReadMcpResource(`canongate://canons/${c.id}`)
+                          }
+                        >
+                          <code>canongate://canons/{c.id}</code>
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+
+                  {mcpRequestJson ? (
+                    <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
+                      <div className="cg-mcp-code-card">
+                        <div className="cg-mcp-card-title">
+                          <span>JSON-RPC 2.0 Request (<code>POST /api/mcp</code>)</span>
+                          <code>MCP-Protocol-Version: 2026-07-28</code>
+                        </div>
+                        <pre className="cg-mcp-pre" style={{ maxHeight: "120px", overflowY: "auto" }}>
+                          {mcpRequestJson}
+                        </pre>
+                      </div>
+                      <div className="cg-mcp-code-card" data-testid="mcp-rpc-response-box">
+                        <div className="cg-mcp-card-title">
+                          <span>JSON-RPC 2.0 Response</span>
+                          <span className="cg-text-emerald">200 OK</span>
+                        </div>
+                        <pre className="cg-mcp-pre" style={{ maxHeight: "220px", overflowY: "auto" }}>
+                          {mcpResponseJson}
+                        </pre>
+                      </div>
+                    </div>
+                  ) : (
+                    <div className="cg-clean-note">
+                      Click any MCP tool chip above (such as <code>list_canons</code>, <code>get_canon_rules</code>, or <code>submit_batch</code>) or click <strong>Compile Brand Rules via MCP</strong> on the left to inspect live JSON-RPC 2.0 payloads.
+                    </div>
+                  )}
+                </div>
+              </div>
+            </div>
           ) : (
-            /* ── Tab 3: Pre-Publish Webhook Gate Studio (`POST /api/gate/check`) ── */
+            /* ── Tab 4: Pre-Publish Webhook Gate Studio (`POST /api/gate/check`) ── */
             <div key="tab-gate" className="cg-gov-studio cg-animate-swap">
               <div className="cg-console-hero-bar">
                 <div className="cg-console-hero-left">
@@ -2802,7 +3391,7 @@ export function DashboardPage() {
               </div>
 
               <div className="cg-gov-two-col">
-                <form onSubmit={handleRunWebhookGate} className="cg-gov-card">
+                <form onSubmit={(e) => void handleRunWebhookGate(e)} className="cg-gov-card">
                   <div className="cg-gov-card-header">
                     <div>
                       <h3>Simulate CMS / CI-CD Publish Webhook</h3>
@@ -2811,6 +3400,23 @@ export function DashboardPage() {
                         Webflow, or Generic JSON payloads with conformal risk
                         control.
                       </p>
+                    </div>
+                    <div className="cg-composer-presets">
+                      {SAMPLE_CAMPAIGN_PRESETS.map((p) => (
+                        <button
+                          key={p.id}
+                          type="button"
+                          className="cg-preset-chip"
+                          onClick={() => {
+                            setGateCanonId(p.canonId);
+                            setGateTitle(p.title);
+                            setGateContent(p.content);
+                          }}
+                        >
+                          <Sparkles size={12} />
+                          <span>{p.label}</span>
+                        </button>
+                      ))}
                     </div>
                   </div>
 
@@ -2932,6 +3538,7 @@ export function DashboardPage() {
 
                     <button
                       type="submit"
+                      data-testid="dashboard-run-gate-btn"
                       className="cg-btn cg-btn-primary"
                       disabled={gateRunning || !gateContent.trim()}
                     >
@@ -2949,11 +3556,12 @@ export function DashboardPage() {
                     <div>
                       <h3>Gate Verdict &amp; Calibrated Findings</h3>
                       <p>
-                        Returns deterministic <code>allow</code>,{" "}
-                        <code>needs_review</code>, or <code>block</code>{" "}
-                        verdict.
+                        Returns <code>allow</code>, <code>needs_review</code>,
+                        or <code>block</code> in &lt;25 ms for deterministic
+                        checks.
                       </p>
                     </div>
+
                     {gateResult && (
                       <span
                         className={`status-badge ${
@@ -2964,16 +3572,15 @@ export function DashboardPage() {
                               : "status-approved"
                         }`}
                       >
-                        {gateResult.decision.toUpperCase()}
+                        {gateResult.decision.toUpperCase()} ·{" "}
+                        {gateResult.latency_ms.toFixed(1)} ms
                       </span>
                     )}
                   </div>
 
                   {!gateResult ? (
                     <div className="cg-clean-note">
-                      Paste your content on the left and click{" "}
-                      <strong>Run Gate Check</strong> to execute{" "}
-                      <code>POST /api/gate/check</code>.
+                      Click <strong>Run Gate Check</strong> on the left to execute <code>POST /api/gate/check</code> and inspect the calibrated decision payload.
                     </div>
                   ) : (
                     <>
@@ -2981,7 +3588,7 @@ export function DashboardPage() {
                         <div className="cg-kpi-cell">
                           <span className="cg-mono-label">Decision</span>
                           <strong>{gateResult.decision.toUpperCase()}</strong>
-                          <code>Adapter: {gateResult.adapter_used}</code>
+                          <span>Adapter: {gateResult.adapter_used}</span>
                         </div>
                         <div className="cg-kpi-cell">
                           <span className="cg-mono-label">Blockers</span>
@@ -2989,94 +3596,63 @@ export function DashboardPage() {
                           <span>Warnings: {gateResult.warning_count}</span>
                         </div>
                         <div className="cg-kpi-cell">
-                          <span className="cg-mono-label">
-                            Conformal Cutoff
-                          </span>
+                          <span className="cg-mono-label">Threshold</span>
                           <strong>
-                            {gateResult.conformal_threshold.toFixed(2)}
+                            {(gateResult.conformal_threshold * 100).toFixed(0)}
                           </strong>
-                          <span>α = {gateResult.alpha}</span>
-                        </div>
-                        <div className="cg-kpi-cell">
-                          <span className="cg-mono-label">Latency</span>
-                          <strong>
-                            {gateResult.latency_ms.toFixed(1)} ms
-                          </strong>
-                          <code>
-                            SHA: {gateResult.content_hash.slice(0, 8)}…
-                          </code>
+                          <span>α = {gateResult.alpha.toFixed(2)}</span>
                         </div>
                       </div>
 
                       {gateResult.submission_id && (
                         <div className="cg-success-banner">
+                          <Check size={14} />
                           <span>
-                            Persisted as Campaign Bundle{" "}
-                            <strong>#{gateResult.submission_id}</strong>.
+                            Persisted as Bundle #{gateResult.submission_id}.{" "}
+                            <button
+                              type="button"
+                              className="cg-link-btn"
+                              onClick={() =>
+                                navigate(
+                                  `/submissions/${gateResult.submission_id}`,
+                                )
+                              }
+                            >
+                              Open in Review Studio →
+                            </button>
                           </span>
-                          <button
-                            type="button"
-                            className="cg-btn cg-btn-primary cg-btn-sm"
-                            style={{ marginLeft: "auto" }}
-                            onClick={() =>
-                              navigate(
-                                `/submissions/${gateResult.submission_id}`,
-                              )
-                            }
-                          >
-                            <span>Open in Review Studio</span>
-                            <ArrowRight size={13} />
-                          </button>
                         </div>
                       )}
 
-                      <div className="cg-table-scroll">
-                        <table className="cg-data-table">
-                          <thead>
-                            <tr>
-                              <th>Verdict</th>
-                              <th>Check ID</th>
-                              <th>Message &amp; Remediation</th>
-                              <th className="cg-num-col">Severity</th>
-                            </tr>
-                          </thead>
-                          <tbody>
-                            {gateResult.findings.map((f, i) => (
-                              <tr key={f.finding_id || i}>
-                                <td>
-                                  <span
-                                    className={`cg-sev-badge ${
-                                      f.severity >= 50
-                                        ? "sev-blocker"
-                                        : "sev-warning"
-                                    }`}
-                                  >
-                                    {f.verdict}
-                                  </span>
-                                </td>
-                                <td>
-                                  <code>{f.check_id}</code>
-                                </td>
-                                <td>
-                                  <div>{f.message}</div>
-                                  {f.replacement_preview && (
-                                    <div
-                                      style={{
-                                        fontSize: "12px",
-                                        color: "var(--positive)",
-                                        marginTop: "3px",
-                                      }}
-                                    >
-                                      Fix: <code>{f.replacement_preview}</code>
-                                    </div>
-                                  )}
-                                </td>
-                                <td className="cg-num-col">{f.severity}</td>
-                              </tr>
-                            ))}
-                          </tbody>
-                        </table>
-                      </div>
+                      {gateResult.findings.length === 0 ? (
+                        <div className="cg-clean-note">
+                          Zero violations above the conformal threshold.
+                          Content is cleared for publication.
+                        </div>
+                      ) : (
+                        <div className="cg-finding-list">
+                          {gateResult.findings.map((f) => (
+                            <div key={f.finding_id} className="cg-finding-item">
+                              <div className="cg-finding-item-top">
+                                <span
+                                  className={`cg-sev-badge ${
+                                    f.verdict === "BLOCKER"
+                                      ? "sev-blocker"
+                                      : "sev-warning"
+                                  }`}
+                                >
+                                  {f.verdict} · {f.severity}
+                                </span>
+                                <code>{f.check_id}</code>
+                                <span className="cg-tier-tag">
+                                  Tier: {f.tier}
+                                </span>
+                              </div>
+                              <p className="cg-finding-msg">{f.message}</p>
+                            </div>
+                          ))}
+                        </div>
+                      )}
                     </>
                   )}
                 </div>

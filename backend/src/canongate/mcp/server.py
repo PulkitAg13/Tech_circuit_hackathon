@@ -658,12 +658,40 @@ class CanonGateMcpServer:
                 "override, or publish campaigns; sign-off stays exclusively in the Review Studio."
             )
 
-        if tool_name not in TOOL_MAP:
+        if tool_name not in TOOL_MAP and tool_name not in ("compile_canon", "get_canon_rules"):
             raise McpProtocolError(-32602, f"Unknown tool: {tool_name}")
 
         try:
             if tool_name == "list_canons":
                 structured = self._tool_list_canons(arguments)
+            elif tool_name == "get_canon_rules":
+                cid = str(arguments.get("canon_id") or "indian-digital-lending").strip()
+                canon_obj = _get_canon_lazy(cid)
+                structured = {
+                    "canon_id": canon_obj.id,
+                    "version": canon_obj.version,
+                    "term_count": len(canon_obj.terminology),
+                    "fact_count": len(canon_obj.facts),
+                    "color_count": len(canon_obj.palette),
+                    "trigger_count": len(canon_obj.triggers),
+                }
+            elif tool_name == "compile_canon":
+                from canongate.canon.compiler import compile_canon as _compile_canon_fn
+
+                cid = str(
+                    arguments.get("canon_id")
+                    or arguments.get("canon_name")
+                    or "mcp-custom-playbook"
+                ).strip()
+                raw_txt = str(arguments.get("raw_text") or "").strip()
+                comp_res = _compile_canon_fn(canon_id=cid, raw_text=raw_txt, version="1.0")
+                structured = {
+                    "canon_id": comp_res.canon.id,
+                    "version": comp_res.canon.version,
+                    "term_count": len(comp_res.canon.terminology),
+                    "fact_count": len(comp_res.canon.facts),
+                    "color_count": len(comp_res.canon.palette),
+                }
             elif tool_name == "submit_batch":
                 structured = await self._tool_submit_batch(arguments, params)
             elif tool_name == "job_status":

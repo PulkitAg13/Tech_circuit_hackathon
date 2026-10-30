@@ -17,7 +17,6 @@ export function getApiBase(): string {
   if (import.meta.env.VITE_API_URL) {
     return `${import.meta.env.VITE_API_URL.replace(/\/$/, "")}/api`;
   }
-  // If hosted on Render or GitHub Pages, default to the live Render backend:
   if (
     typeof window !== "undefined" &&
     (window.location.hostname.includes("onrender.com") ||
@@ -71,9 +70,15 @@ function authHeaders(): Record<string, string> {
 let _reauthPromise: Promise<TokenResponse | null> | null = null;
 
 async function trySilentReauth(base: string): Promise<TokenResponse | null> {
+  // Never silently re-authenticate if the user explicitly signed out or has no stored username
+  const storedUser = localStorage.getItem("cg_username");
+  const signedOutFlag =
+    typeof sessionStorage !== "undefined" && sessionStorage.getItem("cg_signed_out") === "1";
+  if (!storedUser || signedOutFlag) {
+    return null;
+  }
   if (_reauthPromise) return _reauthPromise;
   _reauthPromise = (async () => {
-    const storedUser = localStorage.getItem("cg_username") || "creative_lead";
     const storedRole = localStorage.getItem("cg_role");
     const storedDisplay = localStorage.getItem("cg_display_name") || storedUser;
     try {
@@ -86,7 +91,6 @@ async function trySilentReauth(base: string): Promise<TokenResponse | null> {
         }),
       });
       if (!loginRes.ok) {
-        // Fallback to creative_lead demo persona or re-register if DB was reset
         loginRes = await fetch(`${base}/auth/register`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
@@ -156,7 +160,6 @@ async function request<T>(
 
   const base = getApiBase();
   try {
-    // Proactively refresh if the token in storage is already expired
     const rawToken = localStorage.getItem("cg_token");
     if (
       rawToken &&
@@ -181,9 +184,7 @@ async function request<T>(
     });
 
     const contentType = res.headers.get("content-type") || "";
-    // If static hosting returned HTML SPA fallback (like index.html) instead of API JSON:
     if (contentType.includes("text/html")) {
-      console.warn(`[CanonGate] API at ${base}${path} returned HTML fallback; falling back to in-browser engine.`);
       return handleBrowserRequest<T>(path, options);
     }
 
@@ -222,7 +223,6 @@ async function request<T>(
       (err as Error)?.message?.includes("Unexpected token '<'") ||
       (err as Error)?.message?.includes("JSON.parse")
     ) {
-      console.warn(`[CanonGate] API unreachable at ${base}${path}; falling back to in-browser engine.`);
       return handleBrowserRequest<T>(path, options);
     }
     throw err;
@@ -247,6 +247,9 @@ async function handleBrowserRequest<T>(
           ? "admin"
           : "creator");
     const display = body.display_name || username;
+    if (typeof sessionStorage !== "undefined") {
+      sessionStorage.removeItem("cg_signed_out");
+    }
     return {
       token: `browser_jwt_${username}_${Date.now()}`,
       username,
@@ -256,11 +259,15 @@ async function handleBrowserRequest<T>(
   }
 
   if (path === "/auth/me") {
-    const username = localStorage.getItem("cg_username") || "creative_lead";
+    const username = localStorage.getItem("cg_username");
+    if (!username) {
+      throw new ApiError(401, "Not authenticated");
+    }
     const role = localStorage.getItem("cg_role") || "creator";
     const display = localStorage.getItem("cg_display_name") || username;
+    const token = localStorage.getItem("cg_token") || `browser_jwt_${username}`;
     return {
-      token: `browser_jwt_${username}_${Date.now()}`,
+      token,
       username,
       role,
       display_name: display,
@@ -277,248 +284,19 @@ async function handleBrowserRequest<T>(
     } as unknown as T;
   }
 
+  // MCP JSON-RPC 2.0 (`POST /api/mcp`)
+  if (path === "/mcp" && method === "POST") {
+    return browserBackend.handleMcpRpc(body) as unknown as T;
+  }
+
   // Gate Check (`POST /api/gate/check`)
   if (path === "/gate/check" && method === "POST") {
     return browserBackend.gateCheck(body) as unknown as T;
   }
 
-  // Canons (`GET /api/canons`) — matches exact hashes & counts from `canons/*.yaml`
+  // Canons (`GET /api/canons`) · includes both built-in and newly compiled custom playbooks
   if (path === "/canons" && method === "GET") {
-    return [
-      {
-        id: "indian-digital-lending",
-        version: "1.0",
-        hash: "1cd1ac13e83f1b00b2f9d64dd24a887c3cbd189830ba14b0e6c08f77a2e832ec",
-        term_count: 4,
-        color_count: 2,
-        fact_count: 2,
-        trigger_count: 1,
-        logo_count: 1,
-        has_voice_profile: true,
-        rules: [
-          {
-            id: "term-guaranteed-approval",
-            rule_type: "terminology",
-            label: "guaranteed approval → subject to credit assessment",
-            severity: 85,
-            source_text: "RBI Digital Lending Directions: never promise guaranteed loan approval without underwriting.",
-          },
-          {
-            id: "term-no-credit-check",
-            rule_type: "terminology",
-            label: "no credit check → streamlined credit verification",
-            severity: 80,
-            source_text: "RBI KYC / Bureau mandate: all regulated NBFC loans require bureau reporting.",
-          },
-          {
-            id: "term-free-money",
-            rule_type: "terminology",
-            label: "free money → credit facility",
-            severity: 75,
-            source_text: "ASCI BFSI code: do not portray credit or loans as free money.",
-          },
-          {
-            id: "term-cheap",
-            rule_type: "terminology",
-            label: "cheap → competitive-rate",
-            severity: 40,
-            source_text: "Brand voice: use 'competitive-rate' rather than 'cheap'.",
-          },
-          {
-            id: "fact-kfs-processing-fee",
-            rule_type: "fact",
-            label: "0% processing fee on loans (under Rs 50,000; first-time borrowers only)",
-            severity: 75,
-            source_text: "0% processing fee on loans [under Rs 50,000, for first-time borrowers only]",
-          },
-          {
-            id: "fact-kfs-apr-ceiling",
-            rule_type: "fact",
-            label: "Annual Percentage Rate (APR) is 18% (up to Rs 2,00,000)",
-            severity: 80,
-            source_text: "Annual Percentage Rate (APR) is 18% [up to Rs 2,00,000]",
-          },
-          {
-            id: "trig-kfs-schedule",
-            rule_type: "trigger",
-            label: "Trigger: 0% processing fee → Subject to RBI Key Fact Statement (KFS) schedule",
-            severity: 75,
-            source_text: "Subject to RBI Key Fact Statement (KFS) schedule",
-          },
-          {
-            id: "color-rbi-trust-navy",
-            rule_type: "palette",
-            label: "Trust Navy (#0D3B66 · ΔE₀₀ ≤ 3.0)",
-            max_delta_e: 3.0,
-            source_text: "#0D3B66",
-          },
-          {
-            id: "color-upi-emerald",
-            rule_type: "palette",
-            label: "Verified Emerald (#1B8A5A · ΔE₀₀ ≤ 3.0)",
-            max_delta_e: 3.0,
-            source_text: "#1B8A5A",
-          },
-          {
-            id: "lending-voice",
-            rule_type: "voice",
-            label: "Voice Profile (max 28 words, passive ≤ 25%, FK ≤ 12.0)",
-            severity: 35,
-            max_sentence_words: 28,
-            max_passive_voice_pct: 25.0,
-            max_flesch_kincaid_grade: 12.0,
-            source_text: "Transparent digital credit with upfront APR and zero hidden charges.",
-          },
-          {
-            id: "nbfc-primary-logo",
-            rule_type: "logo",
-            label: "NBFC Trust Mark (0.50H clear-space, aspect ≤ 2%)",
-            severity: 65,
-            clear_space_ratio_h: 0.5,
-            max_aspect_distortion_pct: 2.0,
-            source_text: "NBFC Trust Mark",
-          },
-        ],
-      },
-      {
-        id: "indian-d2c-nutra",
-        version: "1.0",
-        hash: "eb05d1784ad09bab4677f33a8f8ba1b6a83f4a23c38df07b8a96d8552a133899",
-        term_count: 3,
-        color_count: 2,
-        fact_count: 2,
-        trigger_count: 0,
-        logo_count: 0,
-        has_voice_profile: false,
-        rules: [
-          {
-            id: "term-miracle-cure",
-            rule_type: "terminology",
-            label: "miracle cure → nutritional support",
-            severity: 90,
-            source_text: "Drugs and Magic Remedies Act / ASCI: never claim a miracle cure.",
-          },
-          {
-            id: "term-cures-diabetes",
-            rule_type: "terminology",
-            label: "cures diabetes → supports healthy glycemic metabolism",
-            severity: 95,
-            source_text: "ASCI Health Guidelines: nutraceuticals cannot claim to cure chronic disease.",
-          },
-          {
-            id: "term-100pct-fat-burn",
-            rule_type: "terminology",
-            label: "100% fat burn → supports active weight management",
-            severity: 80,
-            source_text: "CCPA 2022: absolute 100% physiological efficacy claims require clinical trial proof.",
-          },
-          {
-            id: "fact-curcumin-absorption",
-            rule_type: "fact",
-            label: "2x faster absorption (in-vitro ingredient study only; 8 weeks with piperine)",
-            severity: 85,
-            source_text: "2x faster absorption [in-vitro ingredient study only, when taken with piperine for 8 weeks]",
-          },
-          {
-            id: "fact-protein-per-serving",
-            rule_type: "fact",
-            label: "24g plant protein per scoop (per 35g serving size)",
-            severity: 75,
-            source_text: "24g plant protein per scoop [per 35g serving size]",
-          },
-          {
-            id: "color-botanical-sage",
-            rule_type: "palette",
-            label: "Botanical Sage (#2E6F40 · ΔE₀₀ ≤ 3.0)",
-            max_delta_e: 3.0,
-            source_text: "#2E6F40",
-          },
-          {
-            id: "color-turmeric-gold",
-            rule_type: "palette",
-            label: "Turmeric Gold (#D99B26 · ΔE₀₀ ≤ 3.5)",
-            max_delta_e: 3.5,
-            source_text: "#D99B26",
-          },
-        ],
-      },
-      {
-        id: "acme-corp",
-        version: "1.0",
-        hash: "5be7400ed3c8470ed07ed1cafeaade500f8f85619f333af28472e7f1d5ae06a9",
-        term_count: 4,
-        color_count: 3,
-        fact_count: 2,
-        trigger_count: 0,
-        logo_count: 0,
-        has_voice_profile: false,
-        rules: [
-          {
-            id: "term-cheap",
-            rule_type: "terminology",
-            label: "cheap → affordable",
-            severity: 60,
-            source_text: "Brand voice: never use 'cheap' — it implies low quality.",
-          },
-          {
-            id: "term-buy",
-            rule_type: "terminology",
-            label: "buy → purchase",
-            severity: 40,
-            source_text: "Formal tone: use 'purchase' instead of 'buy'.",
-          },
-          {
-            id: "term-users",
-            rule_type: "terminology",
-            label: "users → customers",
-            severity: 50,
-            source_text: "We serve customers, not users.",
-          },
-          {
-            id: "term-cutting-edge",
-            rule_type: "terminology",
-            label: "cutting-edge → innovative",
-            severity: 30,
-            source_text: "Avoid cliché buzzwords.",
-          },
-          {
-            id: "fact-founding",
-            rule_type: "fact",
-            label: "Acme Corp was founded in 2020.",
-            severity: 80,
-            source_text: "Acme Corp was founded in 2020.",
-          },
-          {
-            id: "fact-employees",
-            rule_type: "fact",
-            label: "Acme Corp has over 500 employees. (as of Q3 2025)",
-            severity: 75,
-            source_text: "Acme Corp has over 500 employees. [as of Q3 2025]",
-          },
-          {
-            id: "color-primary",
-            rule_type: "palette",
-            label: "Primary Blue (#1A73E8 · ΔE₀₀ ≤ 3.0)",
-            max_delta_e: 3.0,
-            source_text: "#1A73E8",
-          },
-          {
-            id: "color-accent",
-            rule_type: "palette",
-            label: "Accent Red (#EA4335 · ΔE₀₀ ≤ 5.0)",
-            max_delta_e: 5.0,
-            source_text: "#EA4335",
-          },
-          {
-            id: "color-dark",
-            rule_type: "palette",
-            label: "Dark Gray (#202124 · ΔE₀₀ ≤ 2.0)",
-            max_delta_e: 2.0,
-            source_text: "#202124",
-          },
-        ],
-      },
-    ] as unknown as T;
+    return browserBackend.listCanons() as unknown as T;
   }
 
   const lintMatch = path.match(/^\/canons\/([^/]+)\/lint$/);
@@ -622,30 +400,7 @@ async function handleBrowserRequest<T>(
   }
 
   if (path === "/canons/compile" && method === "POST") {
-    const cId = body.canon_id || "brand-playbook";
-    return {
-      canon_id: cId,
-      version: "1.0",
-      hash: sha256Hex(cId),
-      term_count: 3,
-      color_count: 2,
-      fact_count: 2,
-      yaml_preview: `id: ${cId}\nversion: "1.0"\n# Compiled via Pipeline A Grounded Anchor Extractor`,
-      provenance: [
-        {
-          rule_id: "term-guaranteed-approval",
-          rule_kind: "terminology",
-          start: 0,
-          end: 42,
-          source_text: "Loans must never guarantee instant approval without bureau pull.",
-          raw_anchor_recall: 0.95,
-          effective_anchor_recall: 0.92,
-          recovered_conditions: ["bureau pull required"],
-          round_trip_nli_score: 0.98,
-          alignment_status: "verified",
-        },
-      ],
-    } as unknown as T;
+    return browserBackend.compileCanon(body) as unknown as T;
   }
 
   // Submissions
@@ -832,6 +587,9 @@ export function login(
   username: string,
   password: string,
 ): Promise<TokenResponse> {
+  if (typeof sessionStorage !== "undefined") {
+    sessionStorage.removeItem("cg_signed_out");
+  }
   return request("/auth/login", {
     method: "POST",
     body: JSON.stringify({ username, password }),
@@ -844,6 +602,9 @@ export function register(
   role = "creator",
   displayName = "",
 ): Promise<TokenResponse> {
+  if (typeof sessionStorage !== "undefined") {
+    sessionStorage.removeItem("cg_signed_out");
+  }
   return request("/auth/register", {
     method: "POST",
     body: JSON.stringify({
@@ -863,6 +624,33 @@ export function switchRole(role: string): Promise<TokenResponse> {
   return request("/auth/switch-role", {
     method: "POST",
     body: JSON.stringify({ role }),
+  });
+}
+
+// ── Model Context Protocol (MCP 2026-07-28 `POST /api/mcp`) ──────────
+
+export interface McpJsonRpcResponse {
+  jsonrpc: string;
+  id: number | string | null;
+  result?: any;
+  error?: { code: number; message: string };
+}
+
+export function callMcpRpc(
+  method: string,
+  params: Record<string, unknown> = {},
+): Promise<McpJsonRpcResponse> {
+  return request("/mcp", {
+    method: "POST",
+    headers: {
+      "MCP-Protocol-Version": "2026-07-28",
+    },
+    body: JSON.stringify({
+      jsonrpc: "2.0",
+      id: Date.now(),
+      method,
+      params,
+    }),
   });
 }
 
@@ -1171,7 +959,7 @@ export function compileBrandCanon(
   rawText: string,
   attachments: BundleAttachmentPayload[] = [],
   version = "1.0",
-  persist = false,
+  persist = true,
   extra: CompileCanonExtraOptions = {},
 ): Promise<CompileCanonResponse> {
   return request("/canons/compile", {

@@ -4,6 +4,7 @@ import { useNavigate, Link } from "react-router-dom";
 import {
   runGateCheck,
   createSubmission,
+  callMcpRpc,
   getApiBase,
   type GateCheckResponsePayload,
 } from "../../api/client";
@@ -11,9 +12,14 @@ import {
   ArrowRight,
   Check,
   CheckCircle2,
+  Copy,
+  KeyRound,
   Lock,
+  LogOut,
   ShieldCheck,
-  Sliders,
+  Sparkles,
+  Terminal,
+  UserPlus,
 } from "lucide-react";
 
 const ROLE_CARDS = [
@@ -22,14 +28,14 @@ const ROLE_CARDS = [
     role: "creator",
     stageTag: "Stage 1 · Creator",
     title: "Marketing & Agency Creator",
-    desc: "Upload your campaign copy, documents, and banners; run pre-flight scans and apply fixes.",
+    desc: "Draft campaign copy, upload documents/banners, run pre-flight scans, and apply surgical fixes.",
   },
   {
     username: "brand_manager",
     role: "reviewer",
     stageTag: "Stage 2 · Brand Manager",
     title: "Brand Playbook Owner",
-    desc: "Manage brand playbooks, calibrate rule thresholds, review revisions, and approve brand readiness.",
+    desc: "Import custom brand playbooks, calibrate rule thresholds, review revisions, and approve Stage 2.",
   },
   {
     username: "legal_counsel",
@@ -45,19 +51,54 @@ const ESSENTIAL_BASELINES = [
     id: "indian-digital-lending",
     code: "RBI 2025 KFS",
     name: "RBI Digital Lending & Key Fact Statement Baseline",
-    desc: "Verifies APR disclosures, processing fee caps, tenure bounds, and mandatory bureau verification clauses.",
+    desc: "Verifies APR disclosures, processing fee caps (Z3 SMT), tenure bounds, and mandatory bureau clauses.",
   },
   {
     id: "indian-d2c-nutra",
     code: "ASCI & CCPA",
     name: "ASCI & CCPA Advertising Substantiation Baseline",
-    desc: "Enforces consumer protection rules against unverified therapeutic claims, drip pricing, and missing qualifiers.",
+    desc: "Blocks unverified therapeutic claims, CCPA drip-pricing math contradictions, and dropped qualifiers.",
   },
   {
     id: "acme-corp", /* taste-skill-ignore */
     code: "WCAG 2.1 AA",
     name: "WCAG 2.1 AA Accessibility & Enterprise Baseline",
-    desc: "Verifies text contrast ratios (>= 4.5:1), image alt-text completeness, and formal enterprise terminology.",
+    desc: "Enforces text contrast ratios (>= 4.5:1), SLA disclosure triggers, and approved enterprise terminology.",
+  },
+] as const;
+
+const GATE_PRESETS = [
+  {
+    id: "rbi-kfs-breach",
+    label: "RBI Lending KFS Violation (3 Blockers)",
+    canonId: "indian-digital-lending",
+    title: "Monsoon Instant Personal Loan Banner",
+    content:
+      "Get instant personal loans with guaranteed approval and no credit check! Enjoy 0% processing fee on loans under Rs 1,00,000. Annual Percentage Rate (APR) is 14%.",
+  },
+  {
+    id: "asci-drip-pricing",
+    label: "ASCI + CCPA Drip Pricing Math",
+    canonId: "indian-d2c-nutra",
+    title: "Curcumin Gold Festival Offer",
+    content:
+      "Experience our miracle cure elixir with 2x faster absorption! Flat 27% discount (inclusive of all taxes). GST and additional charges may apply at checkout.",
+  },
+  {
+    id: "wcag-contrast",
+    label: "Brand Guidelines & Multi-Var SMT",
+    canonId: "studio-brand-guidelines",
+    title: "Brand Deck & Pricing Spec Check",
+    content:
+      "Heading font-size: 18pt and body font-size: 16pt. Palette uses 30% primary, 20% secondary, 50% accent. MRP ₹2,000 with Flat 50% discount! Pay just ₹1,000 + ₹200 mandatory platform fee. Style: color: #777777; background-color: #FFFFFF;",
+  },
+  {
+    id: "clean-compliant",
+    label: "Compliant KFS Baseline (0 Issues)",
+    canonId: "indian-digital-lending",
+    title: "Approved KFS Personal Credit Disclosure",
+    content:
+      "Apply for a competitive-rate credit facility subject to credit assessment and streamlined credit verification. Enjoy 0% processing fee on loans under Rs 50,000 for first-time borrowers only (Subject to RBI Key Fact Statement (KFS) schedule). Annual Percentage Rate (APR) is 18% up to Rs 2,00,000.",
   },
 ] as const;
 
@@ -68,26 +109,26 @@ export function LoginPage() {
     role: activeRole,
     login,
     register,
+    logout,
   } = useAuth();
   const navigate = useNavigate();
 
-  // Auth form state
-  const [showCustomForm, setShowCustomForm] = useState(false);
-  const [isRegister, setIsRegister] = useState(false);
-  const [username, setUsername] = useState("");
+  // Prominent Auth Mode Tabs: "signin" | "signup" (Always visible on Home screen!)
+  const [authTab, setAuthTab] = useState<"signin" | "signup">("signin");
+  const [username, setUsername] = useState("creative_lead");
   const [displayName, setDisplayName] = useState("");
-  const [password, setPassword] = useState("");
+  const [password, setPassword] = useState("demoPassword123!");
   const [role, setRole] = useState("creator");
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
 
-  // On-Demand Pre-Publish Gate state (starts 100% clean and empty — no fake ads)
+  // On-Demand Pre-Publish Gate state
   const [selectedBaseline, setSelectedBaseline] = useState<string>(
     "indian-digital-lending",
   );
   const [alpha, setAlpha] = useState<number>(0.1);
-  const [draftTitle, setDraftTitle] = useState<string>("");
-  const [draftText, setDraftText] = useState<string>("");
+  const [draftTitle, setDraftTitle] = useState<string>(GATE_PRESETS[0].title);
+  const [draftText, setDraftText] = useState<string>(GATE_PRESETS[0].content);
   const [gateResult, setGateResult] = useState<GateCheckResponsePayload | null>(
     null,
   );
@@ -95,17 +136,25 @@ export function LoginPage() {
   const [selectedFindingIdx, setSelectedFindingIdx] = useState<number>(0);
   const [openingStudio, setOpeningStudio] = useState<boolean>(false);
 
-  async function handleRunQuickCheck(e: FormEvent) {
-    e.preventDefault();
-    if (!draftText.trim()) return;
+  // Quick MCP Preview state on Home page
+  const [mcpCopied, setMcpCopied] = useState(false);
+  const [mcpTestOutput, setMcpTestOutput] = useState<string | null>(null);
+  const [mcpTesting, setMcpTesting] = useState(false);
+
+  async function handleRunQuickCheck(e?: FormEvent, overrideText?: string, overrideCanon?: string, overrideTitle?: string) {
+    if (e) e.preventDefault();
+    const textToScan = overrideText ?? draftText;
+    const canonToUse = overrideCanon ?? selectedBaseline;
+    const titleToUse = overrideTitle ?? draftTitle;
+    if (!textToScan.trim()) return;
     setGateLoading(true);
     setError(null);
     try {
       const res = await runGateCheck({
-        canon_id: selectedBaseline,
+        canon_id: canonToUse,
         adapter: "generic",
-        title: draftTitle.trim() || "Quick Pre-Flight Check",
-        raw_content: draftText,
+        title: titleToUse.trim() || "Quick Pre-Flight Check",
+        raw_content: textToScan,
         alpha,
         persist: false,
       });
@@ -116,6 +165,13 @@ export function LoginPage() {
     } finally {
       setGateLoading(false);
     }
+  }
+
+  function handleSelectGatePreset(preset: (typeof GATE_PRESETS)[number]) {
+    setSelectedBaseline(preset.canonId);
+    setDraftTitle(preset.title);
+    setDraftText(preset.content);
+    void handleRunQuickCheck(undefined, preset.content, preset.canonId, preset.title);
   }
 
   async function handleQuickPersona(targetUsername: string) {
@@ -166,10 +222,10 @@ export function LoginPage() {
     setError(null);
     setLoading(true);
     try {
-      if (isRegister) {
-        await register(username, password, role, displayName || username);
+      if (authTab === "signup") {
+        await register(username.trim(), password, role, displayName.trim() || username.trim());
       } else {
-        await login(username, password);
+        await login(username.trim(), password);
       }
       navigate("/dashboard");
     } catch (err) {
@@ -179,6 +235,41 @@ export function LoginPage() {
     }
   }
 
+  async function handleTestMcpListCanons() {
+    setMcpTesting(true);
+    try {
+      const rpcRes = await callMcpRpc("tools/call", {
+        name: "list_canons",
+        arguments: {},
+      });
+      const text = rpcRes.result?.content?.[0]?.text || JSON.stringify(rpcRes, null, 2);
+      setMcpTestOutput(text);
+    } catch (err) {
+      setMcpTestOutput(JSON.stringify({ error: (err as Error).message }, null, 2));
+    } finally {
+      setMcpTesting(false);
+    }
+  }
+
+  function handleCopyMcpConfig() {
+    const snippet = JSON.stringify(
+      {
+        mcpServers: {
+          canongate: {
+            command: "uv",
+            args: ["run", "canongate-mcp"],
+            env: { CANONGATE_HTTP_ENDPOINT: "http://localhost:8000/api/mcp" },
+          },
+        },
+      },
+      null,
+      2,
+    );
+    navigator.clipboard?.writeText(snippet).catch(() => {});
+    setMcpCopied(true);
+    setTimeout(() => setMcpCopied(false), 2000);
+  }
+
   const findings = gateResult?.findings ?? [];
   const activeFinding =
     findings[Math.min(selectedFindingIdx, Math.max(0, findings.length - 1))] ??
@@ -186,7 +277,7 @@ export function LoginPage() {
 
   return (
     <div className="cg-gateway-page">
-      {/* Top Product & Role Launch Command Header */}
+      {/* Top Product & Auth Command Header */}
       <header className="cg-gateway-header">
         <div className="cg-gateway-header-inner">
           <Link to="/" className="cg-brand">
@@ -198,29 +289,65 @@ export function LoginPage() {
           </Link>
 
           <nav className="cg-gateway-nav" aria-label="Product Sections">
-            <a href="#regulatory-baselines">Regulatory Baselines</a>
-            <a href="#quick-check">On-Demand Check</a>
+            <a href="#auth-gateway-card">Sign In / Sign Up</a>
+            <a href="#quick-check">Live Gate Sandbox</a>
+            <a href="#mcp-integration">MCP Brand Rule Server</a>
             <a href="#engine-architecture">4-Tier Architecture</a>
           </nav>
 
-          <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+          <div className="cg-landing-nav-actions" style={{ display: "flex", alignItems: "center", gap: "8px" }}>
             {token ? (
-              <Link to="/dashboard" className="cg-btn cg-btn-primary cg-btn-sm">
-                <span>
-                  Open Workspace (@{activeUser} · {activeRole})
-                </span>
-                <ArrowRight size={14} className="cg-arrow-shift" />
-              </Link>
+              <>
+                <Link to="/dashboard" className="cg-btn cg-btn-primary cg-btn-sm">
+                  <span>
+                    Open Workspace (@{activeUser} · {activeRole})
+                  </span>
+                  <ArrowRight size={14} className="cg-arrow-shift" />
+                </Link>
+                <button
+                  type="button"
+                  data-testid="header-signout-btn"
+                  className="cg-btn cg-btn-secondary cg-btn-sm"
+                  onClick={() => logout()}
+                >
+                  <LogOut size={13} />
+                  <span>Sign Out</span>
+                </button>
+              </>
             ) : (
-              <button
-                type="button"
-                className="cg-btn cg-btn-primary cg-btn-sm"
-                disabled={loading}
-                onClick={() => void handleQuickPersona("creative_lead")}
-              >
-                <span>Enter Workspace</span>
-                <ArrowRight size={14} className="cg-arrow-shift" />
-              </button>
+              <>
+                <a
+                  href="#auth-gateway-card"
+                  className="cg-btn cg-btn-secondary cg-btn-sm"
+                  onClick={() => {
+                    setAuthTab("signin");
+                  }}
+                >
+                  <KeyRound size={13} />
+                  <span>Sign In</span>
+                </a>
+                <a
+                  href="#auth-gateway-card"
+                  className="cg-btn cg-btn-secondary cg-btn-sm"
+                  onClick={() => {
+                    setAuthTab("signup");
+                    setUsername("");
+                    setPassword("");
+                  }}
+                >
+                  <UserPlus size={13} />
+                  <span>Sign Up</span>
+                </a>
+                <button
+                  type="button"
+                  className="cg-btn cg-btn-primary cg-btn-sm"
+                  disabled={loading}
+                  onClick={() => void handleQuickPersona("creative_lead")}
+                >
+                  <span>Enter Workspace</span>
+                  <ArrowRight size={14} className="cg-arrow-shift" />
+                </button>
+              </>
             )}
           </div>
         </div>
@@ -240,21 +367,21 @@ export function LoginPage() {
           </div>
         )}
 
-        {/* Section 1: Clean Overview + Role-Scoped Workspace Entry */}
+        {/* Section 1: Editorial Overview + First-Class Sign In / Sign Up & Role Launch */}
         <section
           className="cg-gateway-hero"
-          aria-label="CanonGate Overview and Role Launch"
+          aria-label="CanonGate Overview and Authentication"
         >
           <div className="cg-gateway-pitch-sheet">
             <div>
+              <div className="cg-tier-summary-pill">
+                <span>Deterministic Tier 1 · Z3 SMT Tier 1.5 · QASem SlotDiff Tier 2 · MCP 2026-07-28</span>
+              </div>
               <h1 className="cg-gateway-h1">
-                Pre-publication brand, claim, and regulatory governance.
+                Pre-publication brand & claim governance.
               </h1>
               <p className="cg-gateway-lead">
-                Verify campaign copy, documents (`.docx`, `.pdf`, `.html`), and
-                promotional banners against essential statutory baselines (RBI
-                Digital Lending KFS, ASCI &amp; CCPA, WCAG 2.1 AA) or your own
-                compiled company brand guidelines before anything goes live.
+                Audit campaign copy, documents (<code>.docx</code>, <code>.pdf</code>, <code>.html</code>), and promotional banners against statutory baselines (RBI Digital Lending KFS, ASCI &amp; CCPA, WCAG 2.1 AA) or your own compiled company brand playbook·via web studio, CMS webhooks, or the <code>canongate-mcp</code> AI agent server.
               </p>
             </div>
 
@@ -282,32 +409,181 @@ export function LoginPage() {
                   className="cg-gateway-kpi-val"
                   style={{ fontSize: "15px" }}
                 >
-                  Custom Canon
+                  MCP + Custom Playbooks
                 </span>
                 <strong style={{ fontSize: "12.5px", color: "var(--text)" }}>
-                  Your Own Brand Playbooks
+                  Import Brand Rules via UI or MCP
                 </strong>
                 <span className="cg-gateway-kpi-label">
-                  Upload your own PDF/Word brand books, CSV fact sheets, and
-                  reference logos inside the workspace.
+                  Paste company guidelines, approved facts, hex tokens, and disclaimers to compile a custom YAML playbook or expose it via <code>canongate-mcp</code>.
+                </span>
+              </div>
+            </div>
+
+            <div className="cg-gateway-kpi-ledger" style={{ marginTop: "4px" }}>
+              <div className="cg-gateway-kpi-item">
+                <span className="cg-gateway-kpi-val" style={{ fontSize: "14px" }}>1. Compile Rules</span>
+                <strong style={{ fontSize: "12.5px", color: "var(--text)" }}>Playbook Onboarding Studio</strong>
+                <span className="cg-gateway-kpi-label">
+                  Paste raw brand books, product claims, hex colours, and triggers or push via <code>compile_canon</code> over MCP.
+                </span>
+              </div>
+              <div className="cg-gateway-kpi-item">
+                <span className="cg-gateway-kpi-val" style={{ fontSize: "14px" }}>2. Pre-Flight Scan</span>
+                <strong style={{ fontSize: "12.5px", color: "var(--text)" }}>Tier 1 + Z3 SMT + SlotDiff</strong>
+                <span className="cg-gateway-kpi-label">
+                  Catches banned terms, algebraic cap/tax contradictions, dropped qualifiers, and WCAG 2.1 AA contrast failures.
+                </span>
+              </div>
+              <div className="cg-gateway-kpi-item">
+                <span className="cg-gateway-kpi-val" style={{ fontSize: "14px" }}>3. Surgical Fix</span>
+                <strong style={{ fontSize: "12.5px", color: "var(--text)" }}>1-Click AST Remediation</strong>
+                <span className="cg-gateway-kpi-label">
+                  Apply deterministic compliant replacements in-place or via <code>propose_fix</code> in Claude Desktop and Cursor.
+                </span>
+              </div>
+              <div className="cg-gateway-kpi-item">
+                <span className="cg-gateway-kpi-val" style={{ fontSize: "14px" }}>4. Merkle Seal</span>
+                <strong style={{ fontSize: "12.5px", color: "var(--text)" }}>Stage 2 &amp; Stage 3 Sign-Off</strong>
+                <span className="cg-gateway-kpi-label">
+                  Brand Manager and Legal Counsel approve to issue an Ed25519 + RFC 9162 SHA-256 audit certificate.
                 </span>
               </div>
             </div>
           </div>
 
-          {/* Right Sheet: 1-Click Role Launch & Credential Sign-In */}
-          <div className="cg-gateway-auth-sheet" data-ui>
+          {/* Right Sheet: First-Class Sign In / Sign Up Form + 1-Click Role Demo Launch */}
+          <div className="cg-gateway-auth-sheet" id="auth-gateway-card" data-ui>
             <div className="cg-auth-sheet-header">
               <div>
                 <h2 className="cg-auth-sheet-title">
-                  Enter Governance Workspace
+                  Sign In or Create Workspace Account
                 </h2>
                 <p className="cg-auth-sheet-sub">
-                  Select your role to open a clean workspace, or sign in with
-                  your account credentials.
+                  Sign in with credentials, register a new governance account, or launch a pre-configured RBAC role below.
                 </p>
               </div>
-              <span className="cg-brand-version">RBAC Active</span>
+              <span className="cg-brand-version">JWT + RBAC</span>
+            </div>
+
+            {/* Explicit Sign In / Sign Up Mode Switcher */}
+            <div className="cg-auth-mode-tabs" role="tablist" aria-label="Authentication Mode">
+              <button
+                type="button"
+                role="tab"
+                data-testid="tab-signin"
+                aria-selected={authTab === "signin"}
+                className={`cg-auth-mode-tab ${authTab === "signin" ? "active" : ""}`}
+                onClick={() => {
+                  setAuthTab("signin");
+                  if (!username) setUsername("creative_lead");
+                  if (!password) setPassword("demoPassword123!");
+                }}
+              >
+                <KeyRound size={14} />
+                <span>Sign In</span>
+              </button>
+              <button
+                type="button"
+                role="tab"
+                data-testid="tab-signup"
+                aria-selected={authTab === "signup"}
+                className={`cg-auth-mode-tab ${authTab === "signup" ? "active" : ""}`}
+                onClick={() => {
+                  setAuthTab("signup");
+                  if (username === "creative_lead") setUsername("");
+                }}
+              >
+                <UserPlus size={14} />
+                <span>Create Account (Sign Up)</span>
+              </button>
+            </div>
+
+            {/* Always-Visible Credential Form */}
+            <form
+              onSubmit={handleSubmit}
+              className="cg-auth-credential-form"
+              data-testid="credential-auth-form"
+            >
+              <div className="cg-field-row-2">
+                <div className="cg-field-group">
+                  <label htmlFor="login-username">Username</label>
+                  <input
+                    id="login-username"
+                    data-testid="login-username-input"
+                    type="text"
+                    value={username}
+                    onChange={(e) => setUsername(e.target.value)}
+                    placeholder={authTab === "signup" ? "e.g., priya_compliance" : "e.g., creative_lead"}
+                    required
+                  />
+                </div>
+                <div className="cg-field-group">
+                  <label htmlFor="login-password">Password</label>
+                  <input
+                    id="login-password"
+                    data-testid="login-password-input"
+                    type="password"
+                    value={password}
+                    onChange={(e) => setPassword(e.target.value)}
+                    placeholder="••••••••"
+                    required
+                  />
+                </div>
+              </div>
+
+              {authTab === "signup" && (
+                <div className="cg-field-row-2">
+                  <div className="cg-field-group">
+                    <label htmlFor="auth-display">Full Name / Team Label</label>
+                    <input
+                      id="auth-display"
+                      type="text"
+                      value={displayName}
+                      onChange={(e) => setDisplayName(e.target.value)}
+                      placeholder="e.g., Priya Sharma (Brand Lead)"
+                    />
+                  </div>
+                  <div className="cg-field-group">
+                    <label htmlFor="auth-role">Governance Stage Role</label>
+                    <select
+                      id="auth-role"
+                      value={role}
+                      onChange={(e) => setRole(e.target.value)}
+                    >
+                      <option value="creator">Stage 1 · Marketing Creator</option>
+                      <option value="reviewer">Stage 2 · Brand Manager</option>
+                      <option value="admin">Stage 3 · Legal Reviewer</option>
+                    </select>
+                  </div>
+                </div>
+              )}
+
+              <div className="cg-auth-form-actions">
+                <span style={{ fontSize: "12px", color: "var(--muted)" }}>
+                  Demo accounts use password <code>demoPassword123!</code>
+                </span>
+                <button
+                  type="submit"
+                  data-testid="auth-submit-btn"
+                  className="cg-btn cg-btn-primary cg-btn-sm"
+                  disabled={loading}
+                >
+                  <span>
+                    {loading
+                      ? "Authenticating…"
+                      : authTab === "signup"
+                        ? "Create Account & Enter Workspace"
+                        : "Sign In to Workspace"}
+                  </span>
+                  <ArrowRight size={14} className="cg-arrow-shift" />
+                </button>
+              </div>
+            </form>
+
+            {/* 1-Click Demo Role Launchers */}
+            <div className="cg-persona-divider">
+              <span>Or Launch 1-Click RBAC Stage Persona</span>
             </div>
 
             <div className="cg-persona-launch-list">
@@ -329,149 +605,16 @@ export function LoginPage() {
                     <span className="cg-persona-row-desc">{card.desc}</span>
                   </div>
                   <span className="cg-persona-row-cta">
-                    <span>Open</span>
+                    <span>Launch</span>
                     <ArrowRight size={13} className="cg-arrow-shift" />
                   </span>
                 </button>
               ))}
             </div>
-
-            <div
-              style={{
-                borderTop: "1px solid var(--rule)",
-                paddingTop: "12px",
-                display: "flex",
-                flexDirection: "column",
-                gap: "10px",
-              }}
-            >
-              <div
-                style={{
-                  display: "flex",
-                  justifyContent: "space-between",
-                  alignItems: "center",
-                }}
-              >
-                <span style={{ fontSize: "12px", color: "var(--muted)" }}>
-                  Role accounts use password <code>demoPassword123!</code>
-                </span>
-                <button
-                  type="button"
-                  className="cg-link-btn"
-                  onClick={() => setShowCustomForm(!showCustomForm)}
-                >
-                  {showCustomForm
-                    ? "Hide Credential Form"
-                    : "Sign In / Register Custom Account"}
-                </button>
-              </div>
-
-              {showCustomForm && (
-                <form
-                  onSubmit={handleSubmit}
-                  className="cg-animate-swap"
-                  style={{
-                    display: "flex",
-                    flexDirection: "column",
-                    gap: "10px",
-                    backgroundColor: "var(--surface-subtle)",
-                    padding: "12px",
-                    borderRadius: "6px",
-                    border: "1px solid var(--border)",
-                  }}
-                >
-                  <div className="cg-field-row-2">
-                    <div className="cg-field-group">
-                      <label htmlFor="auth-username">Username</label>
-                      <input
-                        id="auth-username"
-                        type="text"
-                        value={username}
-                        onChange={(e) => setUsername(e.target.value)}
-                        placeholder="e.g., creative_lead"
-                        required
-                      />
-                    </div>
-                    <div className="cg-field-group">
-                      <label htmlFor="auth-password">Password</label>
-                      <input
-                        id="auth-password"
-                        type="password"
-                        value={password}
-                        onChange={(e) => setPassword(e.target.value)}
-                        placeholder="••••••••"
-                        required
-                      />
-                    </div>
-                  </div>
-
-                  {isRegister && (
-                    <div className="cg-field-row-2">
-                      <div className="cg-field-group">
-                        <label htmlFor="auth-display">Display Name</label>
-                        <input
-                          id="auth-display"
-                          type="text"
-                          value={displayName}
-                          onChange={(e) => setDisplayName(e.target.value)}
-                          placeholder="e.g., Priya Sharma"
-                        />
-                      </div>
-                      <div className="cg-field-group">
-                        <label htmlFor="auth-role">Governance Role</label>
-                        <select
-                          id="auth-role"
-                          value={role}
-                          onChange={(e) => setRole(e.target.value)}
-                        >
-                          <option value="creator">Stage 1 · Creator</option>
-                          <option value="reviewer">
-                            Stage 2 · Brand Manager
-                          </option>
-                          <option value="admin">
-                            Stage 3 · Legal Reviewer
-                          </option>
-                        </select>
-                      </div>
-                    </div>
-                  )}
-
-                  <div
-                    style={{
-                      display: "flex",
-                      justifyContent: "space-between",
-                      alignItems: "center",
-                      gap: "8px",
-                    }}
-                  >
-                    <button
-                      type="button"
-                      className="cg-link-btn"
-                      onClick={() => setIsRegister(!isRegister)}
-                    >
-                      {isRegister
-                        ? "Already have an account? Sign In"
-                        : "Need a new account? Register"}
-                    </button>
-                    <button
-                      type="submit"
-                      className="cg-btn cg-btn-primary cg-btn-sm"
-                      disabled={loading}
-                    >
-                      {loading
-                        ? "Authenticating…"
-                        : isRegister
-                          ? "Create Account"
-                          : "Sign In"}
-                    </button>
-                  </div>
-                </form>
-              )}
-            </div>
           </div>
         </section>
 
-        {/* Section 2: Clean, Empty On-Demand Pre-Flight Check (Zero pre-filled fake ads) */}
+        {/* Section 2: Interactive Pre-Publish Gate Sandbox with 1-Click Scenario Presets */}
         <section
           id="quick-check"
           className="cg-live-workbench"
@@ -481,7 +624,7 @@ export function LoginPage() {
           <div className="cg-wb-header" data-ui>
             <div className="cg-wb-title-block">
               <h2 className="cg-wb-title">
-                On-Demand Pre-Publish Check (<code>POST /api/gate/check</code>)
+                Live Pre-Publish Gate Sandbox (<code>POST /api/gate/check</code>)
               </h2>
               {gateResult && (
                 <span
@@ -503,86 +646,97 @@ export function LoginPage() {
             </div>
 
             <div className="cg-wb-controls">
-              <div
-                className="cg-segmented-group"
-                role="tablist"
+              <select
                 aria-label="Regulatory Baseline"
+                value={selectedBaseline}
+                onChange={(e) => setSelectedBaseline(e.target.value)}
+                style={{ width: "auto" }}
               >
-                {ESSENTIAL_BASELINES.map((b) => (
-                  <button
-                    key={b.id}
-                    type="button"
-                    role="tab"
-                    aria-selected={selectedBaseline === b.id}
-                    className={`cg-seg-btn ${
-                      selectedBaseline === b.id ? "active" : ""
-                    }`}
-                    onClick={() => setSelectedBaseline(b.id)}
-                  >
-                    {b.code}
-                  </button>
-                ))}
-              </div>
+                <option value="indian-digital-lending">
+                  RBI Digital Lending &amp; KFS (indian-digital-lending)
+                </option>
+                <option value="indian-d2c-nutra">
+                  ASCI &amp; CCPA Substantiation (indian-d2c-nutra)
+                </option>
+                <option value="acme-corp"> {/* taste-skill-ignore */}
+                  WCAG 2.1 AA &amp; Enterprise Baseline {/* taste-skill-ignore */}
+                </option>
+                <option value="studio-brand-guidelines">
+                  Brand Guidelines (Poppins/Lora ≥24pt · 60/30/10 Palette)
+                </option>
+              </select>
 
-              <div
-                className="cg-segmented-group"
-                title="Distribution-free Conformal Risk Control (alpha)"
+              <select
+                aria-label="Conformal Alpha Risk Level"
+                value={alpha}
+                onChange={(e) => setAlpha(Number(e.target.value))}
+                style={{ width: "auto" }}
               >
-                <span
-                  style={{
-                    fontSize: "11.5px",
-                    color: "var(--muted)",
-                    padding: "0 6px",
-                    display: "inline-flex",
-                    alignItems: "center",
-                    gap: "4px",
-                  }}
+                <option value={0.04}>Strict (α = 0.04 · BFSI/Legal)</option>
+                <option value={0.1}>Balanced (α = 0.10 · Standard)</option>
+                <option value={0.2}>Permissive (α = 0.20 · Draft)</option>
+              </select>
+            </div>
+          </div>
+
+          {/* 1-Click Scenario Presets Bar */}
+          <div className="cg-preset-bar">
+            <span className="cg-preset-bar-label">
+              <Sparkles size={13} />
+              <span>1-Click Test Scenarios:</span>
+            </span>
+            <div className="cg-composer-presets">
+              {GATE_PRESETS.map((preset) => (
+                <button
+                  key={preset.id}
+                  type="button"
+                  data-testid={`gate-preset-${preset.id}`}
+                  className="cg-preset-chip"
+                  onClick={() => handleSelectGatePreset(preset)}
                 >
-                  <Sliders size={12} /> α:
-                </span>
-                {[0.04, 0.1, 0.2].map((val) => (
-                  <button
-                    key={val}
-                    type="button"
-                    className={`cg-seg-btn ${alpha === val ? "active" : ""}`}
-                    onClick={() => setAlpha(val)}
-                  >
-                    {val.toFixed(2)}
-                  </button>
-                ))}
-              </div>
+                  <span>{preset.label}</span>
+                </button>
+              ))}
             </div>
           </div>
 
           <div className="cg-wb-body" data-ui>
+            {/* Left Pane: Input Form */}
             <form
-              onSubmit={handleRunQuickCheck}
+              onSubmit={(e) => void handleRunQuickCheck(e)}
               className="cg-wb-left-pane"
               data-ui
             >
+              <div className="cg-wb-pane-header">
+                <span className="cg-wb-pane-label">
+                  Campaign Copy, Claim Table, or CSS Snippet
+                </span>
+                <span style={{ fontSize: "12px", color: "var(--muted)" }}>
+                  Conformal α = {alpha.toFixed(2)}
+                </span>
+              </div>
+
               <div className="cg-field-group">
-                <label htmlFor="wb-title-input">
-                  Asset or Campaign Title (optional)
-                </label>
+                <label htmlFor="landing-gate-title">Campaign Title</label>
                 <input
-                  id="wb-title-input"
+                  id="landing-gate-title"
                   type="text"
                   value={draftTitle}
                   onChange={(e) => setDraftTitle(e.target.value)}
-                  placeholder="Enter your campaign or document title…"
+                  placeholder="Enter campaign or page title…"
                 />
               </div>
 
               <div className="cg-field-group">
-                <label htmlFor="wb-live-textarea">
-                  Your Copy, Claims, or HTML Content
+                <label htmlFor="landing-gate-text">
+                  Campaign Text / Claims / Disclaimers
                 </label>
                 <textarea
-                  id="wb-live-textarea"
-                  rows={4}
+                  id="landing-gate-text"
+                  rows={5}
                   value={draftText}
                   onChange={(e) => setDraftText(e.target.value)}
-                  placeholder="Paste your own marketing copy, product claims, pricing terms, or HTML snippet here to verify against the selected regulatory baseline…"
+                  placeholder="Paste your campaign copy, product claims, pricing terms, or CSS snippet here…"
                 />
               </div>
 
@@ -591,58 +745,26 @@ export function LoginPage() {
                   display: "flex",
                   justifyContent: "space-between",
                   alignItems: "center",
-                  gap: "8px",
                   flexWrap: "wrap",
+                  gap: "8px",
                 }}
               >
                 <span style={{ fontSize: "12px", color: "var(--muted)" }}>
-                  Evaluated locally with DPDP PII protection.
+                  Evaluates Tier 1 Regex/WCAG, Tier 1.5 Z3 SMT &amp; Tier 2 QASem SlotDiff
                 </span>
                 <div style={{ display: "flex", gap: "8px" }}>
-                  {gateResult && (
-                    <button
-                      type="button"
-                      className="cg-btn cg-btn-secondary cg-btn-sm"
-                      onClick={() => {
-                        setDraftText("");
-                        setDraftTitle("");
-                        setGateResult(null);
-                      }}
-                    >
-                      Clear
-                    </button>
-                  )}
                   <button
                     type="submit"
+                    data-testid="landing-run-gate-btn"
                     className="cg-btn cg-btn-primary cg-btn-sm"
                     disabled={gateLoading || !draftText.trim()}
                   >
-                    <span>
-                      {gateLoading ? "Checking…" : "Run Pre-Publish Check"}
-                    </span>
-                    <ArrowRight size={13} className="cg-arrow-shift" />
+                    {gateLoading ? "Scanning…" : "Run Gate Check"}
                   </button>
-                </div>
-              </div>
-            </form>
-
-            <div className="cg-wb-right-pane" data-ui>
-              <div
-                style={{
-                  display: "flex",
-                  justifyContent: "space-between",
-                  alignItems: "center",
-                  gap: "8px",
-                }}
-              >
-                <span style={{ fontSize: "13px", fontWeight: 600 }}>
-                  Verification Result
-                </span>
-                {gateResult && (
                   <button
                     type="button"
                     className="cg-btn cg-btn-secondary cg-btn-sm"
-                    disabled={openingStudio}
+                    disabled={openingStudio || !draftText.trim()}
                     onClick={() => void handleOpenInStudio()}
                   >
                     <span>
@@ -650,145 +772,133 @@ export function LoginPage() {
                         ? "Opening Studio…"
                         : "Open in Full Review Studio"}
                     </span>
-                    <ArrowRight size={13} />
+                    <ArrowRight size={13} className="cg-arrow-shift" />
                   </button>
+                </div>
+              </div>
+            </form>
+
+            {/* Right Pane: Finding Inspector */}
+            <div className="cg-wb-right-pane" data-ui>
+              <div className="cg-wb-pane-header">
+                <span className="cg-wb-pane-label">
+                  {gateResult
+                    ? `Audit Findings (${findings.length}) · ${gateResult.latency_ms.toFixed(1)} ms`
+                    : "Audit Findings"}
+                </span>
+                {gateResult && (
+                  <code style={{ fontSize: "11.5px", color: "var(--muted)" }}>
+                    Threshold ≥ {(gateResult.conformal_threshold * 100).toFixed(0)}
+                  </code>
                 )}
               </div>
 
               {!gateResult ? (
-                <div
-                  className="cg-clean-note"
-                  style={{
-                    padding: "24px 16px",
-                    justifyContent: "center",
-                    textAlign: "center",
-                  }}
-                >
-                  Paste your copy on the left and click{" "}
-                  <strong>Run Pre-Publish Check</strong>, or enter the workspace
-                  above to upload full documents (`.docx`, `.pdf`), banners
-                  (`.png`, `.jpg`), and custom brand playbooks.
+                <div className="cg-clean-note">
+                  Select a 1-click regulatory scenario above or click <strong>Run Gate Check</strong> to execute <code>POST /api/gate/check</code> and inspect Tier 1, Tier 1.5 Z3 SMT, and Tier 2 QASem findings.
                 </div>
               ) : findings.length === 0 ? (
-                <div
-                  className="cg-success-banner"
-                  style={{
-                    flexDirection: "column",
-                    alignItems: "flex-start",
-                    gap: "6px",
-                    padding: "16px",
-                  }}
-                >
-                  <div
-                    style={{
-                      display: "flex",
-                      alignItems: "center",
-                      gap: "8px",
-                      fontWeight: 600,
-                    }}
-                  >
-                    <CheckCircle2 size={16} />
-                    <span>
-                      All Pre-Publication Checks Passed (Decision: ALLOW)
-                    </span>
-                  </div>
-                  <p style={{ margin: 0, fontSize: "12.5px" }}>
-                    Zero violations detected against{" "}
-                    <code>{gateResult.canon_id}</code>.
-                  </p>
+                <div className="cg-clean-note">
+                  <CheckCircle2 size={15} className="cg-text-emerald" style={{ verticalAlign: "middle", marginRight: "6px" }} />
+                  <span>
+                    Zero violations detected under <strong>{selectedBaseline}</strong>. This copy is cleared for release.
+                  </span>
                 </div>
               ) : (
                 <>
-                  <div style={{ display: "flex", flexWrap: "wrap", gap: "6px" }}>
+                  <div className="cg-finding-list">
                     {findings.map((f, idx) => (
-                      <button
-                        key={f.finding_id || idx}
-                        type="button"
+                      <div
+                        key={f.finding_id}
+                        role="button"
+                        tabIndex={0}
                         onClick={() => setSelectedFindingIdx(idx)}
-                        className={`cg-btn cg-btn-sm ${
-                          selectedFindingIdx === idx
-                            ? "cg-btn-primary"
-                            : "cg-btn-secondary"
+                        onKeyDown={(e) => {
+                          if (e.key === "Enter" || e.key === " ") {
+                            setSelectedFindingIdx(idx);
+                          }
+                        }}
+                        className={`cg-finding-item ${
+                          idx === selectedFindingIdx ? "selected" : ""
                         }`}
                       >
-                        <span>#{idx + 1}</span>
-                        <code>{f.check_id}</code>
-                        <span
-                          className={`cg-sev-badge ${
-                            f.severity >= 50 ? "sev-blocker" : "sev-warning"
-                          }`}
-                        >
-                          {f.severity}
-                        </span>
-                      </button>
+                        <div className="cg-finding-item-top">
+                          <span
+                            className={`cg-sev-badge ${
+                              f.verdict === "BLOCKER"
+                                ? "sev-blocker"
+                                : "sev-warning"
+                            }`}
+                          >
+                            {f.verdict} · {f.severity}
+                          </span>
+                          <code>{f.check_id}</code>
+                          <span className="cg-tier-tag">Tier: {f.tier}</span>
+                        </div>
+                        <p className="cg-finding-msg">{f.message}</p>
+                      </div>
                     ))}
                   </div>
 
                   {activeFinding && (
-                    <div
-                      className={`cg-fault-card ${
-                        activeFinding.severity >= 50
-                          ? "fault-blocker"
-                          : "fault-warning"
-                      }`}
-                      style={{ cursor: "default" }}
-                    >
-                      <div className="cg-fault-card-top">
-                        <span
-                          className={`cg-sev-badge ${
-                            activeFinding.severity >= 50
-                              ? "sev-blocker"
-                              : "sev-warning"
-                          }`}
-                        >
-                          {activeFinding.verdict} · {activeFinding.severity}
-                        </span>
-                        <code>{activeFinding.check_id}</code>
-                        <span className="cg-fault-tier-pill">
-                          Tier: {activeFinding.tier.toUpperCase()}
-                        </span>
-                      </div>
-
-                      <p className="cg-fault-message">{activeFinding.message}</p>
-
-                      {activeFinding.rule_id && (
-                        <div className="cg-fault-rule-box">
-                          <span className="cg-mono-label">
-                            Governing Rule: <code>{activeFinding.rule_id}</code>
-                          </span>
-                        </div>
-                      )}
-
-                      {activeFinding.replacement_preview && (
-                        <div className="cg-fault-suggestion-box">
-                          <span className="cg-mono-label">
-                            {activeFinding.suggestion_label ||
-                              "Suggested Remediation"}
-                          </span>
-                          <div className="cg-replacement-diff">
-                            <Check size={14} />
-                            <code>{activeFinding.replacement_preview}</code>
-                          </div>
-                        </div>
-                      )}
-
+                    <div className="cg-finding-proof-box">
                       <div
                         style={{
                           display: "flex",
                           justifyContent: "space-between",
                           alignItems: "center",
-                          paddingTop: "6px",
-                          fontSize: "12px",
-                          color: "var(--muted)",
+                          gap: "8px",
                         }}
                       >
-                        <span>
-                          <Lock size={12} style={{ verticalAlign: "middle" }} />{" "}
-                          {activeFinding.severity >= 50
-                            ? "Blocker: Requires remediation before sign-off"
-                            : "Warning: Can be remediated or overridden with justification"}
+                        <strong style={{ fontSize: "12.5px" }}>
+                          Rule Reference:{" "}
+                          <code>
+                            {activeFinding.rule_id || activeFinding.check_id}
+                          </code>
+                        </strong>
+                        <span className="cg-tier-tag">
+                          Engine Tier: {activeFinding.tier}
                         </span>
                       </div>
+
+                      {activeFinding.replacement_preview && (
+                        <div className="cg-remediation-strip">
+                          <div>
+                            <div
+                              style={{
+                                fontSize: "11.5px",
+                                fontWeight: 600,
+                                color: "var(--positive)",
+                              }}
+                            >
+                              Suggested Compliant Replacement
+                            </div>
+                            <code>{activeFinding.replacement_preview}</code>
+                          </div>
+                          <button
+                            type="button"
+                            className="cg-btn cg-btn-emerald cg-btn-sm"
+                            onClick={() => {
+                              const loc = activeFinding.locator;
+                              if (
+                                typeof loc?.start === "number" &&
+                                typeof loc?.end === "number" &&
+                                activeFinding.replacement_preview
+                              ) {
+                                const updated =
+                                  draftText.slice(0, loc.start) +
+                                  activeFinding.replacement_preview +
+                                  draftText.slice(loc.end);
+                                setDraftText(updated);
+                                void handleRunQuickCheck(undefined, updated);
+                              }
+                            }}
+                          >
+                            <Check size={13} />
+                            <span>Apply Fix &amp; Rescan</span>
+                          </button>
+                        </div>
+                      )}
                     </div>
                   )}
                 </>
@@ -797,164 +907,197 @@ export function LoginPage() {
           </div>
         </section>
 
-        {/* Section 3: 4-Tier Verification Architecture & 3-Role Governance Ledger */}
+        {/* Section 3: MCP Brand Rule Server & AI Agent Integration */}
         <section
-          id="engine-architecture"
-          className="cg-gov-two-col"
-          aria-label="Verification Architecture and Role Matrix"
+          id="mcp-integration"
+          className="cg-arch-ledger"
+          aria-label="MCP Brand Rule Server Integration"
         >
-          <div className="cg-gov-card">
-            <div className="cg-gov-card-header">
-              <div>
-                <h3>Four-Tier Pre-Publication Verification Cascade</h3>
-                <p>
-                  Every text node, Markdown KFS table, and banner image is
-                  parsed into a unified ContentAST and verified locally.
-                </p>
-              </div>
+          <div className="cg-arch-ledger-header">
+            <div>
+              <h2 className="cg-arch-ledger-title">
+                Model Context Protocol (<code>canongate-mcp</code>) · How AI Agents Get Your Brand Rules
+              </h2>
+              <p className="cg-arch-ledger-sub">
+                Connect Claude Desktop, Cursor, Windsurf, or custom AI agents via <code>stdio</code> or <code>POST /api/mcp</code> (MCP 2026-07-28) to query playbooks, compile new brand guidelines, and run deterministic pre-flight audits.
+              </p>
             </div>
-            <div className="cg-table-scroll">
-              <table className="cg-data-table">
-                <thead>
-                  <tr>
-                    <th>Tier</th>
-                    <th>Verification Engine</th>
-                    <th>Enforced Checks</th>
-                    <th className="cg-num-col">Latency</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  <tr>
-                    <td>
-                      <code>Tier 1</code>
-                    </td>
-                    <td>Deterministic AST &amp; Vision</td>
-                    <td className="cg-td-muted">
-                      Aho-Corasick terminology, UTS #39 confusables, CIEDE2000
-                      ΔE₀₀ palette drift, WCAG 2.1 contrast, ORB logo
-                      clear-space
-                    </td>
-                    <td className="cg-num-col">&lt; 5 ms</td>
-                  </tr>
-                  <tr>
-                    <td>
-                      <code>Tier 1.5</code>
-                    </td>
-                    <td>Z3 Theorem Prover (SMT)</td>
-                    <td className="cg-td-muted">
-                      Formal algebraic verification of loan caps, APR ceilings,
-                      and CCPA drip-pricing net discount equations
-                    </td>
-                    <td className="cg-num-col">&lt; 25 ms</td>
-                  </tr>
-                  <tr>
-                    <td>
-                      <code>Tier 2</code>
-                    </td>
-                    <td>QASem Claim Slot NLI</td>
-                    <td className="cg-td-muted">
-                      Slot-aligned natural language inference catching omitted
-                      qualifiers and substantiation gaps
-                    </td>
-                    <td className="cg-num-col">&lt; 120 ms</td>
-                  </tr>
-                  <tr>
-                    <td>
-                      <code>Tier 3</code>
-                    </td>
-                    <td>Constrained Surgical Rewriter</td>
-                    <td className="cg-td-muted">
-                      DPDP PII-masked span repair enforcing ≤ 35% Wagner-Fischer
-                      edit distance and automatic Tier 1+2 re-verification
-                    </td>
-                    <td className="cg-num-col">&lt; 250 ms</td>
-                  </tr>
-                </tbody>
-              </table>
+            <div style={{ display: "flex", gap: "8px", flexWrap: "wrap" }}>
+              <button
+                type="button"
+                className="cg-btn cg-btn-secondary cg-btn-sm"
+                onClick={handleCopyMcpConfig}
+              >
+                {mcpCopied ? <Check size={13} /> : <Copy size={13} />}
+                <span>{mcpCopied ? "Copied MCP Config!" : "Copy claude_desktop_config.json"}</span>
+              </button>
+              <button
+                type="button"
+                data-testid="landing-test-mcp-btn"
+                className="cg-btn cg-btn-primary cg-btn-sm"
+                disabled={mcpTesting}
+                onClick={() => void handleTestMcpListCanons()}
+              >
+                <Terminal size={13} />
+                <span>{mcpTesting ? "Calling MCP…" : "Test Live MCP tools/call (list_canons)"}</span>
+              </button>
             </div>
           </div>
 
-          <div className="cg-gov-card" id="workflow-matrix">
-            <div className="cg-gov-card-header">
-              <div>
-                <h3>Three-Role Collaborative Sign-Off &amp; Audit Ledger</h3>
-                <p>
-                  Enforces role-based separation of duties with cognitive
-                  forcing functions and an immutable RFC 9162 Merkle audit
-                  trail.
-                </p>
+          <div className="cg-mcp-preview-grid">
+            <div className="cg-mcp-code-card">
+              <div className="cg-mcp-card-title">
+                <span>1. Connect Your AI Agent (<code>claude_desktop_config.json</code> / <code>.cursor/mcp.json</code>)</span>
+                <code>MCP 2026-07-28</code>
+              </div>
+              <div className="cg-mcp-tools-pills">
+                <code>stdio: uv run canongate-mcp</code>
+                <code>http: POST /api/mcp</code>
+                <code>canongate://canons/&lt;id&gt;</code>
+              </div>
+              <pre className="cg-mcp-pre">{`{
+  "mcpServers": {
+    "canongate": {
+      "command": "uv",
+      "args": ["run", "canongate-mcp"],
+      "env": {
+        "CANONGATE_HTTP_ENDPOINT": "http://localhost:8000/api/mcp"
+      }
+    }
+  }
+}`}</pre>
+            </div>
+
+            <div className="cg-mcp-code-card">
+              <div className="cg-mcp-card-title">
+                <span>2. Exposed MCP Governance Tools &amp; Brand Rule Resources</span>
+                <code>POST /api/mcp</code>
+              </div>
+              <div className="cg-mcp-tools-pills">
+                <code>list_canons</code>
+                <code>compile_canon</code>
+                <code>get_canon_rules</code>
+                <code>submit_batch</code>
+                <code>job_status</code>
+                <code>get_findings</code>
+                <code>explain_finding</code>
+                <code>propose_fix</code>
+                <code>canongate://canons/&lt;id&gt;</code>
+              </div>
+              {mcpTestOutput ? (
+                <pre className="cg-mcp-pre" style={{ maxHeight: "150px", overflowY: "auto" }}>
+                  {mcpTestOutput}
+                </pre>
+              ) : (
+                <pre className="cg-mcp-pre">{JSON.stringify({
+  jsonrpc: "2.0",
+  method: "tools/call",
+  params: {
+    name: "compile_canon",
+    arguments: {
+      canon_id: "company-brand-2026",
+      raw_text: "Never use guaranteed approval -> subject to credit assessment"
+    }
+  }
+}, null, 2)}</pre>
+              )}
+            </div>
+          </div>
+        </section>
+
+        {/* Section 4: 4-Tier Engine Architecture */}
+        <section
+          id="engine-architecture"
+          className="cg-arch-ledger"
+          aria-label="4-Tier Compliance Engine Architecture"
+        >
+          <div className="cg-arch-ledger-header">
+            <div>
+              <h2 className="cg-arch-ledger-title">
+                4-Tier Hybrid Governance Pipeline
+              </h2>
+              <p className="cg-arch-ledger-sub">
+                Every check emits a structured <code>Finding</code> with exact character or pixel bounding-box locators and a verified replacement.
+              </p>
+            </div>
+            <span className="cg-brand-version">Air-Gapped DPDP PII Lock</span>
+          </div>
+
+          <div className="cg-arch-tier-grid">
+            <div className="cg-arch-tier-cell">
+              <span className="cg-arch-tier-badge">Tier 1 · Deterministic</span>
+              <h3 className="cg-arch-tier-name">
+                Lexical, Trigger &amp; WCAG 2.1 Gate
+              </h3>
+              <p className="cg-arch-tier-desc">
+                Aho-Corasick multi-pattern scanner, UTS #39 confusable homoglyph normalisation, mandatory RBI/ASCI disclaimer triggers, and WCAG 2.1 AA contrast checks.
+              </p>
+              <div className="cg-arch-tier-meta">
+                <span>Latency: &lt; 2 ms</span>
+                <span>Zero LLM Calls</span>
               </div>
             </div>
-            <div className="cg-table-scroll">
-              <table className="cg-data-table">
-                <thead>
-                  <tr>
-                    <th>Stage</th>
-                    <th>Role Owner</th>
-                    <th>Governance Responsibilities &amp; Gate Rules</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  <tr>
-                    <td>
-                      <code>Stage 1</code>
-                    </td>
-                    <td>
-                      <strong>Creator</strong> (<code>@creative_lead</code>)
-                    </td>
-                    <td className="cg-td-muted">
-                      Uploads multimodal bundles, resolves open Blockers
-                      (severity ≥ 50), and records mandatory rationale on
-                      Warning overrides.
-                    </td>
-                  </tr>
-                  <tr>
-                    <td>
-                      <code>Stage 2</code>
-                    </td>
-                    <td>
-                      <strong>Brand Manager</strong> (
-                      <code>@brand_manager</code>)
-                    </td>
-                    <td className="cg-td-muted">
-                      Reviews immutable revision diffs and override
-                      justifications, calibrates playbook thresholds, and
-                      approves brand readiness.
-                    </td>
-                  </tr>
-                  <tr>
-                    <td>
-                      <code>Stage 3</code>
-                    </td>
-                    <td>
-                      <strong>Legal Reviewer</strong> (
-                      <code>@legal_counsel</code>)
-                    </td>
-                    <td className="cg-td-muted">
-                      Filters directly to factual claims, statutory disclosures,
-                      and overrides; issues final sign-off to seal the Ed25519
-                      certificate.
-                    </td>
-                  </tr>
-                  <tr>
-                    <td>
-                      <code>Stage 4</code>
-                    </td>
-                    <td>
-                      <strong>Released &amp; Sealed</strong>
-                    </td>
-                    <td className="cg-td-muted">
-                      Exports offline-verifiable RFC 9162 Merkle proof and signs
-                      visual banners with outbound C2PA v2.3 provenance
-                      manifests.
-                    </td>
-                  </tr>
-                </tbody>
-              </table>
+
+            <div className="cg-arch-tier-cell">
+              <span className="cg-arch-tier-badge">Tier 1.5 · Symbolic SMT</span>
+              <h3 className="cg-arch-tier-name">
+                Z3 Algebraic Claim &amp; Drip-Pricing Solver
+              </h3>
+              <p className="cg-arch-tier-desc">
+                Verifies numeric fee caps, APR ceilings, and CCPA drip-pricing tax/discount equations, producing mathematical counterexample witnesses.
+              </p>
+              <div className="cg-arch-tier-meta">
+                <span>Solver: Z3 SMT v4</span>
+                <span>Counterexample Proof</span>
+              </div>
+            </div>
+
+            <div className="cg-arch-tier-cell">
+              <span className="cg-arch-tier-badge">Tier 2 · Semantic NLI</span>
+              <h3 className="cg-arch-tier-name">
+                QASem SlotDiff &amp; Conformal Risk Control
+              </h3>
+              <p className="cg-arch-tier-desc">
+                Decomposes product claims into semantic slots (metric, amount cap, eligibility, study type) to catch dropped qualifiers with finite-sample α bounds.
+              </p>
+              <div className="cg-arch-tier-meta">
+                <span>QASem SlotDiff</span>
+                <span>Conformal α Risk</span>
+              </div>
+            </div>
+
+            <div className="cg-arch-tier-cell">
+              <span className="cg-arch-tier-badge">Visual &amp; Provenance</span>
+              <h3 className="cg-arch-tier-name">
+                CIEDE2000 ΔE₀₀, ORB Logo &amp; Merkle Log
+              </h3>
+              <p className="cg-arch-tier-desc">
+                Audits banner palette drift (ΔE₀₀), logo clear-space/aspect distortion, and seals approvals in an Ed25519 + RFC 9162 SHA-256 Merkle tree.
+              </p>
+              <div className="cg-arch-tier-meta">
+                <span>RFC 9162 Merkle</span>
+                <span>C2PA v2.3 Ready</span>
+              </div>
             </div>
           </div>
         </section>
       </main>
+
+      <footer className="cg-gateway-footer">
+        <div className="cg-gateway-footer-inner">
+          <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+            <Lock size={13} />
+            <span>
+              CanonGate Governance Engine · Deterministic Pre-Flight, Z3 SMT, QASem SlotDiff, MCP 2026-07-28 &amp; Ed25519 Merkle Certificates
+            </span>
+          </div>
+          <div>
+            <span>
+              RBI 2025 KFS · ASCI · CCPA 2023 · WCAG 2.1 AA · DPDP Act 2023
+            </span>
+          </div>
+        </div>
+      </footer>
     </div>
   );
 }

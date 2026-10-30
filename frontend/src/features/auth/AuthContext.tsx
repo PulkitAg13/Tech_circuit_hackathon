@@ -14,6 +14,9 @@ function clearStorage() {
   localStorage.removeItem("cg_username");
   localStorage.removeItem("cg_display_name");
   localStorage.removeItem("cg_role");
+  if (typeof sessionStorage !== "undefined") {
+    sessionStorage.setItem("cg_signed_out", "1");
+  }
 }
 
 function loadFromStorage(): AuthState {
@@ -45,6 +48,9 @@ function saveToStorage(res: TokenResponse) {
   localStorage.setItem("cg_username", res.username);
   localStorage.setItem("cg_display_name", resolvedDisplayName);
   localStorage.setItem("cg_role", res.role);
+  if (typeof sessionStorage !== "undefined") {
+    sessionStorage.removeItem("cg_signed_out");
+  }
 }
 
 export function AuthProvider({ children }: { children: ReactNode }) {
@@ -60,6 +66,12 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       logout();
     }
     function handleAuthRefreshed(e: Event) {
+      if (
+        typeof sessionStorage !== "undefined" &&
+        sessionStorage.getItem("cg_signed_out") === "1"
+      ) {
+        return;
+      }
       const detail = (e as CustomEvent<TokenResponse>).detail;
       if (detail && detail.token) {
         saveToStorage(detail);
@@ -79,7 +91,6 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     };
   }, [logout]);
 
-  // Silently verify/refresh the token on startup so active sessions never hit a 24h cliff
   useEffect(() => {
     if (!state.token) return;
     let active = true;
@@ -87,15 +98,24 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       .then((res) => {
         if (!active) return;
         saveToStorage(res);
-        setState({
-          token: res.token,
-          username: res.username,
-          displayName: res.display_name || res.username,
-          role: res.role,
+        setState((prev) => {
+          if (
+            prev.token === res.token &&
+            prev.username === res.username &&
+            prev.role === res.role
+          ) {
+            return prev;
+          }
+          return {
+            token: res.token,
+            username: res.username,
+            displayName: res.display_name || res.username,
+            role: res.role,
+          };
         });
       })
       .catch(() => {
-        // Handled by client.ts 401 interceptor
+        // Handled by 401 interceptor
       });
     return () => {
       active = false;

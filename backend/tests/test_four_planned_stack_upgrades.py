@@ -395,6 +395,35 @@ class TestFourPlannedStackUpgrades(unittest.TestCase):
         self.assertTrue(sat_drip)
         self.assertAlmostEqual(eff_pct, 18.24, places=2)
 
+        # Unit-aware check: duration ("36 months") must not false-match currency ("Rs 25,000")
+        cross_unit_node = TextNode.from_text(
+            "Personal loan offer requires minimum salary for at least 36 months."
+        )
+        cross_findings = alg_check.run(cross_unit_node, canon)
+        self.assertFalse(any("floor breach" in f.message for f in cross_findings))
+
+        # Multi-variable MRP / Offer / Mandatory Fee contradiction
+        mrp_node = TextNode.from_text(
+            "MRP ₹2,000 with Flat 50% discount! Pay just ₹1,000 + ₹200 mandatory platform fee."
+        )
+        mrp_findings = alg_check.run(mrp_node, canon)
+        self.assertTrue(any("40.00%" in f.message for f in mrp_findings))
+
+        # Multi-variable Loan / EMI / Tenure / 0% interest contradiction
+        emi_node = TextNode.from_text(
+            "Borrow ₹1,00,000 at 0% interest for 12 months with EMI of ₹9,500."
+        )
+        emi_findings = alg_check.run(emi_node, canon)
+        self.assertTrue(any("114,000" in f.message for f in emi_findings))
+
+        # Brand guidelines typography hierarchy & 60/30/10 color ratio algebra
+        brand_node = TextNode.from_text(
+            "Heading font-size: 18pt and body font-size: 16pt. "
+            "Palette uses 30% primary, 20% secondary, 50% accent."
+        )
+        brand_findings = alg_check.run(brand_node, canon)
+        self.assertEqual(len(brand_findings), 2)
+
     # ── 4. Pipeline A Guards 1 & 3 + POS Constraints ──
 
     def test_spacy_pos_constraints_and_pipeline_a_guards_1_and_3(self) -> None:

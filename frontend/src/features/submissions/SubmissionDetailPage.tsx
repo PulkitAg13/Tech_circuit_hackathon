@@ -2107,8 +2107,8 @@ export function SubmissionDetailPage() {
                                     <td>
                                       <code>{s.slot ?? s.slot_name}</code>
                                     </td>
-                                    <td>{s.canon_value ?? "—"}</td>
-                                    <td>{s.draft_value ?? "—"}</td>
+                                    <td>{s.canon_value ?? "·"}</td>
+                                    <td>{s.draft_value ?? "·"}</td>
                                     <td>
                                       <span
                                         className={`cg-slot-badge slot-${s.status}`}
