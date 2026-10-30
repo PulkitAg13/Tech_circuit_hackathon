@@ -2943,3 +2943,34 @@ option {
 .cg-persona-launch-row {
   border-radius: var(--radius-card) !important;
 }
+
+.cg-gateway-kpi-label,
+.cg-persona-row-desc,
+.cg-auth-sheet-sub,
+.cg-arch-ledger-sub,
+.cg-field-group label,
+.cg-mcp-pre,
+.cg-mcp-tools-pills code,
+.cg-gateway-footer-inner {
+  font-size: 13px !important;
+}
+
+.cg-wb-pane-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.cg-contact-desks-grid {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 12px;
+}
+
+@media (max-width: 680px) {
+  .cg-contact-desks-grid {
+    grid-template-columns: 1fr;
+  }
+}

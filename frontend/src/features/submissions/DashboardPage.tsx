@@ -77,10 +77,31 @@ const AUTO_PURGE_TEST_TITLES = new Set([
   "monsoon kfs campaign",
   "p1-p6 full feature test",
   "e2e verification campaign",
+  "monsoon instant personal loan banner",
+  "instant personal loan flash offer",
+  "curcumin gold festival offer",
+  "curcumin gold festival bundle",
+  "hero banner css token check",
+  "approved kfs personal credit disclosure",
+  "brand deck & pricing spec check",
+  "q3 instant personal loan campaign",
+  "mcp agent loan ad audit",
+  "nutra_landing.html",
+  "promo_1080p.png",
+  "lending_offer.md",
   "test",
   "test sub",
   "test campaign",
 ]);
+
+function isToyOrTestTitle(rawTitle: string): boolean {
+  const clean = (rawTitle || "").trim().toLowerCase();
+  if (!clean) return false;
+  if (AUTO_PURGE_TEST_TITLES.has(clean)) return true;
+  if (/^asset_\d+\.(md|txt|html|png|jpg|pdf|docx)$/i.test(clean)) return true;
+  if (/^test(\s|_|-|$)/i.test(clean)) return true;
+  return false;
+}
 
 const CANON_DISPLAY_LABELS: Record<string, string> = {
   "indian-digital-lending":
@@ -378,8 +399,8 @@ export function DashboardPage() {
     "generic" | "shopify" | "webflow"
   >("generic");
   const [gateAlpha, setGateAlpha] = useState<number>(0.1);
-  const [gateTitle, setGateTitle] = useState<string>(SAMPLE_CAMPAIGN_PRESETS[0].title);
-  const [gateContent, setGateContent] = useState<string>(SAMPLE_CAMPAIGN_PRESETS[0].content);
+  const [gateTitle, setGateTitle] = useState<string>("");
+  const [gateContent, setGateContent] = useState<string>("");
   const [gatePersist, setGatePersist] = useState<boolean>(false);
   const [gateRunning, setGateRunning] = useState<boolean>(false);
   const [gateResult, setGateResult] =
@@ -467,10 +488,10 @@ export function DashboardPage() {
     if (subsRes.status === "fulfilled") {
       const rawList = subsRes.value;
       const junkRows = rawList.filter((s) =>
-        AUTO_PURGE_TEST_TITLES.has(s.title.trim().toLowerCase()),
+        isToyOrTestTitle(s.title),
       );
       const userRows = rawList.filter(
-        (s) => !AUTO_PURGE_TEST_TITLES.has(s.title.trim().toLowerCase()),
+        (s) => !isToyOrTestTitle(s.title),
       );
 
       if (junkRows.length > 0) {
@@ -1432,29 +1453,29 @@ export function DashboardPage() {
                     <div>
                       <h3>New Campaign Pre-Flight Audit</h3>
                     </div>
-                    <div className="cg-composer-presets">
-                      <span style={{ fontSize: "12px", color: "var(--muted)", marginRight: "4px" }}>
-                        Quick Fill:
-                      </span>
-                      {SAMPLE_CAMPAIGN_PRESETS.map((p) => (
-                        <button
-                          key={p.id}
-                          type="button"
-                          className="cg-preset-chip"
-                          onClick={() => {
-                            setTitle(p.title);
-                            setSelectedCanon(p.canonId);
-                            setRawContent(p.content);
-                          }}
-                        >
-                          <Sparkles size={12} />
-                          <span>{p.label}</span>
-                        </button>
-                      ))}
-                    </div>
+                    <span className="cg-mono-label">
+                      Upload your copy, documents, or banners and select a governing baseline
+                    </span>
                   </div>
 
                   <div className="cg-composer-body">
+                    <div className="cg-composer-presets" style={{ marginBottom: "16px" }}>
+                      {SAMPLE_CAMPAIGN_PRESETS.map((preset) => (
+                        <button
+                          key={preset.id}
+                          type="button"
+                          className="cg-preset-chip"
+                          onClick={() => {
+                            setTitle(preset.title);
+                            setSelectedCanon(preset.canonId);
+                            setRawContent(preset.content);
+                          }}
+                        >
+                          <Sparkles size={12} />
+                          <span>Quick Fill: {preset.label}</span>
+                        </button>
+                      ))}
+                    </div>
                     <div className="cg-field-row-2">
                       <div className="cg-field-group">
                         <label htmlFor="sub-title">Campaign Bundle Title</label>
@@ -3401,23 +3422,7 @@ export function DashboardPage() {
                         control.
                       </p>
                     </div>
-                    <div className="cg-composer-presets">
-                      {SAMPLE_CAMPAIGN_PRESETS.map((p) => (
-                        <button
-                          key={p.id}
-                          type="button"
-                          className="cg-preset-chip"
-                          onClick={() => {
-                            setGateCanonId(p.canonId);
-                            setGateTitle(p.title);
-                            setGateContent(p.content);
-                          }}
-                        >
-                          <Sparkles size={12} />
-                          <span>{p.label}</span>
-                        </button>
-                      ))}
-                    </div>
+
                   </div>
 
                   <div className="cg-field-row-2">

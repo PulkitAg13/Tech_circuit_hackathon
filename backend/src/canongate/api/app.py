@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import re
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
@@ -47,39 +48,72 @@ async def _seed_default_users() -> None:
                     )
 
 
-_LEGACY_DEMO_TITLES = (
-    "Diwali Instant Digital Loan Campaign Bundle",
-    "AyurGlow Curcumin Gold Elixir Landing Page",
-    "AyurGlow Curcumin Gold Elixir",
-    "AyurGlow Curcumin Gold Elixir Launch",
-    "RBI 2025 KFS & CCPA Pre-Flight — Instant Personal Loan Bundle",
-    "Clean Acme Announcement",
-    "Minor Tone Drift",
-    "QuickLoan Festival Credit Campaign",
-    "QuickLoan Diwali Festival Campaign",
-    "Acme QuickLoan Diwali Festival Campaign",
-    "CloudScale Enterprise Tier Release",
-    "Enterprise Cloud Launch Landing Page",
-    "Acme Cloud Enterprise Launch Landing Page",
-    "Duplicate & Table Alignment Test",
-    "Monsoon Digital Lending Campaign",
-    "Monsoon KFS Campaign",
-    "P1-P6 Full Feature Test",
-    "E2E Verification Campaign",
-    "Test",
-    "Test Sub",
-    "Test Campaign",
+_LEGACY_DEMO_TITLES_LOWER: frozenset[str] = frozenset(
+    t.lower()
+    for t in (
+        "Diwali Instant Digital Loan Campaign Bundle",
+        "AyurGlow Curcumin Gold Elixir Landing Page",
+        "AyurGlow Curcumin Gold Elixir",
+        "AyurGlow Curcumin Gold Elixir Launch",
+        "RBI 2025 KFS & CCPA Pre-Flight — Instant Personal Loan Bundle",
+        "RBI 2025 KFS & CCPA Pre-Flight · Instant Personal Loan Bundle",
+        "Clean Acme Announcement",
+        "Minor Tone Drift",
+        "QuickLoan Festival Credit Campaign",
+        "QuickLoan Diwali Festival Campaign",
+        "Acme QuickLoan Diwali Festival Campaign",
+        "CloudScale Enterprise Tier Release",
+        "Enterprise Cloud Launch Landing Page",
+        "Acme Cloud Enterprise Launch Landing Page",
+        "Duplicate & Table Alignment Test",
+        "Monsoon Digital Lending Campaign",
+        "Monsoon KFS Campaign",
+        "Monsoon Instant Personal Loan Banner",
+        "Instant Personal Loan Flash Offer",
+        "Curcumin Gold Festival Offer",
+        "Curcumin Gold Festival Bundle",
+        "Hero Banner CSS Token Check",
+        "Approved KFS Personal Credit Disclosure",
+        "Brand Deck & Pricing Spec Check",
+        "Q3 Instant Personal Loan Campaign",
+        "MCP Agent Loan Ad Audit",
+        "P1-P6 Full Feature Test",
+        "E2E Verification Campaign",
+        "nutra_landing.html",
+        "promo_1080p.png",
+        "lending_offer.md",
+        "Test",
+        "Test Sub",
+        "Test Campaign",
+    )
+)
+
+_TOY_OR_TEST_TITLE_RE = re.compile(
+    r"^(?:asset_\d+\.(?:md|txt|html|png|jpg|pdf|docx)|"
+    r"nutra_landing\.html|promo_1080p\.png|lending_offer\.md|"
+    r"test(?:[\s_-].*)?)$",
+    re.IGNORECASE,
 )
 
 
+def is_toy_or_test_submission(title: str) -> bool:
+    """Return True if a submission title belongs to a toy/demo preset or test-suite fixture."""
+    clean = (title or "").strip()
+    if not clean:
+        return False
+    if clean.lower() in _LEGACY_DEMO_TITLES_LOWER:
+        return True
+    return bool(_TOY_OR_TEST_TITLE_RE.match(clean))
+
+
 async def _purge_legacy_demo_submissions() -> None:
-    """Remove any leftover auto-seeded demo bundles from older database files."""
+    """Remove any leftover auto-seeded demo bundles or test-suite fixtures from database files."""
     from canongate.store import repos
 
     async with async_session() as session, session.begin():
-        subs = await repos.list_submissions(session, limit=200)
+        subs = await repos.list_submissions(session, limit=5000)
         for s in subs:
-            if s.title in _LEGACY_DEMO_TITLES and hasattr(repos, "delete_submission"):
+            if is_toy_or_test_submission(s.title) and hasattr(repos, "delete_submission"):
                 await repos.delete_submission(session, s.id)
 
 
@@ -94,7 +128,7 @@ async def _startup_init() -> None:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Startup: create tables, seed starter accounts, and warm canon cache."""
+    """Startup: create tables, seed starter accounts, purge toy/test ads, and warm canon cache."""
     await _startup_init()
     yield
 
