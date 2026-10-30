@@ -46,7 +46,6 @@ import {
   Search,
   ShieldCheck,
   Sliders,
-  Sparkles,
   Terminal,
   Trash2,
   Upload,
@@ -54,6 +53,45 @@ import {
 } from "lucide-react";
 
 const CUSTOM_PLAYBOOK_VALUE = "__custom__";
+
+// Known test-suite / legacy demo submission titles that should be auto-purged
+// if an older SQLite database or shared test server still holds them.
+const AUTO_PURGE_TEST_TITLES = new Set([
+  "clean acme announcement", /* taste-skill-ignore */
+  "minor tone drift",
+  "ayurglow curcumin gold elixir",
+  "ayurglow curcumin gold elixir launch",
+  "ayurglow curcumin gold elixir landing page",
+  "diwali instant digital loan campaign bundle",
+  "rbi 2025 kfs & ccpa pre-flight — instant personal loan bundle",
+  "quickloan festival credit campaign",
+  "quickloan diwali festival campaign",
+  "acme quickloan diwali festival campaign", /* taste-skill-ignore */
+  "cloudscale enterprise tier release",
+  "enterprise cloud launch landing page",
+  "acme cloud enterprise launch landing page", /* taste-skill-ignore */
+  "duplicate & table alignment test",
+  "monsoon digital lending campaign",
+  "monsoon kfs campaign",
+  "p1-p6 full feature test",
+  "e2e verification campaign",
+  "test",
+  "test sub",
+  "test campaign",
+]);
+
+const CANON_DISPLAY_LABELS: Record<string, string> = {
+  "indian-digital-lending":
+    "RBI Digital Lending & Key Fact Statement (KFS) Baseline",
+  "indian-d2c-nutra":
+    "ASCI & CCPA Advertising & Substantiation Baseline",
+  "acme-corp": /* taste-skill-ignore */
+    "WCAG 2.1 AA Accessibility & Enterprise Baseline",
+};
+
+function formatCanonName(id: string): string {
+  return CANON_DISPLAY_LABELS[id] ?? id;
+}
 
 const ROLE_META: Record<
   string,
@@ -90,30 +128,6 @@ const ROLE_META: Record<
       "Reviews high-risk claims, required disclosures, and overrides to issue final sign-off and generate the release certificate.",
   },
 };
-
-const QUICK_SAMPLE_PRESETS = [
-  {
-    label: "RBI Digital Lending Ad",
-    canonId: "indian-digital-lending",
-    title: "QuickLoan Diwali Festival Campaign",
-    content:
-      "Celebrate this season with QuickLoan! Get 0% processing fee on loans with guaranteed approval and no credit check, cheap personal credit for everyone.\n\nPrincipal: Rs 50,000 | Processing Fee: Rs 1,500 | Total Interest: Rs 3,500 | Tenure: 6 Months | Annual Percentage Rate (APR) is 14%.\n\n<div style=\"color: #777777; background-color: #FFFFFF;\">T&C apply. Contact support@quickloans.in.</div>",
-  },
-  {
-    label: "ASCI Nutraceutical Launch",
-    canonId: "indian-d2c-nutra",
-    title: "AyurGlow Curcumin Gold Elixir Launch",
-    content:
-      "Experience our miracle cure formula with 2x faster absorption and 100% fat burn results! AyurGlow cures diabetes naturally in 7 days.",
-  },
-  {
-    label: "Enterprise Brand & Palette Audit",
-    canonId: "acme-corp", /* taste-skill-ignore */
-    title: "Enterprise Cloud Launch Landing Page",
-    content:
-      "Why buy cheap legacy tools when our platform helps users modernize? Acme Corp has over 500 employees serving global enterprises.\n\n<div style=\"color: #777777; background-color: #FFFFFF;\">Enterprise SLA footnote text.</div>", /* taste-skill-ignore */
-  },
-] as const;
 
 function getStageMeta(status: string) {
   switch (status) {
@@ -190,9 +204,8 @@ export function DashboardPage() {
   >([]);
   const [submitting, setSubmitting] = useState(false);
   const [deletingId, setDeletingId] = useState<number | null>(null);
+  const [clearingAll, setClearingAll] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [startingTrial, setStartingTrial] = useState(false);
-  const [clearingTrial, setClearingTrial] = useState(false);
 
   // Inline Custom Company Guidelines / Documents onboarding inside Campaign Submission Form
   const [inlineCanonId, setInlineCanonId] = useState<string>("");
@@ -247,17 +260,20 @@ export function DashboardPage() {
   const [compileResult, setCompileResult] =
     useState<CompileCanonResponse | null>(null);
 
-  // Pre-Publish Webhook Gate Studio state (`POST /api/gate/check`)
-  const [gateCanonId, setGateCanonId] = useState<string>("indian-digital-lending");
-  const [gateAdapter, setGateAdapter] = useState<"generic" | "shopify" | "webflow">("generic");
-  const [gateAlpha, setGateAlpha] = useState<number>(0.1);
-  const [gateTitle, setGateTitle] = useState<string>("Webhook Pre-Publish Campaign Check");
-  const [gateContent, setGateContent] = useState<string>(
-    QUICK_SAMPLE_PRESETS[0].content,
+  // Pre-Publish Webhook Gate Studio state (`POST /api/gate/check`) — starts empty
+  const [gateCanonId, setGateCanonId] = useState<string>(
+    "indian-digital-lending",
   );
+  const [gateAdapter, setGateAdapter] = useState<
+    "generic" | "shopify" | "webflow"
+  >("generic");
+  const [gateAlpha, setGateAlpha] = useState<number>(0.1);
+  const [gateTitle, setGateTitle] = useState<string>("");
+  const [gateContent, setGateContent] = useState<string>("");
   const [gatePersist, setGatePersist] = useState<boolean>(false);
   const [gateRunning, setGateRunning] = useState<boolean>(false);
-  const [gateResult, setGateResult] = useState<GateCheckResponsePayload | null>(null);
+  const [gateResult, setGateResult] =
+    useState<GateCheckResponsePayload | null>(null);
 
   const syncRuleSliders = useCallback((rule: CanonRuleItem | undefined) => {
     if (!rule) return;
@@ -312,12 +328,29 @@ export function DashboardPage() {
     }
 
     if (subsRes.status === "fulfilled") {
-      setSubmissions(subsRes.value);
-      if (subsRes.value.length === 0) {
+      const rawList = subsRes.value;
+      const junkRows = rawList.filter((s) =>
+        AUTO_PURGE_TEST_TITLES.has(s.title.trim().toLowerCase()),
+      );
+      const userRows = rawList.filter(
+        (s) => !AUTO_PURGE_TEST_TITLES.has(s.title.trim().toLowerCase()),
+      );
+
+      // Automatically purge leftover pytest / legacy demo rows in the background
+      if (junkRows.length > 0) {
+        void Promise.allSettled(
+          junkRows.map((j) => deleteSubmission(j.id)),
+        );
+      }
+
+      setSubmissions(userRows);
+      if (userRows.length === 0) {
         setShowForm(true);
       }
     } else {
-      setError((subsRes.reason as Error)?.message || "Failed to load submissions");
+      setError(
+        (subsRes.reason as Error)?.message || "Failed to load submissions",
+      );
     }
 
     setLoading(false);
@@ -516,6 +549,7 @@ export function DashboardPage() {
 
   async function handleRunWebhookGate(e: FormEvent) {
     e.preventDefault();
+    if (!gateContent.trim()) return;
     setGateRunning(true);
     setError(null);
     try {
@@ -641,6 +675,23 @@ export function DashboardPage() {
     }
   }
 
+  async function handleClearAllSubmissions() {
+    if (submissions.length === 0) return;
+    setClearingAll(true);
+    setError(null);
+    try {
+      await Promise.allSettled(submissions.map((s) => deleteSubmission(s.id)));
+      localStorage.removeItem("cg_trial_submission_ids");
+      localStorage.removeItem("cg_trial_active");
+      setSubmissions([]);
+      setShowForm(true);
+    } catch (err) {
+      setError((err as Error).message);
+    } finally {
+      setClearingAll(false);
+    }
+  }
+
   async function readFilesAsBase64(
     files: FileList | null,
   ): Promise<BundleAttachmentPayload[]> {
@@ -679,82 +730,6 @@ export function DashboardPage() {
     const loaded = await readFilesAsBase64(files);
     if (loaded.length > 0) {
       setCompileAttachments((prev) => [...prev, ...loaded]);
-    }
-  }
-
-  function applySamplePreset(preset: (typeof QUICK_SAMPLE_PRESETS)[number]) {
-    setTitle(preset.title);
-    setRawContent(preset.content);
-    const matchingCanon = canons.find((c) => c.id === preset.canonId);
-    if (matchingCanon) {
-      setSelectedCanon(matchingCanon.id);
-    }
-  }
-
-  const trialSubmissions = submissions.filter((s) => {
-    const storedIds: number[] = JSON.parse(
-      localStorage.getItem("cg_trial_submission_ids") || "[]",
-    );
-    return (
-      s.title.toLowerCase().startsWith("[trial run]") ||
-      storedIds.includes(s.id)
-    );
-  });
-
-  async function handleStartGuidedTrialRun() {
-    setStartingTrial(true);
-    setError(null);
-    try {
-      const preset = QUICK_SAMPLE_PRESETS[0];
-      const sub = await createSubmission(
-        `[Trial Run] ${preset.title}`,
-        preset.content,
-        preset.canonId,
-        [],
-        [],
-      );
-      const apiBase = getApiBase();
-      await fetch(`${apiBase}/submissions/${sub.id}/scan?alpha=0.1`, {
-        method: "POST",
-        headers: {
-          Authorization: `Bearer ${localStorage.getItem("cg_token") ?? ""}`,
-        },
-      }).catch(() => {});
-
-      const existingIds: number[] = JSON.parse(
-        localStorage.getItem("cg_trial_submission_ids") || "[]",
-      );
-      if (!existingIds.includes(sub.id)) {
-        existingIds.push(sub.id);
-      }
-      localStorage.setItem(
-        "cg_trial_submission_ids",
-        JSON.stringify(existingIds),
-      );
-      localStorage.setItem("cg_trial_active", "true");
-      navigate(`/submissions/${sub.id}`);
-    } catch (err) {
-      setError((err as Error).message);
-    } finally {
-      setStartingTrial(false);
-    }
-  }
-
-  async function handleClearAllTrialRuns() {
-    setClearingTrial(true);
-    setError(null);
-    try {
-      for (const tSub of trialSubmissions) {
-        await deleteSubmission(tSub.id).catch(() => {});
-      }
-      localStorage.removeItem("cg_trial_submission_ids");
-      localStorage.removeItem("cg_trial_active");
-      await refresh();
-      setShowForm(true);
-    } catch (err) {
-      setError((err as Error).message);
-    } finally {
-      setClearingTrial(false);
     }
   }
 
@@ -903,7 +878,11 @@ export function DashboardPage() {
             </button>
 
             <span className="cg-nav-section-title">Platform</span>
-            <Link to="/welcome" className="cg-nav-item" style={{ textDecoration: "none" }}>
+            <Link
+              to="/welcome"
+              className="cg-nav-item"
+              style={{ textDecoration: "none" }}
+            >
               <span className="cg-nav-item-left">
                 <Globe size={15} />
                 <span>Product Overview</span>
@@ -932,12 +911,18 @@ export function DashboardPage() {
                 </span>
                 <span className="cg-user-handle">@{username}</span>
               </div>
-              <span className="cg-role-stage-tag">{currentRoleMeta.shortLabel}</span>
+              <span className="cg-role-stage-tag">
+                {currentRoleMeta.shortLabel}
+              </span>
             </div>
 
             <div
               className="cg-quick-role-switchers"
-              style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: "4px" }}
+              style={{
+                display: "grid",
+                gridTemplateColumns: "repeat(3, 1fr)",
+                gap: "4px",
+              }}
               title="Active RBAC Role (POST /api/auth/switch-role)"
             >
               <button
@@ -1004,7 +989,11 @@ export function DashboardPage() {
           )}
 
           {activeTab === "submissions" ? (
-            <div key="tab-submissions" className="cg-animate-swap" style={{ display: "flex", flexDirection: "column", gap: "18px" }}>
+            <div
+              key="tab-submissions"
+              className="cg-animate-swap"
+              style={{ display: "flex", flexDirection: "column", gap: "18px" }}
+            >
               {/* ── Workspace Header Bar ── */}
               <section className="cg-console-hero-bar">
                 <div className="cg-console-hero-left">
@@ -1020,32 +1009,19 @@ export function DashboardPage() {
                 </div>
 
                 <div className="cg-console-hero-actions">
-                  {trialSubmissions.length === 0 ? (
+                  {submissions.length > 0 && (
                     <button
                       type="button"
                       className="cg-btn cg-btn-secondary cg-btn-sm"
-                      disabled={startingTrial}
-                      onClick={() => void handleStartGuidedTrialRun()}
-                      title="Load a sample campaign bundle to test the review workflow"
-                    >
-                      <Sparkles size={13} />
-                      <span>
-                        {startingTrial ? "Loading…" : "Load Sample Run"}
-                      </span>
-                    </button>
-                  ) : (
-                    <button
-                      type="button"
-                      className="cg-btn cg-btn-secondary cg-btn-sm"
-                      disabled={clearingTrial}
-                      onClick={() => void handleClearAllTrialRuns()}
-                      title="Remove sample bundles from queue"
+                      disabled={clearingAll}
+                      onClick={() => void handleClearAllSubmissions()}
+                      title="Remove all submissions from the queue"
                     >
                       <Trash2 size={13} />
                       <span>
-                        {clearingTrial
+                        {clearingAll
                           ? "Clearing…"
-                          : `Clear Sample (${trialSubmissions.length})`}
+                          : `Clear Queue (${submissions.length})`}
                       </span>
                     </button>
                   )}
@@ -1058,7 +1034,7 @@ export function DashboardPage() {
                     }}
                   >
                     <Upload size={13} />
-                    <span>Import Playbook</span>
+                    <span>Import Custom Playbook</span>
                   </button>
                   <button
                     type="button"
@@ -1083,9 +1059,9 @@ export function DashboardPage() {
               {/* ── Divided 4-Cell Ledger KPI Strip ── */}
               <div className="cg-kpi-strip">
                 <div className="cg-kpi-cell">
-                  <span className="cg-mono-label">Total Campaign Bundles</span>
+                  <span className="cg-mono-label">Active Campaign Bundles</span>
                   <strong>{submissions.length}</strong>
-                  <span>Active across {canons.length} playbooks</span>
+                  <span>{canons.length} governing baselines available</span>
                 </div>
                 <div className="cg-kpi-cell">
                   <span className="cg-mono-label">Awaiting Your Action</span>
@@ -1093,20 +1069,27 @@ export function DashboardPage() {
                   <span>Assigned to {currentRoleMeta.shortLabel}</span>
                 </div>
                 <div className="cg-kpi-cell">
-                  <span className="cg-mono-label">In Brand &amp; Legal Review</span>
+                  <span className="cg-mono-label">
+                    In Brand &amp; Legal Review
+                  </span>
                   <strong>{stageCounts.stage2 + stageCounts.stage3}</strong>
                   <span>
-                    Stage 2 ({stageCounts.stage2}) · Stage 3 ({stageCounts.stage3})
+                    Stage 2 ({stageCounts.stage2}) · Stage 3 (
+                    {stageCounts.stage3})
                   </span>
                 </div>
                 <div className="cg-kpi-cell">
-                  <span className="cg-mono-label">Released &amp; Merkle Sealed</span>
-                  <strong className="cg-text-emerald">{stageCounts.stage4}</strong>
+                  <span className="cg-mono-label">
+                    Released &amp; Merkle Sealed
+                  </span>
+                  <strong className="cg-text-emerald">
+                    {stageCounts.stage4}
+                  </strong>
                   <span>Ed25519 + C2PA v2.3 signed</span>
                 </div>
               </div>
 
-              {/* ── Campaign Bundle Composer (Collapsible Sheet) ── */}
+              {/* ── Campaign Bundle Composer (Clean, Zero Fake Presets) ── */}
               {showForm && (
                 <form
                   className="cg-composer-card cg-animate-swap"
@@ -1116,20 +1099,10 @@ export function DashboardPage() {
                     <div>
                       <h3>New Campaign Pre-Flight Audit</h3>
                     </div>
-                    <div className="cg-composer-presets">
-                      <span className="cg-mono-label">Sample Drafts:</span>
-                      {QUICK_SAMPLE_PRESETS.map((preset) => (
-                        <button
-                          key={preset.label}
-                          type="button"
-                          className="cg-preset-chip"
-                          onClick={() => applySamplePreset(preset)}
-                        >
-                          <Sparkles size={12} />
-                          <span>{preset.label}</span>
-                        </button>
-                      ))}
-                    </div>
+                    <span className="cg-mono-label">
+                      Upload your copy, documents, or banners and select a
+                      governing baseline
+                    </span>
                   </div>
 
                   <div className="cg-composer-body">
@@ -1149,7 +1122,7 @@ export function DashboardPage() {
                       <div className="cg-field-group">
                         <div className="cg-field-label-row">
                           <label htmlFor="sub-canon">
-                            Governing Brand Playbook
+                            Governing Regulatory or Brand Playbook
                           </label>
                           <button
                             type="button"
@@ -1163,8 +1136,8 @@ export function DashboardPage() {
                             }
                           >
                             {selectedCanon === CUSTOM_PLAYBOOK_VALUE
-                              ? "Use Existing Playbook"
-                              : "+ Parse Custom Company Docs / Rules"}
+                              ? "Use Built-In Baseline"
+                              : "+ Upload Custom Company Guidelines"}
                           </button>
                         </div>
                         <select
@@ -1174,8 +1147,7 @@ export function DashboardPage() {
                         >
                           {canons.map((c) => (
                             <option key={c.id} value={c.id}>
-                              {c.id} (v{c.version} · {c.term_count} terms,{" "}
-                              {c.fact_count} facts, {c.color_count} colours)
+                              {formatCanonName(c.id)} ({c.id} v{c.version})
                             </option>
                           ))}
                           <option value={CUSTOM_PLAYBOOK_VALUE}>
@@ -1270,11 +1242,7 @@ export function DashboardPage() {
                             rows={3}
                             value={inlineCanonText}
                             onChange={(e) => setInlineCanonText(e.target.value)}
-                            placeholder={
-                              "Never use 'guaranteed returns', prefer 'historical target yield'.\n" +
-                              "Approved Fact: 0% processing fee on loans under Rs 50,000 valid until 2026-12-31.\n" +
-                              "Trigger: 'loan' -> Disclaimer: 'Subject to credit assessment and RBI KFS terms.'"
-                            }
+                            placeholder="Paste your brand rules, approved product claims, required disclosures, or hex colour tokens…"
                           />
                         </div>
 
@@ -1285,7 +1253,11 @@ export function DashboardPage() {
                             onClick={() =>
                               setInlineTerms((prev) => [
                                 ...prev,
-                                { pattern_text: "", preferred: "", severity: 60 },
+                                {
+                                  pattern_text: "",
+                                  preferred: "",
+                                  severity: 60,
+                                },
                               ])
                             }
                           >
@@ -1337,13 +1309,16 @@ export function DashboardPage() {
                           <div key={`it-${idx}`} className="cg-inline-rule-row">
                             <input
                               type="text"
-                              placeholder="Banned term (e.g. risk-free)"
+                              placeholder="Banned term"
                               value={t.pattern_text}
                               onChange={(e) =>
                                 setInlineTerms((prev) =>
                                   prev.map((item, i) =>
                                     i === idx
-                                      ? { ...item, pattern_text: e.target.value }
+                                      ? {
+                                          ...item,
+                                          pattern_text: e.target.value,
+                                        }
                                       : item,
                                   ),
                                 )
@@ -1351,7 +1326,7 @@ export function DashboardPage() {
                             />
                             <input
                               type="text"
-                              placeholder="Preferred replacement (e.g. capital-protected)"
+                              placeholder="Preferred replacement"
                               value={t.preferred}
                               onChange={(e) =>
                                 setInlineTerms((prev) =>
@@ -1401,7 +1376,10 @@ export function DashboardPage() {
                                 setInlineFacts((prev) =>
                                   prev.map((item, i) =>
                                     i === idx
-                                      ? { ...item, valid_until: e.target.value }
+                                      ? {
+                                          ...item,
+                                          valid_until: e.target.value,
+                                        }
                                       : item,
                                   ),
                                 )
@@ -1425,7 +1403,7 @@ export function DashboardPage() {
                           <div key={`ic-${idx}`} className="cg-inline-rule-row">
                             <input
                               type="text"
-                              placeholder="Colour name (e.g. Brand Primary)"
+                              placeholder="Colour name"
                               value={c.name}
                               onChange={(e) =>
                                 setInlineColors((prev) =>
@@ -1469,7 +1447,7 @@ export function DashboardPage() {
                           <div key={`itr-${idx}`} className="cg-inline-rule-row">
                             <input
                               type="text"
-                              placeholder="Trigger keyword (e.g. APR)"
+                              placeholder="Trigger keyword"
                               value={tr.trigger_pattern}
                               onChange={(e) =>
                                 setInlineTriggers((prev) =>
@@ -1534,8 +1512,8 @@ export function DashboardPage() {
 
                       <div className="cg-field-group">
                         <label htmlFor="sub-files">
-                          Attach Campaign Documents or 1080p Banners (`.docx`,
-                          `.pdf`, `.html`, `.png`, `.jpg`)
+                          Attach Campaign Documents or Banners (`.docx`, `.pdf`,
+                          `.html`, `.png`, `.jpg`)
                         </label>
                         <input
                           id="sub-files"
@@ -1546,7 +1524,8 @@ export function DashboardPage() {
                         />
                         <p className="cg-field-help">
                           All text and visual assets are parsed locally into a
-                          unified ContentAST with zero unmasked cloud data leaks.
+                          unified ContentAST with zero unmasked cloud data
+                          leaks.
                         </p>
                         {uploadedAttachments.length > 0 && (
                           <div className="uploaded-files-pills">
@@ -1692,9 +1671,9 @@ export function DashboardPage() {
                 <div className="cg-empty-box">Loading campaign queue…</div>
               ) : filteredSubmissions.length === 0 ? (
                 <div className="cg-empty-box">
-                  <p>
+                  <p style={{ margin: 0 }}>
                     {submissions.length === 0
-                      ? "Your campaign queue is empty. Use the composer above (or click a Sample Preset) to run your first pre-publication audit."
+                      ? "Your campaign queue is clean and empty. Use the composer above to upload your first campaign copy, document, or banner."
                       : "No campaigns match your active stage or search filter."}
                   </p>
                   {(stageFilter !== "all" || searchQuery) && (
@@ -1740,7 +1719,9 @@ export function DashboardPage() {
                           </div>
 
                           <div className="cg-triage-right-meta">
-                            <code className="cg-canon-badge">{s.canon_id}</code>
+                            <code className="cg-canon-badge">
+                              {formatCanonName(s.canon_id)}
+                            </code>
                             <button
                               type="button"
                               className="cg-delete-btn"
@@ -1808,7 +1789,7 @@ export function DashboardPage() {
               <div className="cg-console-hero-bar">
                 <div className="cg-console-hero-left">
                   <h1 className="cg-console-title">
-                    Brand Playbooks &amp; Rule Studio
+                    Regulatory Baselines &amp; Brand Playbooks
                   </h1>
                 </div>
 
@@ -1821,7 +1802,7 @@ export function DashboardPage() {
                   >
                     {canons.map((c) => (
                       <option key={c.id} value={c.id}>
-                        {c.id} (v{c.version})
+                        {formatCanonName(c.id)} ({c.id} v{c.version})
                       </option>
                     ))}
                   </select>
@@ -1940,7 +1921,8 @@ export function DashboardPage() {
                     <div>
                       <h3>
                         Compiled Rules, Approved Facts &amp; Visual Tokens in{" "}
-                        <code>{govCanonId}</code>
+                        <strong>{formatCanonName(govCanonId)}</strong> (
+                        <code>{govCanonId}</code>)
                       </h3>
                       <p>
                         Select any rule row to calibrate its severity weight or
@@ -2032,8 +2014,8 @@ export function DashboardPage() {
                           <div>
                             <h3>Recurring Mistakes by Category</h3>
                             <p>
-                              Aggregates compliance findings across campaigns to
-                              pinpoint high-risk categories.
+                              Aggregates compliance findings across your
+                              campaigns to pinpoint high-risk categories.
                             </p>
                           </div>
                           <span className="cg-brand-version">
@@ -2059,11 +2041,18 @@ export function DashboardPage() {
                                   <td>
                                     <strong>{cat.category}</strong>
                                   </td>
-                                  <td className="cg-num-col">{cat.total_flags}</td>
-                                  <td className="cg-num-col">{cat.resolved_count}</td>
-                                  <td className="cg-num-col">{cat.overridden_count}</td>
+                                  <td className="cg-num-col">
+                                    {cat.total_flags}
+                                  </td>
+                                  <td className="cg-num-col">
+                                    {cat.resolved_count}
+                                  </td>
+                                  <td className="cg-num-col">
+                                    {cat.overridden_count}
+                                  </td>
                                   <td className="cg-td-muted">
-                                    <code>{cat.top_rule_id}</code> · {cat.insight}
+                                    <code>{cat.top_rule_id}</code> ·{" "}
+                                    {cat.insight}
                                   </td>
                                 </tr>
                               ))}
@@ -2072,7 +2061,7 @@ export function DashboardPage() {
                         ) : (
                           <div className="cg-clean-note">
                             No recurring category violations recorded yet for{" "}
-                            <strong>{govCanonId}</strong>.
+                            <strong>{formatCanonName(govCanonId)}</strong>.
                           </div>
                         )}
                       </div>
@@ -2095,7 +2084,9 @@ export function DashboardPage() {
                                 <th>Rule ID</th>
                                 <th className="cg-num-col">Flags</th>
                                 <th className="cg-num-col">Overrides</th>
-                                <th className="cg-num-col">Posterior Friction</th>
+                                <th className="cg-num-col">
+                                  Posterior Friction
+                                </th>
                                 <th>Status</th>
                               </tr>
                             </thead>
@@ -2105,8 +2096,12 @@ export function DashboardPage() {
                                   <td>
                                     <code>{r.rule_id}</code>
                                   </td>
-                                  <td className="cg-num-col">{r.total_flags}</td>
-                                  <td className="cg-num-col">{r.overrides_and_disputes}</td>
+                                  <td className="cg-num-col">
+                                    {r.total_flags}
+                                  </td>
+                                  <td className="cg-num-col">
+                                    {r.overrides_and_disputes}
+                                  </td>
                                   <td className="cg-num-col">
                                     {(r.posterior_friction * 100).toFixed(1)}%
                                   </td>
@@ -2130,7 +2125,7 @@ export function DashboardPage() {
                         ) : (
                           <div className="cg-clean-note">
                             Zero disputed rules recorded yet for{" "}
-                            <strong>{govCanonId}</strong>.
+                            <strong>{formatCanonName(govCanonId)}</strong>.
                           </div>
                         )}
 
@@ -2177,8 +2172,8 @@ export function DashboardPage() {
                       <div className="cg-gov-card-header">
                         <div>
                           <h3>
-                            Proposed Playbook Pull Request: {prProposal.canon_id}{" "}
-                            v{prProposal.base_version} → v
+                            Proposed Playbook Pull Request:{" "}
+                            {prProposal.canon_id} v{prProposal.base_version} → v
                             {prProposal.proposed_version}
                           </h3>
                           <p>
@@ -2187,8 +2182,8 @@ export function DashboardPage() {
                             campaign(s): Flags reduced from{" "}
                             <strong>{prProposal.before_findings}</strong> →{" "}
                             <strong>{prProposal.after_findings}</strong> (
-                            {(prProposal.reduction_ratio * 100).toFixed(1)}% noise
-                            reduction).
+                            {(prProposal.reduction_ratio * 100).toFixed(1)}%
+                            noise reduction).
                           </p>
                         </div>
                         {prProposal.has_changes && (
@@ -2235,7 +2230,9 @@ export function DashboardPage() {
                                   <td>
                                     <strong>{rev.after_summary}</strong>
                                   </td>
-                                  <td className="cg-td-muted">{rev.rationale}</td>
+                                  <td className="cg-td-muted">
+                                    {rev.rationale}
+                                  </td>
                                 </tr>
                               ))}
                             </tbody>
@@ -2275,7 +2272,8 @@ export function DashboardPage() {
                       </h3>
                       <p>
                         Tune whether a rule acts as a non-blocking Warning (
-                        <code>1–49</code>) or a hard Blocker (<code>50–100</code>
+                        <code>1–49</code>) or a hard Blocker (
+                        <code>50–100</code>
                         ), or adjust CIEDE2000 ΔE₀₀ and readability ceilings.
                       </p>
                     </div>
@@ -2284,7 +2282,11 @@ export function DashboardPage() {
                   <form
                     onSubmit={handleCalibrateRule}
                     className="cg-calibrate-form"
-                    style={{ display: "flex", flexDirection: "column", gap: "14px" }}
+                    style={{
+                      display: "flex",
+                      flexDirection: "column",
+                      gap: "14px",
+                    }}
                   >
                     <div className="cg-field-group">
                       <label htmlFor="cal-rule-select">
@@ -2340,7 +2342,9 @@ export function DashboardPage() {
                           max="95"
                           step="5"
                           value={calSeverity}
-                          onChange={(e) => setCalSeverity(Number(e.target.value))}
+                          onChange={(e) =>
+                            setCalSeverity(Number(e.target.value))
+                          }
                         />
                       </label>
 
@@ -2443,7 +2447,11 @@ export function DashboardPage() {
                   <form
                     onSubmit={handleCompileCanon}
                     className="cg-calibrate-form"
-                    style={{ display: "flex", flexDirection: "column", gap: "14px" }}
+                    style={{
+                      display: "flex",
+                      flexDirection: "column",
+                      gap: "14px",
+                    }}
                   >
                     <div className="cg-field-row-2">
                       <div className="cg-field-group">
@@ -2500,20 +2508,15 @@ export function DashboardPage() {
 
                     <div className="cg-field-group">
                       <label htmlFor="compile-raw-text">
-                        Brand Rules, Approved Claims, Disclaimers &amp; Colour Hex
-                        Tokens
+                        Brand Rules, Approved Claims, Disclaimers &amp; Colour
+                        Hex Tokens
                       </label>
                       <textarea
                         id="compile-raw-text"
                         rows={4}
                         value={compileText}
                         onChange={(e) => setCompileText(e.target.value)}
-                        placeholder={
-                          "Never use 'cheap', prefer 'affordable'.\n" +
-                          "Primary Blue: #0D3B66.\n" +
-                          "Approved Fact: 0% processing fee on loans under Rs 50,000 valid until 2026-09-30.\n" +
-                          "Trigger: 'loan' -> Disclaimer: 'Subject to RBI KFS terms.'"
-                        }
+                        placeholder="Paste your company brand rules, approved claims, required disclosures, and hex colour tokens…"
                       />
                     </div>
 
@@ -2714,7 +2717,10 @@ export function DashboardPage() {
                             setStudioTriggers((prev) =>
                               prev.map((item, i) =>
                                 i === idx
-                                  ? { ...item, trigger_pattern: e.target.value }
+                                  ? {
+                                      ...item,
+                                      trigger_pattern: e.target.value,
+                                    }
                                   : item,
                               ),
                             )
@@ -2773,8 +2779,8 @@ export function DashboardPage() {
                       <span>
                         Compiled Playbook{" "}
                         <strong>{compileResult.canon_id}</strong> v
-                        {compileResult.version} ({compileResult.term_count} terms,{" "}
-                        {compileResult.fact_count} facts,{" "}
+                        {compileResult.version} ({compileResult.term_count}{" "}
+                        terms, {compileResult.fact_count} facts,{" "}
                         {compileResult.color_count} colours).
                       </span>
                     </div>
@@ -2788,23 +2794,22 @@ export function DashboardPage() {
               <div className="cg-console-hero-bar">
                 <div className="cg-console-hero-left">
                   <h1 className="cg-console-title">
-                    Synchronous Pre-Publish Webhook Gate (<code>POST /api/gate/check</code>)
+                    Synchronous Pre-Publish Webhook Gate (
+                    <code>POST /api/gate/check</code>)
                   </h1>
                 </div>
                 <span className="cg-brand-version">CMS &amp; CI/CD Gate</span>
               </div>
 
               <div className="cg-gov-two-col">
-                <form
-                  onSubmit={handleRunWebhookGate}
-                  className="cg-gov-card"
-                >
+                <form onSubmit={handleRunWebhookGate} className="cg-gov-card">
                   <div className="cg-gov-card-header">
                     <div>
                       <h3>Simulate CMS / CI-CD Publish Webhook</h3>
                       <p>
-                        Test synchronous pre-publish gating for Shopify, Webflow,
-                        or Generic JSON payloads with conformal risk control.
+                        Test synchronous pre-publish gating for Shopify,
+                        Webflow, or Generic JSON payloads with conformal risk
+                        control.
                       </p>
                     </div>
                   </div>
@@ -2819,7 +2824,7 @@ export function DashboardPage() {
                       >
                         {canons.map((c) => (
                           <option key={c.id} value={c.id}>
-                            {c.id} (v{c.version})
+                            {formatCanonName(c.id)} ({c.id})
                           </option>
                         ))}
                       </select>
@@ -2832,13 +2837,20 @@ export function DashboardPage() {
                         value={gateAdapter}
                         onChange={(e) =>
                           setGateAdapter(
-                            e.target.value as "generic" | "shopify" | "webflow",
+                            e.target.value as
+                              | "generic"
+                              | "shopify"
+                              | "webflow",
                           )
                         }
                       >
                         <option value="generic">Generic Content Payload</option>
-                        <option value="shopify">Shopify Product / Page Webhook</option>
-                        <option value="webflow">Webflow CMS Item Publish</option>
+                        <option value="shopify">
+                          Shopify Product / Page Webhook
+                        </option>
+                        <option value="webflow">
+                          Webflow CMS Item Publish
+                        </option>
                       </select>
                     </div>
                   </div>
@@ -2851,6 +2863,7 @@ export function DashboardPage() {
                         type="text"
                         value={gateTitle}
                         onChange={(e) => setGateTitle(e.target.value)}
+                        placeholder="Enter asset title…"
                       />
                     </div>
 
@@ -2863,9 +2876,15 @@ export function DashboardPage() {
                         value={gateAlpha}
                         onChange={(e) => setGateAlpha(Number(e.target.value))}
                       >
-                        <option value={0.04}>Strict (α = 0.04 · BFSI/Legal)</option>
-                        <option value={0.1}>Balanced (α = 0.10 · Standard)</option>
-                        <option value={0.2}>Permissive (α = 0.20 · Draft)</option>
+                        <option value={0.04}>
+                          Strict (α = 0.04 · BFSI/Legal)
+                        </option>
+                        <option value={0.1}>
+                          Balanced (α = 0.10 · Standard)
+                        </option>
+                        <option value={0.2}>
+                          Permissive (α = 0.20 · Draft)
+                        </option>
                       </select>
                     </div>
                   </div>
@@ -2879,6 +2898,7 @@ export function DashboardPage() {
                       rows={5}
                       value={gateContent}
                       onChange={(e) => setGateContent(e.target.value)}
+                      placeholder="Paste your campaign copy, HTML, or CMS payload here…"
                     />
                   </div>
 
@@ -2905,13 +2925,15 @@ export function DashboardPage() {
                         checked={gatePersist}
                         onChange={(e) => setGatePersist(e.target.checked)}
                       />
-                      <span>Persist bundle to Campaign Queue for human review</span>
+                      <span>
+                        Persist bundle to Campaign Queue for human review
+                      </span>
                     </label>
 
                     <button
                       type="submit"
                       className="cg-btn cg-btn-primary"
-                      disabled={gateRunning}
+                      disabled={gateRunning || !gateContent.trim()}
                     >
                       <span>
                         {gateRunning ? "Evaluating Gate…" : "Run Gate Check"}
@@ -2928,7 +2950,8 @@ export function DashboardPage() {
                       <h3>Gate Verdict &amp; Calibrated Findings</h3>
                       <p>
                         Returns deterministic <code>allow</code>,{" "}
-                        <code>needs_review</code>, or <code>block</code> verdict.
+                        <code>needs_review</code>, or <code>block</code>{" "}
+                        verdict.
                       </p>
                     </div>
                     {gateResult && (
@@ -2948,9 +2971,9 @@ export function DashboardPage() {
 
                   {!gateResult ? (
                     <div className="cg-clean-note">
-                      Click <strong>Run Gate Check</strong> to execute{" "}
-                      <code>POST /api/gate/check</code> and inspect the calibrated
-                      response payload.
+                      Paste your content on the left and click{" "}
+                      <strong>Run Gate Check</strong> to execute{" "}
+                      <code>POST /api/gate/check</code>.
                     </div>
                   ) : (
                     <>
@@ -2966,14 +2989,22 @@ export function DashboardPage() {
                           <span>Warnings: {gateResult.warning_count}</span>
                         </div>
                         <div className="cg-kpi-cell">
-                          <span className="cg-mono-label">Conformal Cutoff</span>
-                          <strong>{gateResult.conformal_threshold.toFixed(2)}</strong>
+                          <span className="cg-mono-label">
+                            Conformal Cutoff
+                          </span>
+                          <strong>
+                            {gateResult.conformal_threshold.toFixed(2)}
+                          </strong>
                           <span>α = {gateResult.alpha}</span>
                         </div>
                         <div className="cg-kpi-cell">
                           <span className="cg-mono-label">Latency</span>
-                          <strong>{gateResult.latency_ms.toFixed(1)} ms</strong>
-                          <code>SHA: {gateResult.content_hash.slice(0, 8)}…</code>
+                          <strong>
+                            {gateResult.latency_ms.toFixed(1)} ms
+                          </strong>
+                          <code>
+                            SHA: {gateResult.content_hash.slice(0, 8)}…
+                          </code>
                         </div>
                       </div>
 
@@ -2988,7 +3019,9 @@ export function DashboardPage() {
                             className="cg-btn cg-btn-primary cg-btn-sm"
                             style={{ marginLeft: "auto" }}
                             onClick={() =>
-                              navigate(`/submissions/${gateResult.submission_id}`)
+                              navigate(
+                                `/submissions/${gateResult.submission_id}`,
+                              )
                             }
                           >
                             <span>Open in Review Studio</span>

@@ -50,7 +50,25 @@ async def _seed_default_users() -> None:
 _LEGACY_DEMO_TITLES = (
     "Diwali Instant Digital Loan Campaign Bundle",
     "AyurGlow Curcumin Gold Elixir Landing Page",
+    "AyurGlow Curcumin Gold Elixir",
+    "AyurGlow Curcumin Gold Elixir Launch",
     "RBI 2025 KFS & CCPA Pre-Flight — Instant Personal Loan Bundle",
+    "Clean Acme Announcement",
+    "Minor Tone Drift",
+    "QuickLoan Festival Credit Campaign",
+    "QuickLoan Diwali Festival Campaign",
+    "Acme QuickLoan Diwali Festival Campaign",
+    "CloudScale Enterprise Tier Release",
+    "Enterprise Cloud Launch Landing Page",
+    "Acme Cloud Enterprise Launch Landing Page",
+    "Duplicate & Table Alignment Test",
+    "Monsoon Digital Lending Campaign",
+    "Monsoon KFS Campaign",
+    "P1-P6 Full Feature Test",
+    "E2E Verification Campaign",
+    "Test",
+    "Test Sub",
+    "Test Campaign",
 )
 
 

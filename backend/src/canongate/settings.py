@@ -58,8 +58,16 @@ class Settings(_BaseSettings):
             env_file = ".env"
             extra = "ignore"
 
-    # Database
-    db_url: str = "sqlite+aiosqlite:///./canongate.db"
+    # Database (isolate pytest runs so test suites never pollute ./canongate.db)
+    db_url: str = (
+        "sqlite+aiosqlite:////tmp/canongate_pytest.db"
+        if (
+            os.environ.get("PYTEST_CURRENT_TEST")
+            or "pytest" in sys.modules
+            or any("pytest" in arg for arg in sys.argv)
+        )
+        else "sqlite+aiosqlite:///./canongate.db"
+    )
 
     # Canon
     canon_dir: Path = Path("canons")
